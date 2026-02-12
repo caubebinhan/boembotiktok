@@ -55,33 +55,42 @@ function App(): JSX.Element {
                 {activeTab === 'stats' && <StatsView />}
                 {activeTab === 'settings' && <SettingsView />}
 
-                {/* Scanner Overlay (Fullscreen) */}
+                {/* Scanner Modal (Windowed) */}
                 {showScanner && (
-                    <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', zIndex: 100, background: 'var(--bg-primary)' }}>
-                        <div style={{ height: '40px', display: 'flex', alignItems: 'center', padding: '0 10px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-primary)' }}>
-                            <button className="btn btn-ghost" onClick={handleScannerClose}>
-                                ← Back to Dashboard
-                            </button>
-                            <span style={{ marginLeft: '10px', fontWeight: 600 }}>Scanner Tool</span>
-                            {scannerCallback && (
-                                <span style={{
-                                    marginLeft: 'auto',
-                                    padding: '4px 12px',
-                                    borderRadius: '6px',
-                                    fontSize: '12px',
-                                    fontWeight: 600,
-                                    background: 'rgba(124, 92, 252, 0.15)',
-                                    color: 'var(--accent-primary)'
-                                }}>
-                                    📡 Select a source for your campaign
-                                </span>
-                            )}
-                        </div>
-                        <div style={{ height: 'calc(100% - 40px)' }}>
-                            <VideoPicker
-                                mode={scannerCallback ? 'select_source' : 'standalone'}
-                                onSelectSource={scannerCallback ? handleScannerSourceSelected : undefined}
-                            />
+                    <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 2000, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <div style={{ width: '92vw', height: '88vh', background: 'var(--bg-primary)', borderRadius: '16px', border: '1px solid var(--border-primary)', boxShadow: '0 25px 60px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                            {/* Window Title Bar */}
+                            <div style={{ height: '44px', display: 'flex', alignItems: 'center', padding: '0 16px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-primary)', flexShrink: 0, borderRadius: '16px 16px 0 0', gap: '12px' }}>
+                                <span style={{ fontSize: '16px' }}>🔍</span>
+                                <span style={{ fontWeight: 700, fontSize: '14px' }}>Scanner Tool</span>
+                                {scannerCallback && (
+                                    <span style={{
+                                        marginLeft: '8px',
+                                        padding: '3px 10px',
+                                        borderRadius: '6px',
+                                        fontSize: '11px',
+                                        fontWeight: 600,
+                                        background: 'rgba(124, 92, 252, 0.15)',
+                                        color: 'var(--accent-primary)'
+                                    }}>
+                                        📡 Select a source for your campaign
+                                    </span>
+                                )}
+                                <button
+                                    className="btn btn-ghost"
+                                    onClick={handleScannerClose}
+                                    style={{ marginLeft: 'auto', fontSize: '18px', padding: '4px 10px', lineHeight: 1, borderRadius: '8px' }}
+                                >
+                                    ✕
+                                </button>
+                            </div>
+                            {/* Scanner Content */}
+                            <div style={{ flex: 1, minHeight: 0 }}>
+                                <VideoPicker
+                                    mode={scannerCallback ? 'select_source' : 'standalone'}
+                                    onSelectSource={scannerCallback ? handleScannerSourceSelected : undefined}
+                                />
+                            </div>
                         </div>
                     </div>
                 )}

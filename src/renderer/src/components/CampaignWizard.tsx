@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react'
+import DatePicker from 'react-datepicker'
+import 'react-datepicker/dist/react-datepicker.css'
 import { VideoEditor } from './VideoEditor'
 import { AccountSettingsModal } from './AccountSettingsModal'
 
@@ -49,9 +51,22 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         { id: 1, label: 'Details', icon: '📝' },
         { id: 2, label: 'Source', icon: '📡' },
         { id: 3, label: 'Editor', icon: '✂️' },
-        { id: 4, label: 'Target', icon: '🎯' },
-        { id: 5, label: 'Schedule', icon: '📅' }
+        { id: 4, label: 'Target', icon: '🎯' }
     ]
+
+    // Per-step validation
+    const canAdvance = (): boolean => {
+        switch (step) {
+            case 1:
+                if (!formData.name.trim()) return false
+                if (formData.type === 'one_time' && !formData.schedule.runAt) return false
+                return true
+            case 2:
+                return !!formData.sourceConfig
+            default:
+                return true
+        }
+    }
 
     const renderStepper = () => (
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '30px', padding: '0 20px' }}>
@@ -86,10 +101,10 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         </div>
     )
 
-    // ─── Step 1: Campaign Details ────────────────────────────────
+    // ─── Step 1: Campaign Details + Schedule ────────────────────
     const renderStep1_Basic = () => (
         <div className="wizard-step">
-            <h3>Step 1: Campaign Details</h3>
+            <h3>Step 1: Campaign Details & Schedule</h3>
             <div className="form-group">
                 <label>Campaign Name</label>
                 <input
@@ -127,6 +142,104 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                     </label>
                 </div>
             </div>
+
+            {/* Schedule UI — merged from old Step 5 */}
+            {formData.type === 'one_time' ? (
+                <div className="card" style={{ padding: '20px', background: 'rgba(255, 255, 255, 0.05)', marginTop: '16px' }}>
+                    <h4 style={{ marginTop: 0 }}>⏰ Schedule Run Time</h4>
+                    <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginBottom: '16px' }}>
+                        Choose when this campaign should run. It will execute once at the selected time.
+                    </p>
+                    <div className="form-group">
+                        <label>Run At</label>
+                        <DatePicker
+                            selected={formData.schedule.runAt ? new Date(formData.schedule.runAt) : null}
+                            onChange={(date: Date | null) => {
+                                setFormData({
+                                    ...formData,
+                                    schedule: { ...formData.schedule, runAt: date ? date.toISOString() : '' }
+                                })
+                            }}
+                            showTimeSelect
+                            timeIntervals={15}
+                            dateFormat="yyyy-MM-dd HH:mm"
+                            timeFormat="HH:mm"
+                            minDate={new Date()}
+                            placeholderText="Select date and time"
+                            className="form-control"
+                            wrapperClassName="datepicker-wrapper"
+                        />
+                    </div>
+                    {!formData.schedule.runAt && (
+                        <div style={{ fontSize: '12px', color: '#ff9800', marginTop: '8px' }}>
+                            ⚠️ Please select a time. You can also use "Save & Run Now" to run immediately.
+                        </div>
+                    )}
+                </div>
+            ) : (
+                <div className="schedule-ui card" style={{ padding: '20px', marginTop: '16px' }}>
+                    <div className="form-group">
+                        <label>Interval</label>
+                        <select
+                            className="form-control"
+                            value={formData.schedule.interval}
+                            onChange={e => setFormData({ ...formData, schedule: { ...formData.schedule, interval: parseInt(e.target.value) } })}
+                        >
+                            <option value="30">Every 30 Minutes</option>
+                            <option value="60">Every 1 Hour</option>
+                            <option value="120">Every 2 Hours</option>
+                            <option value="240">Every 4 Hours</option>
+                            <option value="1440">Daily</option>
+                        </select>
+                    </div>
+                    <div className="form-row" style={{ display: 'flex', gap: '16px' }}>
+                        <div className="form-group" style={{ flex: 1 }}>
+                            <label>Start Time</label>
+                            <input type="time" className="form-control" value={formData.schedule.startTime} onChange={e => setFormData({ ...formData, schedule: { ...formData.schedule, startTime: e.target.value } })} />
+                        </div>
+                        <div className="form-group" style={{ flex: 1 }}>
+                            <label>End Time</label>
+                            <input type="time" className="form-control" value={formData.schedule.endTime} onChange={e => setFormData({ ...formData, schedule: { ...formData.schedule, endTime: e.target.value } })} />
+                        </div>
+                    </div>
+                    <div className="form-group" style={{ marginTop: '12px' }}>
+                        <label>Active Days</label>
+                        <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
+                            {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => {
+                                const isActive = formData.schedule.days.includes(day)
+                                return (
+                                    <button
+                                        key={day}
+                                        onClick={() => {
+                                            setFormData(prev => ({
+                                                ...prev,
+                                                schedule: {
+                                                    ...prev.schedule,
+                                                    days: isActive
+                                                        ? prev.schedule.days.filter(d => d !== day)
+                                                        : [...prev.schedule.days, day]
+                                                }
+                                            }))
+                                        }}
+                                        style={{
+                                            padding: '6px 10px',
+                                            borderRadius: '6px',
+                                            border: isActive ? '1px solid var(--accent-primary)' : '1px solid var(--border-primary)',
+                                            background: isActive ? 'rgba(124,92,252,0.15)' : 'transparent',
+                                            color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                                            cursor: 'pointer',
+                                            fontSize: '12px',
+                                            fontWeight: 600
+                                        }}
+                                    >
+                                        {day}
+                                    </button>
+                                )
+                            })}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     )
 
@@ -359,101 +472,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         </div>
     )
 
-    // ─── Step 5: Schedule ────────────────────────────────────────
-    const renderStep5_Schedule = () => (
-        <div className="wizard-step">
-            <h3>Step 5: Schedule & Options</h3>
-            {formData.type === 'one_time' ? (
-                <div className="card" style={{ padding: '20px', background: 'rgba(255, 255, 255, 0.05)' }}>
-                    <h4 style={{ marginTop: 0 }}>⏰ Schedule Run Time</h4>
-                    <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginBottom: '16px' }}>
-                        Choose when this campaign should run. It will execute once at the selected time.
-                    </p>
-                    <div className="form-group">
-                        <label>Run At</label>
-                        <input
-                            type="datetime-local"
-                            className="form-control"
-                            value={formData.schedule.runAt}
-                            onChange={e => setFormData({
-                                ...formData,
-                                schedule: { ...formData.schedule, runAt: e.target.value }
-                            })}
-                            style={{ maxWidth: '300px' }}
-                        />
-                    </div>
-                    {!formData.schedule.runAt && (
-                        <div style={{ fontSize: '12px', color: '#ff9800', marginTop: '8px' }}>
-                            ⚠️ Please select a time. You can also use "Save & Run Now" to run immediately.
-                        </div>
-                    )}
-                </div>
-            ) : (
-                <div className="schedule-ui card" style={{ padding: '20px' }}>
-                    <div className="form-group">
-                        <label>Interval</label>
-                        <select
-                            className="form-control"
-                            value={formData.schedule.interval}
-                            onChange={e => setFormData({ ...formData, schedule: { ...formData.schedule, interval: parseInt(e.target.value) } })}
-                        >
-                            <option value="30">Every 30 Minutes</option>
-                            <option value="60">Every 1 Hour</option>
-                            <option value="120">Every 2 Hours</option>
-                            <option value="240">Every 4 Hours</option>
-                            <option value="1440">Daily</option>
-                        </select>
-                    </div>
-                    <div className="form-row" style={{ display: 'flex', gap: '16px' }}>
-                        <div className="form-group" style={{ flex: 1 }}>
-                            <label>Start Time</label>
-                            <input type="time" className="form-control" value={formData.schedule.startTime} onChange={e => setFormData({ ...formData, schedule: { ...formData.schedule, startTime: e.target.value } })} />
-                        </div>
-                        <div className="form-group" style={{ flex: 1 }}>
-                            <label>End Time</label>
-                            <input type="time" className="form-control" value={formData.schedule.endTime} onChange={e => setFormData({ ...formData, schedule: { ...formData.schedule, endTime: e.target.value } })} />
-                        </div>
-                    </div>
-                    <div className="form-group" style={{ marginTop: '12px' }}>
-                        <label>Active Days</label>
-                        <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
-                            {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => {
-                                const isActive = formData.schedule.days.includes(day)
-                                return (
-                                    <button
-                                        key={day}
-                                        onClick={() => {
-                                            setFormData(prev => ({
-                                                ...prev,
-                                                schedule: {
-                                                    ...prev.schedule,
-                                                    days: isActive
-                                                        ? prev.schedule.days.filter(d => d !== day)
-                                                        : [...prev.schedule.days, day]
-                                                }
-                                            }))
-                                        }}
-                                        style={{
-                                            padding: '6px 10px',
-                                            borderRadius: '6px',
-                                            border: isActive ? '1px solid var(--accent-primary)' : '1px solid var(--border-primary)',
-                                            background: isActive ? 'rgba(124,92,252,0.15)' : 'transparent',
-                                            color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)',
-                                            cursor: 'pointer',
-                                            fontSize: '12px',
-                                            fontWeight: 600
-                                        }}
-                                    >
-                                        {day}
-                                    </button>
-                                )
-                            })}
-                        </div>
-                    </div>
-                </div>
-            )}
-        </div>
-    )
+    // Step 5 removed — schedule is now in Step 1
 
     return (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.85)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(5px)' }}>
@@ -471,7 +490,6 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                     {step === 2 && renderStep2_Source()}
                     {step === 3 && renderStep3_Editor()}
                     {step === 4 && renderStep4_Target()}
-                    {step === 5 && renderStep5_Schedule()}
                 </div>
 
                 {/* Footer: Save / Save & Run Now (NO Draft) */}
@@ -480,8 +498,8 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                         {step === 1 ? 'Cancel' : '← Back'}
                     </button>
                     <div style={{ display: 'flex', gap: '10px' }}>
-                        {step < 5 ? (
-                            <button className="btn btn-primary" onClick={handleNext} style={{ fontSize: '16px', padding: '10px 30px' }}>Next →</button>
+                        {step < 4 ? (
+                            <button className="btn btn-primary" onClick={handleNext} disabled={!canAdvance()} style={{ fontSize: '16px', padding: '10px 30px', opacity: canAdvance() ? 1 : 0.4 }}>Next →</button>
                         ) : (
                             <>
                                 <button className="btn btn-secondary" onClick={() => onSave(formData, false)} style={{ fontSize: '16px', padding: '10px 20px' }}>

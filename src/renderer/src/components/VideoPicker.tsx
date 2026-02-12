@@ -411,9 +411,9 @@ export const VideoPicker: React.FC<VideoPickerProps> = ({ mode = 'standalone', o
                             onClick={() => {
                                 const ch = extractChannelName()
                                 const kw = extractSearchKeyword()
-                                if (ch) onSelectSource?.({ type: 'channel', value: ch })
-                                else if (kw) onSelectSource?.({ type: 'keyword', value: kw })
-                                else if (isVideoPage) onSelectSource?.({ type: 'video', value: url })
+                                if (ch) onSelectSource?.({ type: 'channel', value: ch, videos: scannedVideos })
+                                else if (kw) onSelectSource?.({ type: 'keyword', value: kw, videos: scannedVideos })
+                                else if (isVideoPage) onSelectSource?.({ type: 'video', value: url, videos: scannedVideos.length > 0 ? scannedVideos : [{ id: url.match(/\/video\/(\d+)/)?.[1] || '', url, description: '', thumbnail: '', stats: { views: 0, likes: 0, comments: 0 }, selected: true }] })
                                 else alert('Please navigate to a Channel, Search Page, or Video')
                             }}
                         >
