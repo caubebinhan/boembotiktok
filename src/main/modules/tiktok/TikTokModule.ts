@@ -21,10 +21,123 @@ export class TikTokModule implements PlatformModule {
         console.log('TikTokModule shutting down...')
     }
 
-    async scanProfile(username: string, isBackground = false): Promise<any[]> {
+    async scanKeyword(keyword: string, maxVideos = 50): Promise<any> {
         if (this.isScanning) {
             console.warn('Scan already in progress')
-            return []
+            return { videos: [] }
+        }
+        this.isScanning = true
+        console.log(`Starting keyword scan for: ${keyword} (Max: ${maxVideos})`)
+
+        if (!browserService.isConnected()) {
+            await browserService.init(true)
+        }
+
+        const page = await browserService.newPage()
+        if (!page) return { videos: [] }
+
+        const foundVideos: any[] = []
+
+        try {
+            await page.goto(`https://www.tiktok.com/search?q=${encodeURIComponent(keyword)}`, { waitUntil: 'networkidle' })
+
+            // === Scroll to End Logic ===
+            let prevCount = 0
+            let rounds = 0
+            const MAX_ROUNDS = 50 // Safety break
+
+            while (rounds < MAX_ROUNDS) {
+                rounds++
+                const currentCount = await page.evaluate(() => document.querySelectorAll('a[href*="/video/"]').length)
+
+                if (currentCount >= maxVideos) {
+                    console.log(`Reached max videos limit (${maxVideos})`)
+                    break
+                }
+
+                console.log(`Scanning round ${rounds}... Found ${currentCount}/${maxVideos}`)
+                await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+                try {
+                    await page.waitForTimeout(2000)
+                } catch { break }
+
+                if (currentCount === prevCount && currentCount > 0) {
+                    // Check if "Load more" button exists (sometimes searching has a button)
+                    // converting to auto-scroll usually works though
+                    console.log('No new videos found, stopping.')
+                    break
+                }
+                prevCount = currentCount
+            }
+
+            // === Extract Data ===
+            const videos = await page.evaluate(() => {
+                const anchors = Array.from(document.querySelectorAll('a'))
+                return anchors
+                    .filter(a => a.href.includes('/video/') && !a.href.includes('/search')) // Filter out search nav links
+                    .map(a => {
+                        const m = a.href.match(/\/video\/(\d+)/)
+                        const container = a.closest('[data-e2e="search_top-item"]') || a.closest('div[class*="DivItemContainer"]') || a.parentElement
+                        const viewsText = container ? container.textContent?.match(/(\d+(\.\d+)?[KMB]?)/)?.[0] : ''
+
+                        return {
+                            id: m ? m[1] : '',
+                            url: a.href,
+                            desc: a.textContent || '', // This often grabs views too, needs cleaning
+                            thumb: a.querySelector('img')?.src || '',
+                            stats: {
+                                views: viewsText || '0',
+                                likes: '0',
+                                comments: '0'
+                            }
+                        }
+                    })
+                    .filter(v => v.id)
+            })
+
+            console.log(`Found ${videos.length} videos on page. Taking top ${maxVideos}.`)
+
+            // Limit to maxVideos
+            const targetVideos = videos.slice(0, maxVideos)
+
+            for (const v of targetVideos) {
+                const exists = storageService.get('SELECT id FROM videos WHERE platform_id = ?', [v.id])
+
+                if (!exists) {
+                    storageService.run(
+                        `INSERT INTO videos (platform, platform_id, url, description, status, metadata)
+                         VALUES ('tiktok', ?, ?, ?, 'discovered', ?)`,
+                        [v.id, v.url, v.desc, JSON.stringify({ thumbnail: v.thumb, stats: v.stats, keyword })]
+                    )
+                    console.log(`New video found: ${v.id}`)
+
+                    // Return found videos (for immediate use if needed)
+                    const newId = storageService.get('SELECT last_insert_rowid() as id').id
+                    foundVideos.push({
+                        id: newId,
+                        url: v.url,
+                        platform_id: v.id,
+                        thumbnail: v.thumb,
+                        stats: v.stats
+                    })
+                }
+            }
+
+            return { videos: foundVideos }
+
+        } catch (error) {
+            console.error('Error scanning keyword:', error)
+            return { videos: [] }
+        } finally {
+            await page.close()
+            this.isScanning = false
+        }
+    }
+
+    async scanProfile(username: string, isBackground = false): Promise<any> {
+        if (this.isScanning) {
+            console.warn('Scan already in progress')
+            return { videos: [], channel: null }
         }
         this.isScanning = true
         console.log(`Starting scan for: ${username} (Background: ${isBackground})`)
@@ -34,15 +147,33 @@ export class TikTokModule implements PlatformModule {
         }
 
         const page = await browserService.newPage()
-        if (!page) return [] // or throw
+        if (!page) return { videos: [], channel: null }
 
         const foundVideos: any[] = []
+        let channelInfo: any = null
 
         try {
-            // Get filter criteria (mock for now)
-            // const channel = storageService.get('SELECT filter_criteria FROM accounts WHERE username = ?', [username])
-
             await page.goto(`https://www.tiktok.com/@${username}`, { waitUntil: 'networkidle' })
+
+            // === Extract Channel Metadata ===
+            channelInfo = await page.evaluate(() => {
+                const avatar = document.querySelector('img[src*="tiktokcdn"]')?.getAttribute('src') || ''
+                const nickname = document.querySelector('[data-e2e="user-title"]')?.textContent || ''
+                const bio = document.querySelector('[data-e2e="user-bio"]')?.textContent || ''
+                const followers = document.querySelector('[data-e2e="followers-count"]')?.textContent || '0'
+                const following = document.querySelector('[data-e2e="following-count"]')?.textContent || '0'
+                const likes = document.querySelector('[data-e2e="likes-count"]')?.textContent || '0'
+                return { avatar, nickname, bio, followers, following, likes }
+            })
+            console.log(`Channel Info:`, channelInfo)
+
+            // Update Account Metadata if exists
+            if (channelInfo) {
+                storageService.run(
+                    `UPDATE accounts SET metadata = ? WHERE platform = 'tiktok' AND username = ?`,
+                    [JSON.stringify(channelInfo), username]
+                )
+            }
 
             // === Scroll to End Logic ===
             let prevCount = 0
@@ -72,11 +203,22 @@ export class TikTokModule implements PlatformModule {
                     .filter(a => a.href.includes('/video/'))
                     .map(a => {
                         const m = a.href.match(/\/video\/(\d+)/)
+                        // Try to find views count inside the video container
+                        // Structure varies, usually a sibling or child with specific class/icon
+                        // This is a naive attempt to grab text content as views if it looks like a number
+                        const container = a.closest('div[class*="DivItemContainer"]') || a.parentElement
+                        const viewsText = container ? container.textContent?.match(/(\d+(\.\d+)?[KMB]?)/)?.[0] : ''
+
                         return {
                             id: m ? m[1] : '',
                             url: a.href,
-                            desc: a.textContent || '',
-                            thumb: a.querySelector('img')?.src || ''
+                            desc: a.textContent || '', // This often grabs views too, needs cleaning
+                            thumb: a.querySelector('img')?.src || '',
+                            stats: {
+                                views: viewsText || '0',
+                                likes: '0', // Need detail page
+                                comments: '0' // Need detail page
+                            }
                         }
                     })
                     .filter(v => v.id)
@@ -91,7 +233,7 @@ export class TikTokModule implements PlatformModule {
                     storageService.run(
                         `INSERT INTO videos (platform, platform_id, url, description, status, metadata)
                          VALUES ('tiktok', ?, ?, ?, 'discovered', ?)`,
-                        [v.id, v.url, v.desc, JSON.stringify({ thumbnail: v.thumb })]
+                        [v.id, v.url, v.desc, JSON.stringify({ thumbnail: v.thumb, stats: v.stats })]
                     )
                     console.log(`New video found: ${v.id}`)
 
@@ -100,17 +242,19 @@ export class TikTokModule implements PlatformModule {
                         foundVideos.push({
                             id: newId,
                             url: v.url,
-                            platform_id: v.id
+                            platform_id: v.id,
+                            thumbnail: v.thumb,
+                            stats: v.stats
                         })
                     }
                 }
             }
 
-            return foundVideos
+            return { videos: foundVideos, channel: channelInfo }
 
         } catch (error) {
             console.error('Error scanning profile:', error)
-            return []
+            return { videos: [], channel: null }
         } finally {
             await page.close()
             this.isScanning = false
@@ -239,7 +383,7 @@ export class TikTokModule implements PlatformModule {
         }
     }
 
-    async addAccount(username: string, filterCriteria?: string): Promise<void> {
+    async addAccount(username: string, filterCriteria?: string, metadata?: any): Promise<void> {
         console.log(`Adding account: ${username}`)
         const exists = storageService.get(
             'SELECT id FROM accounts WHERE platform = ? AND username = ?',
@@ -248,16 +392,16 @@ export class TikTokModule implements PlatformModule {
 
         if (!exists) {
             storageService.run(
-                `INSERT INTO accounts (platform, username, role, session_valid, proxy_url)
-                 VALUES ('tiktok', ?, 'target', 1, ?)`,
-                [username, filterCriteria || '{}']
+                `INSERT INTO accounts (platform, username, role, session_valid, proxy_url, metadata)
+                 VALUES ('tiktok', ?, 'target', 1, ?, ?)`,
+                [username, filterCriteria || '{}', metadata ? JSON.stringify(metadata) : null]
             )
             console.log(`Added account: ${username}`)
         } else {
-            // Update filter criteria if account exists
+            // Update filter criteria and metadata if account exists
             storageService.run(
-                `UPDATE accounts SET proxy_url = ? WHERE platform = 'tiktok' AND username = ?`,
-                [filterCriteria || '{}', username]
+                `UPDATE accounts SET proxy_url = ?, metadata = ? WHERE platform = 'tiktok' AND username = ?`,
+                [filterCriteria || '{}', metadata ? JSON.stringify(metadata) : null, username]
             )
             console.log(`Updated account: ${username}`)
         }

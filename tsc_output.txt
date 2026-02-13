@@ -1,0 +1,138 @@
+﻿error TS6305: Output file 'C:/boembo/out/electron.vite.config.d.ts' has not been built from source file 'C:/boembo/electron.vite.config.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/index.d.ts' has not been built from source file 'C:/boembo/src/main/index.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/modules/tiktok/TikTokModule.d.ts' has not been built from source file 'C:/boembo/src/main/modules/tiktok/TikTokModule.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/services/BrowserService.d.ts' has not been built from source file 'C:/boembo/src/main/services/BrowserService.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/services/CampaignService.d.ts' has not been built from source file 'C:/boembo/src/main/services/CampaignService.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/services/DownloadQueue.d.ts' has not been built from source file 'C:/boembo/src/main/services/DownloadQueue.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/services/JobQueue.d.ts' has not been built from source file 'C:/boembo/src/main/services/JobQueue.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/services/ModuleManager.d.ts' has not been built from source file 'C:/boembo/src/main/services/ModuleManager.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/services/ProcessingService.d.ts' has not been built from source file 'C:/boembo/src/main/services/ProcessingService.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/services/PublishAccountService.d.ts' has not been built from source file 'C:/boembo/src/main/services/PublishAccountService.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/services/RescanningService.d.ts' has not been built from source file 'C:/boembo/src/main/services/RescanningService.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/services/SchedulerService.d.ts' has not been built from source file 'C:/boembo/src/main/services/SchedulerService.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/services/StorageService.d.ts' has not been built from source file 'C:/boembo/src/main/services/StorageService.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/services/video-edit/VideoEditEngine.d.ts' has not been built from source file 'C:/boembo/src/main/services/video-edit/VideoEditEngine.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/services/video-edit/effects/IntroImageEffect.d.ts' has not been built from source file 'C:/boembo/src/main/services/video-edit/effects/IntroImageEffect.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/services/video-edit/effects/TextOverlayEffect.d.ts' has not been built from source file 'C:/boembo/src/main/services/video-edit/effects/TextOverlayEffect.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/services/video-edit/effects/WatermarkEffect.d.ts' has not been built from source file 'C:/boembo/src/main/services/video-edit/effects/WatermarkEffect.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/services/video-edit/providers/LocalFFmpegProvider.d.ts' has not been built from source file 'C:/boembo/src/main/services/video-edit/providers/LocalFFmpegProvider.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/main/services/video-edit/types.d.ts' has not been built from source file 'C:/boembo/src/main/services/video-edit/types.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/preload/index.d.ts' has not been built from source file 'C:/boembo/src/preload/index.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/App.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/App.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/ScannerApp.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/ScannerApp.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/components/AccountSettingsModal.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/components/AccountSettingsModal.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/components/CampaignList.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/components/CampaignList.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/components/CampaignWizard.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/components/CampaignWizard.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/components/CreateCampaignModal.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/components/CreateCampaignModal.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/components/DownloadItemCard.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/components/DownloadItemCard.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/components/FilterBar.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/components/FilterBar.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/components/FollowModal.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/components/FollowModal.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/components/PublishAccountCard.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/components/PublishAccountCard.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/components/RightPanel.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/components/RightPanel.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/components/Sidebar.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/components/Sidebar.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/components/SourceCard.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/components/SourceCard.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/components/VideoEditor.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/components/VideoEditor.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/components/VideoPicker.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/components/VideoPicker.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/components/VideoSidebar.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/components/VideoSidebar.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/main.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/main.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/types/picker.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/types/picker.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/views/AccountsView.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/views/AccountsView.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/views/CampaignsView.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/views/CampaignsView.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/views/ResourcesView.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/views/ResourcesView.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/views/ScheduleView.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/views/ScheduleView.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/views/SettingsView.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/views/SettingsView.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/renderer/src/views/StatsView.d.ts' has not been built from source file 'C:/boembo/src/renderer/src/views/StatsView.tsx'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/shared/index.d.ts' has not been built from source file 'C:/boembo/src/shared/index.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'
+error TS6305: Output file 'C:/boembo/out/src/shared/types.d.ts' has not been built from source file 'C:/boembo/src/shared/types.ts'.
+  The file is in the program because:
+    Matched by default include pattern '**/*'

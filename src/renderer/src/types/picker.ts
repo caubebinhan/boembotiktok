@@ -72,4 +72,22 @@ export interface Campaign {
     created_at: string
 }
 
-export type RightPanelTab = 'scanned' | 'collection' | 'sources' | 'downloads' | 'campaigns'
+
+export interface TargetedChannel {
+    name: string
+    avatar?: string
+    nickname?: string
+    stats?: { followers: string, likes: string }
+}
+
+export interface TargetedKeyword {
+    keyword: string
+}
+
+export interface CartState {
+    channels: TargetedChannel[]
+    keywords: TargetedKeyword[]
+    videos: ScannedVideo[]
+}
+
+export type RightPanelTab = 'scanned' | 'collection' | 'sources' | 'downloads' | 'campaigns' | 'targets'

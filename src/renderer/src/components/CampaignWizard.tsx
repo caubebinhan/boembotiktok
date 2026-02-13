@@ -1,25 +1,36 @@
 import React, { useState, useEffect } from 'react'
+import ReactDOM from 'react-dom'
 import DatePicker from 'react-datepicker'
 import 'react-datepicker/dist/react-datepicker.css'
 import { VideoEditor } from './VideoEditor'
 import { AccountSettingsModal } from './AccountSettingsModal'
+import { SchedulePreview } from './SchedulePreview'
 
 interface CampaignWizardProps {
     onClose: () => void
     onSave: (campaignData: any, runNow: boolean) => void
-    onOpenScanner: (callback: (source: any) => void) => void
 }
 
-export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave, onOpenScanner }) => {
+interface SourceEntry {
+    name: string
+    type: 'channel' | 'keyword'
+    videoCount?: number
+    maxScanCount?: number
+    minViews?: number
+    minLikes?: number
+    sortOrder?: string
+}
+
+export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave }) => {
     const [step, setStep] = useState(1)
     const [formData, setFormData] = useState({
         name: '',
         type: 'one_time' as 'one_time' | 'scheduled',
-        sourceConfig: null as any,
         editPipeline: { effects: [] as any[] },
         targetAccounts: [] as string[],
+        postOrder: 'newest' as 'oldest' | 'newest' | 'most_likes' | 'least_likes',
         schedule: {
-            runAt: '',  // for one_time: ISO datetime string
+            runAt: '',
             interval: 60,
             startTime: '09:00',
             endTime: '21:00',
@@ -27,13 +38,60 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         }
     })
 
-    // Publish accounts for Target step
+    // Source data for Step 2 — received from scanner window
+    const [sources, setSources] = useState<SourceEntry[]>([])
+    const [videoCount, setVideoCount] = useState(0)
+    const [savedVideos, setSavedVideos] = useState<any[]>([])
+
+    // Publish accounts for Step 4
     const [publishAccounts, setPublishAccounts] = useState<any[]>([])
     const [addingAccount, setAddingAccount] = useState(false)
     const [editingAccount, setEditingAccount] = useState<any | null>(null)
 
     useEffect(() => {
         loadAccounts()
+    }, [])
+
+    // Listen for scanner results from new window
+    useEffect(() => {
+        // @ts-ignore
+        const removeListener = window.api.on('scanner-results-received', (results: any) => {
+            if (!results) return
+
+            // Add source entry
+            if (results.type && results.value) {
+                setSources(prev => {
+                    const exists = prev.some(s => s.name === results.value && s.type === results.type)
+                    if (exists) return prev
+                    return [...prev, {
+                        name: results.value,
+                        type: results.type,
+                        videoCount: results.videos?.length || 0
+                    }]
+                })
+            }
+
+            // Accumulate videos
+            if (results.videos && Array.isArray(results.videos)) {
+                const newVids = results.videos.filter((v: any) => v.selected !== false)
+                setSavedVideos(prev => {
+                    const existingIds = new Set(prev.map(v => v.id))
+                    const unique = newVids.filter((v: any) => !existingIds.has(v.id)).map((v: any) => ({
+                        id: v.id,
+                        url: v.url,
+                        description: v.description || '',
+                        thumbnail: v.thumbnail || '',
+                        stats: v.stats || { views: 0, likes: 0, comments: 0 },
+                        channelName: results.value || ''
+                    }))
+                    const merged = [...prev, ...unique]
+                    setVideoCount(merged.length)
+                    return merged
+                })
+            }
+        })
+
+        return () => removeListener()
     }, [])
 
     const loadAccounts = async () => {
@@ -54,25 +112,28 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         { id: 4, label: 'Target', icon: '🎯' }
     ]
 
-    // Per-step validation
     const canAdvance = (): boolean => {
-        switch (step) {
-            case 1:
-                if (!formData.name.trim()) return false
-                if (formData.type === 'one_time' && !formData.schedule.runAt) return false
-                return true
-            case 2:
-                return !!formData.sourceConfig
-            default:
-                return true
+        if (step === 1 && !formData.name.trim()) return false
+        if (step === 1 && formData.type === 'one_time' && !formData.schedule.runAt) return false
+        if (step === 1 && formData.type === 'scheduled' && formData.schedule.days.length === 0) return false
+
+        // Step 2 Validation
+        if (step === 2) {
+            if (formData.type === 'one_time') {
+                return savedVideos.length === 1
+            }
+            if (sources.length === 0 && savedVideos.length === 0) return false
         }
+
+        if (step === 4 && formData.targetAccounts.length === 0) return false
+        return true
     }
 
     const renderStepper = () => (
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '30px', padding: '0 20px' }}>
             {steps.map((s, index) => {
-                const isActive = step === s.id;
-                const isCompleted = step > s.id;
+                const isActive = step === s.id
+                const isCompleted = step > s.id
                 return (
                     <div key={s.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1, position: 'relative' }}>
                         <div style={{
@@ -106,35 +167,34 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         <div className="wizard-step">
             <h3>Step 1: Campaign Details & Schedule</h3>
             <div className="form-group">
-                <label>Campaign Name</label>
-                <input
-                    type="text"
-                    className="form-control"
-                    value={formData.name}
-                    onChange={e => setFormData({ ...formData, name: e.target.value })}
-                    placeholder="e.g. Morning Viral Repost"
-                />
+                <div>
+                    <label style={{ display: 'block', marginBottom: '8px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                        Campaign Name
+                    </label>
+                    <input
+                        type="text"
+                        className="form-control"
+                        autoFocus
+                        value={formData.name}
+                        onChange={e => setFormData({ ...formData, name: e.target.value })}
+                        placeholder="e.g. Morning Motivation"
+                        style={{ width: '100%', padding: '12px', background: 'var(--bg-secondary)', border: '1px solid var(--border-primary)', borderRadius: '8px', color: '#fff', fontSize: '14px', userSelect: 'text', cursor: 'text' }}
+                        onMouseDown={e => e.stopPropagation()}
+                    />
+                </div>
             </div>
             <div className="form-group">
                 <label>Type</label>
                 <div className="radio-group" style={{ display: 'flex', gap: '20px' }}>
                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '15px', background: formData.type === 'one_time' ? 'rgba(255,255,255,0.05)' : 'transparent', borderRadius: '8px', cursor: 'pointer', border: formData.type === 'one_time' ? '1px solid var(--accent-primary)' : '1px solid transparent' }}>
-                        <input
-                            type="radio"
-                            checked={formData.type === 'one_time'}
-                            onChange={() => setFormData({ ...formData, type: 'one_time' })}
-                        />
+                        <input type="radio" checked={formData.type === 'one_time'} onChange={() => setFormData({ ...formData, type: 'one_time' })} />
                         <div>
                             <strong>One-Time Run</strong>
                             <div style={{ fontSize: '10px', color: 'gray' }}>Run once at a scheduled time</div>
                         </div>
                     </label>
                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '15px', background: formData.type === 'scheduled' ? 'rgba(255,255,255,0.05)' : 'transparent', borderRadius: '8px', cursor: 'pointer', border: formData.type === 'scheduled' ? '1px solid var(--accent-primary)' : '1px solid transparent' }}>
-                        <input
-                            type="radio"
-                            checked={formData.type === 'scheduled'}
-                            onChange={() => setFormData({ ...formData, type: 'scheduled' })}
-                        />
+                        <input type="radio" checked={formData.type === 'scheduled'} onChange={() => setFormData({ ...formData, type: 'scheduled' })} />
                         <div>
                             <strong>Scheduled (Recurring)</strong>
                             <div style={{ fontSize: '10px', color: 'gray' }}>Run automatically on schedule</div>
@@ -143,7 +203,6 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 </div>
             </div>
 
-            {/* Schedule UI — merged from old Step 5 */}
             {formData.type === 'one_time' ? (
                 <div className="card" style={{ padding: '20px', background: 'rgba(255, 255, 255, 0.05)', marginTop: '16px' }}>
                     <h4 style={{ marginTop: 0 }}>⏰ Schedule Run Time</h4>
@@ -160,19 +219,15 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                                     schedule: { ...formData.schedule, runAt: date ? date.toISOString() : '' }
                                 })
                             }}
-                            showTimeSelect
-                            timeIntervals={15}
-                            dateFormat="yyyy-MM-dd HH:mm"
-                            timeFormat="HH:mm"
+                            showTimeSelect timeIntervals={15}
+                            dateFormat="yyyy-MM-dd HH:mm" timeFormat="HH:mm"
                             minDate={new Date()}
-                            placeholderText="Select date and time"
-                            className="form-control"
-                            wrapperClassName="datepicker-wrapper"
+                            placeholderText="Select date and time" className="form-control" wrapperClassName="datepicker-wrapper"
                         />
                     </div>
                     {!formData.schedule.runAt && (
                         <div style={{ fontSize: '12px', color: '#ff9800', marginTop: '8px' }}>
-                            ⚠️ Please select a time. You can also use "Save & Run Now" to run immediately.
+                            ⚠️ Please select a time. Or use "Save & Run Now" to run immediately.
                         </div>
                     )}
                 </div>
@@ -180,11 +235,8 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 <div className="schedule-ui card" style={{ padding: '20px', marginTop: '16px' }}>
                     <div className="form-group">
                         <label>Interval</label>
-                        <select
-                            className="form-control"
-                            value={formData.schedule.interval}
-                            onChange={e => setFormData({ ...formData, schedule: { ...formData.schedule, interval: parseInt(e.target.value) } })}
-                        >
+                        <select className="form-control" value={formData.schedule.interval}
+                            onChange={e => setFormData({ ...formData, schedule: { ...formData.schedule, interval: parseInt(e.target.value) } })}>
                             <option value="30">Every 30 Minutes</option>
                             <option value="60">Every 1 Hour</option>
                             <option value="120">Every 2 Hours</option>
@@ -208,32 +260,21 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                             {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => {
                                 const isActive = formData.schedule.days.includes(day)
                                 return (
-                                    <button
-                                        key={day}
-                                        onClick={() => {
-                                            setFormData(prev => ({
-                                                ...prev,
-                                                schedule: {
-                                                    ...prev.schedule,
-                                                    days: isActive
-                                                        ? prev.schedule.days.filter(d => d !== day)
-                                                        : [...prev.schedule.days, day]
-                                                }
-                                            }))
-                                        }}
+                                    <button key={day}
+                                        onClick={() => setFormData(prev => ({
+                                            ...prev,
+                                            schedule: {
+                                                ...prev.schedule,
+                                                days: isActive ? prev.schedule.days.filter(d => d !== day) : [...prev.schedule.days, day]
+                                            }
+                                        }))}
                                         style={{
-                                            padding: '6px 10px',
-                                            borderRadius: '6px',
+                                            padding: '6px 10px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600,
                                             border: isActive ? '1px solid var(--accent-primary)' : '1px solid var(--border-primary)',
                                             background: isActive ? 'rgba(124,92,252,0.15)' : 'transparent',
-                                            color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)',
-                                            cursor: 'pointer',
-                                            fontSize: '12px',
-                                            fontWeight: 600
+                                            color: isActive ? 'var(--accent-primary)' : 'var(--text-secondary)'
                                         }}
-                                    >
-                                        {day}
-                                    </button>
+                                    >{day}</button>
                                 )
                             })}
                         </div>
@@ -243,60 +284,202 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         </div>
     )
 
-    // ─── Step 2: Source (opens fullscreen scanner) ────────────────
+    // ─── Step 2: Source List + Post Order ─────────────────────────
+    const handleOpenScanner = async () => {
+        try {
+            // @ts-ignore
+            await window.api.invoke('open-scanner-window')
+        } catch (err) {
+            console.error('Failed to open scanner:', err)
+        }
+    }
+
+    const removeSource = (name: string) => {
+        setSources(prev => prev.filter(s => s.name !== name))
+        // Also remove videos linked to that source? Not necessarily, user might want to keep the videos but stop scanning the source.
+        // User spec says: "if collect duplicate... wizard will not add".
+        // But here removing source... let's keep videos for now unless user manually removes them.
+    }
+
+    const removeVideo = (id: string) => {
+        setSavedVideos(prev => {
+            const next = prev.filter(v => v.id !== id)
+            setVideoCount(next.length)
+            return next
+        })
+    }
+
+    const updateSourceLimit = (name: string, limit: number) => {
+        setSources(prev => prev.map(s => s.name === name && s.type === 'keyword' ? { ...s, maxScanCount: limit } : s))
+    }
+
+    const [editingSource, setEditingSource] = useState<string | null>(null)
+
+    const updateSourceSettings = (name: string, updates: any) => {
+        setSources(prev => prev.map(s => s.name === name ? { ...s, ...updates } : s))
+    }
+
+    const postOrderOptions = [
+        { value: 'newest', label: '📅 Newest First', desc: 'Post newest videos first' },
+        { value: 'oldest', label: '📅 Oldest First', desc: 'Post oldest videos first' },
+        { value: 'most_likes', label: '❤️ Most Likes', desc: 'Post most popular videos first' },
+        { value: 'least_likes', label: '💙 Least Likes', desc: 'Post hidden gems first' }
+    ]
+
     const renderStep2_Source = () => (
-        <div className="wizard-step">
-            <h3>Step 2: Choose Content Source</h3>
-            {formData.sourceConfig ? (
-                <div style={{ padding: '20px', border: '1px solid var(--accent-green)', borderRadius: '12px', background: 'rgba(0,255,100,0.08)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
-                        <div style={{
-                            width: '44px', height: '44px', borderRadius: '10px',
-                            background: formData.sourceConfig.type === 'channel' ? 'rgba(37,244,238,0.15)' :
-                                formData.sourceConfig.type === 'keyword' ? 'rgba(255,165,0,0.15)' : 'rgba(124,92,252,0.15)',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px'
-                        }}>
-                            {formData.sourceConfig.type === 'channel' ? '📺' :
-                                formData.sourceConfig.type === 'keyword' ? '🔍' : '🎬'}
-                        </div>
-                        <div>
-                            <div style={{ fontWeight: 600, fontSize: '15px' }}>✅ Source Selected</div>
-                            <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '2px' }}>
-                                <strong style={{ textTransform: 'capitalize' }}>{formData.sourceConfig.type}:</strong>{' '}
-                                {formData.sourceConfig.value}
-                            </div>
-                        </div>
-                    </div>
-                    <button
-                        className="btn btn-ghost"
-                        onClick={() => setFormData({ ...formData, sourceConfig: null })}
-                        style={{ fontSize: '13px' }}
-                    >
-                        ✕ Change Source
-                    </button>
-                </div>
-            ) : (
-                <div style={{
-                    padding: '60px',
-                    border: '2px dashed var(--border-primary)',
-                    borderRadius: '12px',
-                    textAlign: 'center'
-                }}>
-                    <div style={{ fontSize: '48px', marginBottom: '16px' }}>📡</div>
-                    <p style={{ color: 'var(--text-secondary)', marginBottom: '20px' }}>
-                        Open the Scanner to browse TikTok and select a channel, search keyword, or video as your content source.
+        <div className="wizard-step" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <div>
+                    <h3 style={{ margin: 0 }}>Step 2: Content Sources</h3>
+                    <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--text-muted)' }}>
+                        Configure where to find videos and valid targets.
                     </p>
-                    <button
-                        className="btn btn-primary"
-                        onClick={() => {
-                            onOpenScanner((source) => {
-                                setFormData(prev => ({ ...prev, sourceConfig: source }))
-                            })
-                        }}
-                        style={{ fontSize: '16px', padding: '12px 30px' }}
-                    >
-                        🔍 Open Scanner
-                    </button>
+                </div>
+                <button className="btn btn-secondary" onClick={handleOpenScanner}
+                    style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    🔍 Scan More Sources
+                </button>
+            </div>
+
+            <div style={{ display: 'flex', gap: '20px', flex: 1, minHeight: 0 }}>
+                {/* LEFT COLUMN: SOURCES */}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px', overflowY: 'auto' }}>
+                    <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
+                        Sources ({sources.length})
+                    </div>
+
+                    {sources.length === 0 ? (
+                        <div style={{ padding: '30px', border: '1px dashed var(--border-primary)', borderRadius: '8px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
+                            No sources added.
+                        </div>
+                    ) : (
+                        sources.map(src => (
+                            <div key={`${src.type}-${src.name}`} style={{
+                                background: 'var(--bg-secondary)', border: '1px solid var(--border-primary)',
+                                borderRadius: '8px', overflow: 'hidden'
+                            }}>
+                                <div style={{ display: 'flex', alignItems: 'center', padding: '10px', gap: '10px' }}>
+                                    <div style={{
+                                        width: '28px', height: '28px', borderRadius: '50%',
+                                        background: src.type === 'channel' ? 'linear-gradient(135deg, #25f4ee, #fe2c55)' : 'linear-gradient(135deg, #ff9800, #ff5722)',
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '12px', fontWeight: 700
+                                    }}>
+                                        {src.type === 'channel' ? '📺' : '🔍'}
+                                    </div>
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div style={{ fontWeight: 600, fontSize: '13px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                            {src.type === 'channel' ? `@${src.name}` : `"${src.name}"`}
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                                            {src.type === 'channel' ? 'Channel' : 'Keyword'}
+                                        </div>
+                                    </div>
+                                    <button className="btn btn-ghost btn-sm" onClick={() => setEditingSource(editingSource === src.name ? null : src.name)}>
+                                        ⚙️
+                                    </button>
+                                    <button className="btn btn-ghost btn-sm" onClick={() => removeSource(src.name)} style={{ color: 'var(--accent-red)' }}>
+                                        ✕
+                                    </button>
+                                </div>
+
+                                {/* Source Settings Expansion */}
+                                {editingSource === src.name && (
+                                    <div style={{ padding: '10px', background: 'rgba(0,0,0,0.2)', borderTop: '1px solid var(--border-primary)' }}>
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '8px' }}>
+                                            <div>
+                                                <label style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Min Views</label>
+                                                <input type="number" className="form-control" style={{ padding: '4px', fontSize: '12px' }}
+                                                    // @ts-ignore
+                                                    value={src.minViews || 0} onChange={e => updateSourceSettings(src.name, { minViews: Number(e.target.value) })}
+                                                />
+                                            </div>
+                                            <div>
+                                                <label style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Min Likes</label>
+                                                <input type="number" className="form-control" style={{ padding: '4px', fontSize: '12px' }}
+                                                    // @ts-ignore
+                                                    value={src.minLikes || 0} onChange={e => updateSourceSettings(src.name, { minLikes: Number(e.target.value) })}
+                                                />
+                                            </div>
+                                        </div>
+                                        <div style={{ marginBottom: '8px' }}>
+                                            <label style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Sort Order</label>
+                                            <select className="form-control" style={{ padding: '4px', fontSize: '12px' }}
+                                                // @ts-ignore
+                                                value={src.sortOrder || 'newest'} onChange={e => updateSourceSettings(src.name, { sortOrder: e.target.value })}
+                                            >
+                                                <option value="newest">Newest First</option>
+                                                <option value="oldest">Oldest First</option>
+                                                <option value="most_likes">Most Likes</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Max Scan Limit</label>
+                                            <input type="number" className="form-control" style={{ padding: '4px', fontSize: '12px' }}
+                                                // @ts-ignore
+                                                value={src.maxScanCount || 50} onChange={e => updateSourceSettings(src.name, { maxScanCount: Number(e.target.value) })}
+                                            />
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        ))
+                    )}
+                </div>
+
+                {/* RIGHT COLUMN: TARGETED VIDEOS */}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px', overflowY: 'auto' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
+                            Target Videos ({savedVideos.length})
+                        </div>
+                        {savedVideos.length > 0 && (
+                            <button className="btn btn-ghost btn-sm" onClick={() => setSavedVideos([])} style={{ fontSize: '11px', color: 'var(--accent-red)' }}>
+                                Clear All
+                            </button>
+                        )}
+                    </div>
+
+                    {savedVideos.length === 0 ? (
+                        <div style={{ padding: '30px', border: '1px dashed var(--border-primary)', borderRadius: '8px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
+                            No videos selected.<br />
+                            <span style={{ fontSize: '11px', opacity: 0.7 }}>
+                                {formData.type === 'one_time' ?
+                                    'For One-Time campaigns, you MUST select exactly 1 video.' :
+                                    'Scan sources to find videos automatically when the campaign runs.'}
+                            </span>
+                        </div>
+                    ) : (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '8px' }}>
+                            {savedVideos.map(video => (
+                                <div key={video.id} style={{
+                                    position: 'relative', borderRadius: '6px', overflow: 'hidden',
+                                    background: '#000', aspectRatio: '9/16', border: '1px solid var(--border-primary)'
+                                }}>
+                                    {video.thumbnail ? (
+                                        <img src={video.thumbnail} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.8 }} />
+                                    ) : (
+                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px' }}>🎬</div>
+                                    )}
+                                    <button onClick={() => removeVideo(video.id)} style={{
+                                        position: 'absolute', top: '2px', right: '2px',
+                                        width: '18px', height: '18px', borderRadius: '50%',
+                                        background: 'rgba(0,0,0,0.6)', color: '#fff', border: 'none',
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', cursor: 'pointer'
+                                    }}>✕</button>
+                                    <div style={{ position: 'absolute', bottom: '0', left: '0', width: '100%', padding: '2px 4px', background: 'rgba(0,0,0,0.6)' }}>
+                                        <div style={{ fontSize: '9px', color: '#fff' }}>👁 {video.stats?.views || 0}</div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* Validation Warning */}
+            {formData.type === 'one_time' && savedVideos.length !== 1 && (
+                <div style={{ marginTop: '10px', padding: '8px 12px', background: 'rgba(244, 67, 54, 0.1)', border: '1px solid rgba(244, 67, 54, 0.2)', borderRadius: '6px', color: '#f44336', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    ⚠️ One-Time campaigns require exactly 1 target video. You selected {savedVideos.length}.
                 </div>
             )}
         </div>
@@ -318,15 +501,12 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
 
     // ─── Step 4: Target (multiple accounts) ──────────────────────
     const toggleAccount = (accId: string) => {
-        setFormData(prev => {
-            const exists = prev.targetAccounts.includes(accId)
-            return {
-                ...prev,
-                targetAccounts: exists
-                    ? prev.targetAccounts.filter(id => id !== accId)
-                    : [...prev.targetAccounts, accId]
-            }
-        })
+        setFormData(prev => ({
+            ...prev,
+            targetAccounts: prev.targetAccounts.includes(accId)
+                ? prev.targetAccounts.filter(id => id !== accId)
+                : [...prev.targetAccounts, accId]
+        }))
     }
 
     const handleAddAccountInline = async () => {
@@ -336,7 +516,6 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
             const account = await window.api.invoke('publish-account:add')
             if (account) {
                 setPublishAccounts(prev => [account, ...prev])
-                // Auto-select the newly added account
                 setFormData(prev => ({
                     ...prev,
                     targetAccounts: [...prev.targetAccounts, String(account.id)]
@@ -358,67 +537,43 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         <div className="wizard-step">
             <h3>Step 4: Publish Target</h3>
             <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginBottom: '16px' }}>
-                Select one or more accounts to publish to. You can add new accounts here too.
+                Select one or more accounts to publish to.
             </p>
 
-            {/* Account list with checkboxes */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '16px' }}>
                 {publishAccounts.map(acc => {
                     const isSelected = formData.targetAccounts.includes(String(acc.id))
                     const isValid = acc.session_valid === 1
                     return (
-                        <div
-                            key={acc.id}
-                            onClick={() => toggleAccount(String(acc.id))}
-                            style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '12px',
-                                padding: '14px 16px',
-                                borderRadius: '10px',
-                                cursor: 'pointer',
-                                border: isSelected ? '2px solid var(--accent-primary)' : '2px solid var(--border-primary)',
-                                background: isSelected ? 'rgba(124, 92, 252, 0.08)' : 'var(--bg-secondary)',
-                                transition: 'all 0.2s'
-                            }}
-                        >
-                            {/* Checkbox */}
+                        <div key={acc.id} onClick={() => toggleAccount(String(acc.id))} style={{
+                            display: 'flex', alignItems: 'center', gap: '12px',
+                            padding: '14px 16px', borderRadius: '10px', cursor: 'pointer',
+                            border: isSelected ? '2px solid var(--accent-primary)' : '2px solid var(--border-primary)',
+                            background: isSelected ? 'rgba(124, 92, 252, 0.08)' : 'var(--bg-secondary)',
+                            transition: 'all 0.2s'
+                        }}>
                             <div style={{
                                 width: '22px', height: '22px', borderRadius: '6px',
                                 border: isSelected ? 'none' : '2px solid var(--border-primary)',
                                 background: isSelected ? 'var(--accent-primary)' : 'transparent',
-                                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                flexShrink: 0, transition: 'all 0.2s'
+                                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0
                             }}>
                                 {isSelected && <span style={{ color: '#fff', fontSize: '14px', fontWeight: 700 }}>✓</span>}
                             </div>
-
-                            {/* Avatar */}
                             <div style={{
                                 width: '40px', height: '40px', borderRadius: '50%',
                                 background: 'linear-gradient(135deg, #25f4ee, #fe2c55)',
                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                fontSize: '16px', color: '#fff', fontWeight: 700,
-                                overflow: 'hidden', flexShrink: 0
+                                fontSize: '16px', color: '#fff', fontWeight: 700, overflow: 'hidden', flexShrink: 0
                             }}>
-                                {acc.avatar_url ? (
-                                    <img src={acc.avatar_url} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                ) : (
-                                    acc.username?.charAt(0)?.toUpperCase() || '?'
-                                )}
+                                {acc.avatar_url
+                                    ? <img src={acc.avatar_url} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                    : (acc.username?.charAt(0)?.toUpperCase() || '?')}
                             </div>
-
-                            {/* Info */}
                             <div style={{ flex: 1 }}>
-                                <div style={{ fontWeight: 600, fontSize: '14px' }}>
-                                    {acc.display_name || acc.username}
-                                </div>
-                                <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                                    @{acc.username}
-                                </div>
+                                <div style={{ fontWeight: 600, fontSize: '14px' }}>{acc.display_name || acc.username}</div>
+                                <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>@{acc.username}</div>
                             </div>
-
-                            {/* Status */}
                             <span style={{
                                 padding: '2px 8px', borderRadius: '10px', fontSize: '10px', fontWeight: 600,
                                 background: isValid ? 'rgba(74,222,128,0.15)' : 'rgba(244,67,54,0.15)',
@@ -426,14 +581,9 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                             }}>
                                 {isValid ? 'ACTIVE' : 'EXPIRED'}
                             </span>
-
-                            {/* Edit button */}
-                            <button
-                                className="btn btn-ghost"
+                            <button className="btn btn-ghost"
                                 onClick={(e) => { e.stopPropagation(); setEditingAccount(acc) }}
-                                style={{ padding: '4px 8px', fontSize: '12px' }}
-                                title="Edit settings"
-                            >
+                                style={{ padding: '4px 8px', fontSize: '12px' }} title="Edit settings">
                                 ⚙️
                             </button>
                         </div>
@@ -441,18 +591,10 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 })}
             </div>
 
-            {/* Add Account button */}
-            <button
-                className="btn btn-secondary"
-                onClick={handleAddAccountInline}
-                disabled={addingAccount}
-                style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}
-            >
+            <button className="btn btn-secondary" onClick={handleAddAccountInline} disabled={addingAccount}
+                style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
                 {addingAccount ? (
-                    <>
-                        <span className="spinner" style={{ width: '14px', height: '14px' }} />
-                        Waiting for login...
-                    </>
+                    <><span className="spinner" style={{ width: '14px', height: '14px' }} /> Waiting for login...</>
                 ) : (
                     <>➕ Add New Account</>
                 )}
@@ -472,56 +614,75 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         </div>
     )
 
-    // Step 5 removed — schedule is now in Step 1
+    // ─── Build save data ─────────────────────────────────────────
+    const buildSaveData = () => ({
+        ...formData,
+        sourceData: {
+            channels: sources.filter(s => s.type === 'channel').map(s => ({
+                name: s.name,
+                minViews: s.minViews,
+                minLikes: s.minLikes,
+                sortOrder: s.sortOrder
+            })),
+            keywords: sources.filter(s => s.type === 'keyword').map(s => ({
+                name: s.name,
+                maxScanCount: s.maxScanCount || 50,
+                minViews: s.minViews,
+                minLikes: s.minLikes,
+                sortOrder: s.sortOrder
+            })),
+            videos: savedVideos
+        }
+    })
 
-    return (
-        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.85)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(5px)' }}>
-            <div className="wizard-modal" style={{ width: '900px', height: '700px', background: 'var(--bg-primary)', borderRadius: '16px', display: 'flex', flexDirection: 'column', padding: '30px', border: '1px solid var(--border-primary)', boxShadow: '0 20px 50px rgba(0,0,0,0.5)' }}>
-
-                <div style={{ marginBottom: '20px' }}>
-                    <h2 style={{ margin: 0, fontSize: '24px' }}>Create New Campaign</h2>
-                    <p style={{ margin: '5px 0 0 0', color: 'var(--text-secondary)' }}>Follow the steps to setup your automation</p>
-                </div>
-
+    return ReactDOM.createPortal(
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.8)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }} className="no-drag">
+            <div
+                className="campaign-wizard-modal page-enter"
+                style={{ width: '900px', height: '85vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', borderRadius: '16px', overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}
+                onMouseDown={(e) => e.stopPropagation()}
+            >
                 {renderStepper()}
 
-                <div style={{ flex: 1, overflowY: 'auto', padding: '10px' }}>
+                <div className="wizard-content" style={{ flex: 1, padding: '20px', overflowY: 'auto' }}>
                     {step === 1 && renderStep1_Basic()}
                     {step === 2 && renderStep2_Source()}
-                    {step === 3 && renderStep3_Editor()}
-                    {step === 4 && renderStep4_Target()}
+                    {step === 3 && (
+                        <SchedulePreview
+                            sources={sources}
+                            savedVideos={savedVideos}
+                            schedule={formData.schedule as any}
+                        />
+                    )}
+                    {step === 4 && renderStep3_Editor()}
+                    {step === 5 && renderStep4_Target()}
                 </div>
 
-                {/* Footer: Save / Save & Run Now (NO Draft) */}
-                <div className="wizard-footer" style={{ borderTop: '1px solid var(--border-primary)', paddingTop: '20px', display: 'flex', justifyContent: 'space-between', marginTop: 'auto' }}>
-                    <button className="btn btn-ghost" onClick={step === 1 ? onClose : handleBack} style={{ fontSize: '16px', padding: '10px 20px' }}>
-                        {step === 1 ? 'Cancel' : '← Back'}
+                <div className="wizard-footer">
+                    <button className="btn btn-secondary" onClick={step === 1 ? onClose : handleBack}>
+                        {step === 1 ? 'Cancel' : 'Back'}
                     </button>
-                    <div style={{ display: 'flex', gap: '10px' }}>
-                        {step < 4 ? (
-                            <button className="btn btn-primary" onClick={handleNext} disabled={!canAdvance()} style={{ fontSize: '16px', padding: '10px 30px', opacity: canAdvance() ? 1 : 0.4 }}>Next →</button>
-                        ) : (
-                            <>
-                                <button className="btn btn-secondary" onClick={() => onSave(formData, false)} style={{ fontSize: '16px', padding: '10px 20px' }}>
-                                    💾 Save
-                                </button>
-                                <button className="btn btn-primary" onClick={() => onSave(formData, true)} style={{ fontSize: '16px', background: 'var(--accent-green)', color: '#000', padding: '10px 20px' }}>
-                                    Save & Run Now 🚀
-                                </button>
-                            </>
-                        )}
-                    </div>
+                    {step === 5 ? (
+                        <button className="btn btn-primary" onClick={() => onSave(formData, false)} disabled={!canAdvance()}>
+                            💾 Save & Close
+                        </button>
+                    ) : (
+                        <button className="btn btn-primary" onClick={handleNext} disabled={!canAdvance()}>
+                            Next &rarr;
+                        </button>
+                    )}
                 </div>
             </div>
 
-            {/* Account Settings Modal */}
             {editingAccount && (
                 <AccountSettingsModal
                     account={editingAccount}
+                    // @ts-ignore
                     onSave={handleUpdateAccountInline}
                     onClose={() => setEditingAccount(null)}
                 />
             )}
-        </div>
+        </div>,
+        document.body
     )
 }

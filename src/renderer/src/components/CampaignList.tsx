@@ -5,6 +5,9 @@ interface Props {
     campaigns: Campaign[]
     onCreate: () => void
     onToggleStatus: (id: number, currentStatus: string) => void
+    onSelect: (campaign: Campaign) => void
+    onDelete?: (id: number) => void
+    onRun?: (id: number) => void
 }
 
 const cronToHuman = (cron: string): string => {
@@ -18,7 +21,7 @@ const cronToHuman = (cron: string): string => {
     return cron
 }
 
-export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleStatus }) => {
+export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleStatus, onSelect, onDelete, onRun }) => {
     return (
         <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-primary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -54,10 +57,12 @@ export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleSta
                                 border: '1px solid var(--border-subtle)',
                                 borderRadius: 'var(--radius-lg)',
                                 transition: 'all 0.2s',
-                                cursor: 'pointer'
+                                cursor: 'pointer',
+                                display: 'flex', flexDirection: 'column', gap: '8px'
                             }}
+                                onClick={() => onSelect(c)}
                                 onMouseOver={(e) => {
-                                    e.currentTarget.style.borderColor = 'var(--border-primary)'
+                                    e.currentTarget.style.borderColor = 'var(--accent-primary)'
                                     e.currentTarget.style.boxShadow = 'var(--shadow-card)'
                                 }}
                                 onMouseOut={(e) => {
@@ -65,7 +70,7 @@ export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleSta
                                     e.currentTarget.style.boxShadow = 'none'
                                 }}
                             >
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                     <div style={{ fontWeight: 600, fontSize: '14px' }}>{c.name}</div>
                                     <span
                                         className="badge"
@@ -87,16 +92,40 @@ export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleSta
                                     <span>📅 {cronToHuman(c.schedule_cron)}</span>
                                 </div>
 
-                                {isRunning && (
-                                    <div style={{ marginTop: '10px' }}>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>
-                                            Processing...
-                                        </div>
-                                        <div className="progress-bar">
-                                            <div className="progress-fill indeterminate" />
-                                        </div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+                                    <div style={{ display: 'flex', gap: '8px' }}>
+                                        <button className="btn btn-ghost btn-sm" style={{ fontSize: '12px', padding: '4px 8px' }}>
+                                            View Details &rarr;
+                                        </button>
+                                        {onRun && (
+                                            <button className="btn btn-ghost btn-sm"
+                                                onClick={(e) => { e.stopPropagation(); onRun(c.id) }}
+                                                title="Run Now"
+                                                style={{ padding: '4px 8px', color: 'var(--accent-green)' }}>
+                                                ▶ Run
+                                            </button>
+                                        )}
+                                        {onDelete && (
+                                            <button className="btn btn-ghost btn-sm"
+                                                onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    if (confirm('Are you sure you want to delete this campaign?')) {
+                                                        onDelete(c.id)
+                                                    }
+                                                }}
+                                                title="Delete Campaign"
+                                                style={{ padding: '4px 8px', color: '#ef4444' }}>
+                                                🗑️
+                                            </button>
+                                        )}
                                     </div>
-                                )}
+                                    {isRunning && (
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                            <div className="spinner" style={{ width: '10px', height: '10px', borderWidth: '1.5px' }} />
+                                            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Running...</span>
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         )
                     })

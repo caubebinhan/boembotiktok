@@ -10,15 +10,14 @@ import { jobQueue } from './services/JobQueue'
 import { campaignService } from './services/CampaignService'
 import { videoEditEngine } from './services/video-edit/VideoEditEngine'
 import { publishAccountService } from './services/PublishAccountService'
-
-
+import { selfTestService } from './services/SelfTestService'
 
 function createWindow(): void {
     const isDev = !app.isPackaged
     // Create the browser window.
     const mainWindow = new BrowserWindow({
-        width: 900,
-        height: 670,
+        width: 1280,
+        height: 800,
         show: false,
         autoHideMenuBar: true,
         webPreferences: {
@@ -126,13 +125,47 @@ app.whenReady().then(async () => {
         })
 
         ipcMain.handle('trigger-campaign', async (_event: any, id: number) => {
-            // Manually trigger a campaign run
-            // This would likely call SchedulerService to run the task immediately
             return schedulerService.triggerCampaign(id)
         })
 
         ipcMain.handle('get-campaigns', async () => {
             return campaignService.getAll()
+        })
+
+        ipcMain.handle('delete-campaign', async (_event: any, id: number) => {
+            return campaignService.delete(id)
+        })
+
+        ipcMain.handle('update-campaign-config', async (_event: any, id: number, config: any) => {
+            return campaignService.updateConfig(id, config)
+        })
+
+        ipcMain.handle('open-campaign-details', async (_event, id) => {
+            const win = new BrowserWindow({
+                width: 1200,
+                height: 800,
+                show: false,
+                autoHideMenuBar: true,
+                webPreferences: {
+                    preload: join(__dirname, '../preload/index.js'),
+                    sandbox: false
+                }
+            })
+            win.maximize()
+
+            if (!app.isPackaged && process.env['ELECTRON_RENDERER_URL']) {
+                win.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/index.html?mode=campaign-details&id=${id}`)
+            } else {
+                win.loadFile(join(__dirname, '../renderer/index.html'), { search: `?mode=campaign-details&id=${id}` })
+            }
+
+            win.once('ready-to-show', () => {
+                win.show()
+            })
+        })
+
+        ipcMain.handle('open-path', async (_event, path) => {
+            await shell.openPath(path)
         })
 
         // ─── Video Edit Engine IPC ─────────────────────────────────
@@ -217,15 +250,31 @@ app.whenReady().then(async () => {
             `)
         })
 
-        // Legacy Downloads IPC (mapped to jobs/downloads table if needed, or kept for backward compatibility if UI still uses it)
-        ipcMain.handle('get-downloads', async () => {
-            // Redirect to 'downloads' table if we still use it, or 'jobs'?
-            // For now, let's keep serving 'downloads' table as TikTokModule still writes to it in 'scanProfile' (wait, I modified scanProfile to NOT write to downloads but return list)
-            // So 'get-downloads' will return OLD data or empty if we don't insert anymore.
-            // We configured JobQueue to insert into 'downloads' table for 'DOWNLOAD' jobs?
-            // No, JobQueue updates 'videos' and 'jobs'.
-            // So 'get-downloads' is now DEPRECATED/BROKEN unless we update it to query 'jobs' where type='DOWNLOAD'.
+        ipcMain.handle('job:pause', async (_event: any, jobId: number) => {
+            storageService.run(
+                "UPDATE jobs SET status = 'paused' WHERE id = ? AND status = 'pending'",
+                [jobId]
+            )
+            return { success: true }
+        })
 
+        ipcMain.handle('job:resume', async (_event: any, jobId: number) => {
+            storageService.run(
+                "UPDATE jobs SET status = 'pending' WHERE id = ? AND status = 'paused'",
+                [jobId]
+            )
+            return { success: true }
+        })
+
+        ipcMain.handle('job:delete', async (_event: any, jobId: number) => {
+            storageService.run(
+                "DELETE FROM jobs WHERE id = ? AND status IN ('pending', 'paused', 'failed')",
+                [jobId]
+            )
+            return { success: true }
+        })
+
+        ipcMain.handle('get-downloads', async () => {
             return storageService.getAll(`
                 SELECT j.*, j.data_json as metadata, j.status
                 FROM jobs j
@@ -254,6 +303,47 @@ app.whenReady().then(async () => {
 
         ipcMain.handle('publish-account:relogin', async (_event: any, id: number) => {
             return publishAccountService.reLoginAccount(id)
+        })
+
+        // ─── Scanner Window IPC ──────────────────────────────────
+        ipcMain.handle('open-scanner-window', async () => {
+            const isDev = !app.isPackaged
+            const scannerWindow = new BrowserWindow({
+                width: 1280,
+                height: 850,
+                title: '🔍 Scanner Tool',
+                autoHideMenuBar: true,
+                webPreferences: {
+                    preload: join(__dirname, '../preload/index.js'),
+                    sandbox: false,
+                    webviewTag: true
+                }
+            })
+
+            if (isDev && process.env['ELECTRON_RENDERER_URL']) {
+                scannerWindow.loadURL(process.env['ELECTRON_RENDERER_URL'] + '?mode=scan')
+            } else {
+                scannerWindow.loadFile(join(__dirname, '../renderer/index.html'), {
+                    query: { mode: 'scan' }
+                })
+            }
+
+            return { windowId: scannerWindow.id }
+        })
+
+        // Receive results from scanner window and forward to main window
+        ipcMain.handle('scanner-save-results', async (_event, results: any) => {
+            // Send to all renderer windows (the main window will pick it up)
+            const allWindows = BrowserWindow.getAllWindows()
+            for (const win of allWindows) {
+                win.webContents.send('scanner-results-received', results)
+            }
+            return { success: true }
+        })
+
+        // ─── Self Test IPC ───────────────────────────────────────
+        ipcMain.handle('run-self-test', async () => {
+            return selfTestService.runTest()
         })
 
         // Start background services

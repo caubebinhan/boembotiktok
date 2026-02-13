@@ -64,6 +64,18 @@ html,
   -webkit-font-smoothing: antialiased;
 }
 
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+input,
+textarea,
+select {
+  -webkit-app-region: no-drag !important;
+  user-select: text !important;
+  cursor: text !important;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

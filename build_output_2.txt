@@ -1,0 +1,20 @@
+﻿[36mvite v5.4.21 [32mbuilding SSR bundle for production...[36m[39m
+transforming...
+[32m笨・[39m 14 modules transformed.
+rendering chunks...
+[2mout/main/[22m[36mindex.js  [39m[1m[2m64.10 kB[22m[1m[22m
+[32m笨・built in 223ms[39m
+[36mvite v5.4.21 [32mbuilding SSR bundle for production...[36m[39m
+transforming...
+[32m笨・[39m 1 modules transformed.
+rendering chunks...
+[2mout/preload/[22m[36mindex.js  [39m[1m[2m0.57 kB[22m[1m[22m
+[32m笨・built in 11ms[39m
+[36mvite v5.4.21 [32mbuilding for production...[36m[39m
+transforming...
+[32m笨・[39m 365 modules transformed.
+rendering chunks...
+[2m../../out/renderer/[22m[32mindex.html                 [39m[1m[2m  0.42 kB[22m[1m[22m
+[2m../../out/renderer/[22m[35massets/index-RyZvvDoL.css  [39m[1m[2m 45.74 kB[22m[1m[22m
+[2m../../out/renderer/[22m[36massets/index-C31FEPYY.js   [39m[1m[33m787.64 kB[39m[22m
+[32m笨・built in 1.69s[39m

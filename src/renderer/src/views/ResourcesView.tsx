@@ -1,22 +1,15 @@
 import React, { useState, useEffect } from 'react'
 import { SourceCard } from '../components/SourceCard'
-import { PublishAccountCard } from '../components/PublishAccountCard'
-import { AccountSettingsModal } from '../components/AccountSettingsModal'
 
-type ResourceTab = 'publish' | 'channels' | 'videos' | 'images'
+type ResourceTab = 'channels' | 'videos' | 'images'
 
 export const ResourcesView: React.FC = () => {
-    const [activeTab, setActiveTab] = useState<ResourceTab>('publish')
+    const [activeTab, setActiveTab] = useState<ResourceTab>('channels')
     const [loading, setLoading] = useState(true)
-    const [addingAccount, setAddingAccount] = useState(false)
 
     // Data
-    const [publishAccounts, setPublishAccounts] = useState<any[]>([])
     const [collection, setCollection] = useState<any[]>([])
     const [sources, setSources] = useState<{ channels: any[]; keywords: any[] }>({ channels: [], keywords: [] })
-
-    // Edit modal
-    const [editingAccount, setEditingAccount] = useState<any | null>(null)
 
     useEffect(() => {
         loadData()
@@ -25,11 +18,7 @@ export const ResourcesView: React.FC = () => {
     const loadData = async () => {
         setLoading(true)
         try {
-            if (activeTab === 'publish') {
-                // @ts-ignore
-                const data = await window.api.invoke('publish-account:list')
-                setPublishAccounts(data || [])
-            } else if (activeTab === 'channels') {
+            if (activeTab === 'channels') {
                 // @ts-ignore
                 const data = await window.api.invoke('get-sources')
                 setSources(data || { channels: [], keywords: [] })
@@ -42,55 +31,7 @@ export const ResourcesView: React.FC = () => {
         setLoading(false)
     }
 
-    // ─── Publish Account Actions ────────────────────────────────
-    const handleAddAccount = async () => {
-        setAddingAccount(true)
-        try {
-            // @ts-ignore
-            const account = await window.api.invoke('publish-account:add')
-            if (account) {
-                setPublishAccounts(prev => [account, ...prev])
-            }
-        } catch (err) {
-            console.error('Failed to add account:', err)
-        }
-        setAddingAccount(false)
-    }
-
-    const handleRemoveAccount = async (id: number) => {
-        try {
-            // @ts-ignore
-            await window.api.invoke('publish-account:remove', id)
-            setPublishAccounts(prev => prev.filter(a => a.id !== id))
-        } catch (err) {
-            console.error('Failed to remove account:', err)
-        }
-    }
-
-    const handleUpdateAccount = async (id: number, settings: any) => {
-        try {
-            // @ts-ignore
-            await window.api.invoke('publish-account:update', id, settings)
-            setPublishAccounts(prev => prev.map(a => a.id === id ? { ...a, ...settings } : a))
-        } catch (err) {
-            console.error('Failed to update account:', err)
-        }
-    }
-
-    const handleReLogin = async (id: number) => {
-        try {
-            // @ts-ignore
-            const updated = await window.api.invoke('publish-account:relogin', id)
-            if (updated) {
-                setPublishAccounts(prev => prev.map(a => a.id === id ? updated : a))
-            }
-        } catch (err) {
-            console.error('Re-login failed:', err)
-        }
-    }
-
     const tabs: { id: ResourceTab; label: string; icon: string; count?: number }[] = [
-        { id: 'publish', label: 'Publish Accounts', icon: '📤', count: publishAccounts.length },
         { id: 'channels', label: 'Saved Channels', icon: '📡', count: sources.channels.length },
         { id: 'videos', label: 'Video Library', icon: '🎬', count: collection.length },
         { id: 'images', label: 'Images', icon: '🖼️' }
@@ -134,55 +75,6 @@ export const ResourcesView: React.FC = () => {
                     </div>
                 ) : (
                     <>
-                        {/* ═══ Publish Accounts Tab ═══ */}
-                        {activeTab === 'publish' && (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                {/* Add Account Button */}
-                                <button
-                                    className="btn btn-primary"
-                                    onClick={handleAddAccount}
-                                    disabled={addingAccount}
-                                    style={{
-                                        alignSelf: 'flex-start',
-                                        padding: '10px 20px',
-                                        fontSize: '14px',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        gap: '8px'
-                                    }}
-                                >
-                                    {addingAccount ? (
-                                        <>
-                                            <span className="spinner" style={{ width: '14px', height: '14px' }} />
-                                            Waiting for login...
-                                        </>
-                                    ) : (
-                                        <>➕ Add TikTok Account</>
-                                    )}
-                                </button>
-
-                                {publishAccounts.length === 0 && !addingAccount ? (
-                                    <div className="empty-state" style={{ padding: '60px' }}>
-                                        <div className="empty-icon" style={{ fontSize: '48px' }}>📤</div>
-                                        <div className="empty-text" style={{ marginTop: '12px' }}>
-                                            No publish accounts linked yet.<br />
-                                            Click "Add TikTok Account" to login and save your session.
-                                        </div>
-                                    </div>
-                                ) : (
-                                    publishAccounts.map(acc => (
-                                        <PublishAccountCard
-                                            key={acc.id}
-                                            account={acc}
-                                            onEdit={setEditingAccount}
-                                            onRemove={handleRemoveAccount}
-                                            onReLogin={handleReLogin}
-                                        />
-                                    ))
-                                )}
-                            </div>
-                        )}
-
                         {/* ═══ Saved Channels Tab ═══ */}
                         {activeTab === 'channels' && (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -289,14 +181,7 @@ export const ResourcesView: React.FC = () => {
                 )}
             </div>
 
-            {/* ═══ Account Settings Modal ═══ */}
-            {editingAccount && (
-                <AccountSettingsModal
-                    account={editingAccount}
-                    onSave={handleUpdateAccount}
-                    onClose={() => setEditingAccount(null)}
-                />
-            )}
+
         </div>
     )
 }

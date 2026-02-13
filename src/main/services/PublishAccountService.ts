@@ -27,21 +27,100 @@ export interface PublishAccountSettings {
 class PublishAccountService {
 
     /**
+     * Check if session cookies exist indicating the user is logged in.
+     */
+    private async hasSessionCookies(ses: Electron.Session): Promise<boolean> {
+        try {
+            const cookies = await ses.cookies.get({ domain: '.tiktok.com' })
+            return cookies.some(c =>
+                c.name === 'sid_tt' ||
+                c.name === 'sessionid_ss' ||
+                c.name === 'sessionid'
+            )
+        } catch {
+            return false
+        }
+    }
+
+    /**
+     * Capture cookies and extract user profile info from the browser window.
+     * Returns { cookies, username, displayName, avatarUrl } or null if no valid session.
+     */
+    private async captureSession(loginWindow: BrowserWindow, ses: Electron.Session): Promise<{
+        cookiesJson: string
+        username: string
+        displayName: string
+        avatarUrl: string
+    } | null> {
+        const hasSession = await this.hasSessionCookies(ses)
+        if (!hasSession) return null
+
+        // Capture all TikTok cookies
+        const cookies = await ses.cookies.get({ domain: '.tiktok.com' })
+        const cookiesJson = JSON.stringify(cookies)
+
+        let username = ''
+        let displayName = ''
+        let avatarUrl = ''
+
+        try {
+            const result = await loginWindow.webContents.executeJavaScript(`
+                (function() {
+                    const uniqueIdEl = document.querySelector('[data-e2e="user-title"]') ||
+                                       document.querySelector('.user-username') ||
+                                       document.querySelector('h2[data-e2e="user-subtitle"]');
+                    const displayNameEl = document.querySelector('[data-e2e="user-subtitle"]') ||
+                                          document.querySelector('.user-nickname');
+                    const avatarEl = document.querySelector('[data-e2e="user-avatar"] img') ||
+                                     document.querySelector('.avatar img');
+                    return {
+                        username: uniqueIdEl?.textContent?.trim() || '',
+                        displayName: displayNameEl?.textContent?.trim() || '',
+                        avatarUrl: avatarEl?.src || ''
+                    };
+                })();
+            `)
+            username = result.username
+            displayName = result.displayName
+            avatarUrl = result.avatarUrl
+        } catch {
+            // Profile info extraction failed, will try URL-based fallback below
+        }
+
+        // If still no username, try to navigate to profile to extract it
+        if (!username) {
+            try {
+                await loginWindow.webContents.loadURL('https://www.tiktok.com/profile')
+                await new Promise(r => setTimeout(r, 3000))
+                const profileUrl = loginWindow.webContents.getURL()
+                const match = profileUrl.match(/@([\w.]+)/)
+                if (match) username = match[1]
+            } catch {
+                // fallback
+            }
+        }
+
+        if (!username) username = `tiktok_user_${Date.now()}`
+
+        return { cookiesJson, username, displayName: displayName || username, avatarUrl }
+    }
+
+    /**
      * Opens a BrowserWindow to TikTok login page.
      * After the user logs in, captures cookies and profile info,
      * saves to DB, and closes the window.
+     * Also captures cookies if the user closes the window after logging in.
      * Returns the created account record.
      */
     async addAccount(): Promise<PublishAccount | null> {
-        return new Promise((resolve, reject) => {
-            // Create a dedicated session partition so cookies don't conflict
+        return new Promise((resolve) => {
             const partitionName = `persist:tiktok-login-${Date.now()}`
             const ses = session.fromPartition(partitionName)
 
             const loginWindow = new BrowserWindow({
                 width: 480,
                 height: 720,
-                title: 'Login to TikTok',
+                title: 'Login to TikTok — Close this window after logging in',
                 autoHideMenuBar: true,
                 webPreferences: {
                     session: ses,
@@ -54,84 +133,23 @@ class PublishAccountService {
 
             let resolved = false
 
-            // Watch for navigation to a logged-in page (profile or home after login)
-            const checkLogin = async (url: string) => {
+            const saveAndResolve = async () => {
                 if (resolved) return
-
-                // TikTok redirects to home or profile after successful login
-                const isLoggedIn = (
-                    (url.includes('tiktok.com') && !url.includes('/login')) &&
-                    (url === 'https://www.tiktok.com/' ||
-                        url.includes('tiktok.com/@') ||
-                        url.includes('tiktok.com/foryou') ||
-                        url.includes('tiktok.com/following'))
-                )
-
-                if (!isLoggedIn) return
+                resolved = true
 
                 try {
-                    // Give TikTok a moment to set all cookies
-                    await new Promise(r => setTimeout(r, 2000))
-
-                    // Capture all TikTok cookies
-                    const cookies = await ses.cookies.get({ domain: '.tiktok.com' })
-                    const cookiesJson = JSON.stringify(cookies)
-
-                    // Try to extract username from the page
-                    let username = ''
-                    let displayName = ''
-                    let avatarUrl = ''
-
-                    try {
-                        const result = await loginWindow.webContents.executeJavaScript(`
-                            (function() {
-                                // Try to get username from various sources
-                                const uniqueIdEl = document.querySelector('[data-e2e="user-title"]') ||
-                                                   document.querySelector('.user-username') ||
-                                                   document.querySelector('h2[data-e2e="user-subtitle"]');
-                                const displayNameEl = document.querySelector('[data-e2e="user-subtitle"]') ||
-                                                      document.querySelector('.user-nickname');
-                                const avatarEl = document.querySelector('[data-e2e="user-avatar"] img') ||
-                                                 document.querySelector('.avatar img');
-                                
-                                return {
-                                    username: uniqueIdEl?.textContent?.trim() || '',
-                                    displayName: displayNameEl?.textContent?.trim() || '',
-                                    avatarUrl: avatarEl?.src || ''
-                                };
-                            })();
-                        `)
-                        username = result.username
-                        displayName = result.displayName
-                        avatarUrl = result.avatarUrl
-                    } catch {
-                        // If we can't extract profile info, try from cookies
-                        const sidCookie = cookies.find(c => c.name === 'sid_tt' || c.name === 'sessionid_ss')
-                        if (sidCookie) {
-                            username = `tiktok_user_${Date.now()}`
-                        }
+                    const sessionData = await this.captureSession(loginWindow, ses)
+                    if (!sessionData) {
+                        if (!loginWindow.isDestroyed()) loginWindow.close()
+                        resolve(null)
+                        return
                     }
-
-                    // If still no username, navigate to profile to get it
-                    if (!username) {
-                        try {
-                            await loginWindow.webContents.loadURL('https://www.tiktok.com/profile')
-                            await new Promise(r => setTimeout(r, 3000))
-                            const profileUrl = loginWindow.webContents.getURL()
-                            const match = profileUrl.match(/@([\w.]+)/)
-                            if (match) username = match[1]
-                        } catch {
-                            username = `tiktok_user_${Date.now()}`
-                        }
-                    }
-
-                    if (!username) username = `tiktok_user_${Date.now()}`
 
                     // Save to DB
                     const result = storageService.run(
                         `INSERT INTO publish_accounts (platform, username, display_name, avatar_url, cookies_json, session_valid, last_login_at)
                          VALUES (?, ?, ?, ?, ?, 1, datetime('now'))`,
-                        ['tiktok', username, displayName || username, avatarUrl, cookiesJson]
+                        ['tiktok', sessionData.username, sessionData.displayName, sessionData.avatarUrl, sessionData.cookiesJson]
                     )
 
                     const account = storageService.get(
@@ -139,14 +157,31 @@ class PublishAccountService {
                         [result.lastInsertId]
                     ) as PublishAccount
 
-                    resolved = true
-                    loginWindow.close()
+                    if (!loginWindow.isDestroyed()) loginWindow.close()
                     resolve(account)
                 } catch (err) {
                     console.error('Failed to capture login:', err)
-                    resolved = true
-                    loginWindow.close()
-                    reject(err)
+                    if (!loginWindow.isDestroyed()) loginWindow.close()
+                    resolve(null)
+                }
+            }
+
+            // Watch for navigation to a logged-in page
+            const checkLogin = async (url: string) => {
+                if (resolved) return
+
+                // Broader check: any TikTok page that isn't the login page
+                const isOnTiktok = url.includes('tiktok.com')
+                const isOnLogin = url.includes('/login') || url.includes('/signup')
+
+                if (!isOnTiktok || isOnLogin) return
+
+                // Wait for cookies to be set
+                await new Promise(r => setTimeout(r, 2000))
+
+                const hasSession = await this.hasSessionCookies(ses)
+                if (hasSession) {
+                    await saveAndResolve()
                 }
             }
 
@@ -157,12 +192,51 @@ class PublishAccountService {
                 checkLogin(url)
             })
 
-            // User closed without logging in
-            loginWindow.on('closed', () => {
-                if (!resolved) {
-                    resolved = true
-                    resolve(null)
+            // User closed the window — attempt to capture cookies anyway
+            loginWindow.on('close', async (e) => {
+                if (resolved) return
+
+                // Prevent immediate close so we can try to capture
+                e.preventDefault()
+                resolved = true
+
+                try {
+                    const hasSession = await this.hasSessionCookies(ses)
+                    if (hasSession) {
+                        const cookies = await ses.cookies.get({ domain: '.tiktok.com' })
+                        const cookiesJson = JSON.stringify(cookies)
+
+                        // Try to get username from current URL
+                        let username = ''
+                        try {
+                            const currentUrl = loginWindow.webContents.getURL()
+                            const match = currentUrl.match(/@([\w.]+)/)
+                            if (match) username = match[1]
+                        } catch { /* ignore */ }
+
+                        if (!username) username = `tiktok_user_${Date.now()}`
+
+                        const result = storageService.run(
+                            `INSERT INTO publish_accounts (platform, username, display_name, avatar_url, cookies_json, session_valid, last_login_at)
+                             VALUES (?, ?, ?, ?, ?, 1, datetime('now'))`,
+                            ['tiktok', username, username, '', cookiesJson]
+                        )
+
+                        const account = storageService.get(
+                            'SELECT * FROM publish_accounts WHERE id = ?',
+                            [result.lastInsertId]
+                        ) as PublishAccount
+
+                        loginWindow.destroy()
+                        resolve(account)
+                        return
+                    }
+                } catch (err) {
+                    console.error('Failed to capture on close:', err)
                 }
+
+                loginWindow.destroy()
+                resolve(null)
             })
         })
     }
@@ -242,16 +316,14 @@ class PublishAccountService {
         )
         if (!existing) return null
 
-        // Remove old and re-add
-        // Or we can just update cookies after new login
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve) => {
             const partitionName = `persist:tiktok-relogin-${id}-${Date.now()}`
             const ses = session.fromPartition(partitionName)
 
             const loginWindow = new BrowserWindow({
                 width: 480,
                 height: 720,
-                title: `Re-login: ${existing.username}`,
+                title: `Re-login: ${existing.username} — Close after logging in`,
                 autoHideMenuBar: true,
                 webPreferences: {
                     session: ses,
@@ -264,19 +336,11 @@ class PublishAccountService {
 
             let resolved = false
 
-            const checkLogin = async (url: string) => {
+            const updateAndResolve = async (cookiesJson: string) => {
                 if (resolved) return
-                const isLoggedIn = url.includes('tiktok.com') && !url.includes('/login') &&
-                    (url === 'https://www.tiktok.com/' || url.includes('tiktok.com/@') ||
-                        url.includes('tiktok.com/foryou') || url.includes('tiktok.com/following'))
-
-                if (!isLoggedIn) return
+                resolved = true
 
                 try {
-                    await new Promise(r => setTimeout(r, 2000))
-                    const cookies = await ses.cookies.get({ domain: '.tiktok.com' })
-                    const cookiesJson = JSON.stringify(cookies)
-
                     storageService.run(
                         `UPDATE publish_accounts SET cookies_json = ?, session_valid = 1, last_login_at = datetime('now') WHERE id = ?`,
                         [cookiesJson, id]
@@ -287,24 +351,61 @@ class PublishAccountService {
                         [id]
                     ) as PublishAccount
 
-                    resolved = true
-                    loginWindow.close()
+                    if (!loginWindow.isDestroyed()) loginWindow.close()
                     resolve(account)
                 } catch (err) {
-                    resolved = true
-                    loginWindow.close()
-                    reject(err)
+                    console.error('Re-login save failed:', err)
+                    if (!loginWindow.isDestroyed()) loginWindow.close()
+                    resolve(null)
+                }
+            }
+
+            const checkLogin = async (url: string) => {
+                if (resolved) return
+                const isOnTiktok = url.includes('tiktok.com')
+                const isOnLogin = url.includes('/login') || url.includes('/signup')
+                if (!isOnTiktok || isOnLogin) return
+
+                await new Promise(r => setTimeout(r, 2000))
+
+                const hasSession = await this.hasSessionCookies(ses)
+                if (hasSession) {
+                    const cookies = await ses.cookies.get({ domain: '.tiktok.com' })
+                    await updateAndResolve(JSON.stringify(cookies))
                 }
             }
 
             loginWindow.webContents.on('did-navigate', (_e, url) => checkLogin(url))
             loginWindow.webContents.on('did-navigate-in-page', (_e, url) => checkLogin(url))
 
-            loginWindow.on('closed', () => {
-                if (!resolved) {
-                    resolved = true
-                    resolve(null)
+            // Capture cookies on close if session exists
+            loginWindow.on('close', async (e) => {
+                if (resolved) return
+                e.preventDefault()
+                resolved = true
+
+                try {
+                    const hasSession = await this.hasSessionCookies(ses)
+                    if (hasSession) {
+                        const cookies = await ses.cookies.get({ domain: '.tiktok.com' })
+                        storageService.run(
+                            `UPDATE publish_accounts SET cookies_json = ?, session_valid = 1, last_login_at = datetime('now') WHERE id = ?`,
+                            [JSON.stringify(cookies), id]
+                        )
+                        const account = storageService.get(
+                            'SELECT * FROM publish_accounts WHERE id = ?',
+                            [id]
+                        ) as PublishAccount
+                        loginWindow.destroy()
+                        resolve(account)
+                        return
+                    }
+                } catch (err) {
+                    console.error('Re-login capture on close failed:', err)
                 }
+
+                loginWindow.destroy()
+                resolve(null)
             })
         })
     }

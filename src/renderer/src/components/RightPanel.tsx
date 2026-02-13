@@ -13,6 +13,8 @@ interface RightPanelProps {
     onFilterReset: () => void
     onToggleSelect: (id: string) => void
     onAddSelected: () => void
+    onSelectAll?: () => void
+    onDeselectAll?: () => void
     // Collection refresh signal
     collectionVersion?: number
     // New props for Phase 3 & 4
@@ -20,19 +22,26 @@ interface RightPanelProps {
     collectionCount?: number
     sourcesCount?: number
     onRefreshCounts?: () => void
-    // Downloads
+    onRemoveVideo?: (id: number | string, platformId: string) => void
+    onRemoveAll?: () => void
     downloads?: any[]
     downloadsCount?: number
+    hideLibrary?: boolean
+    cart?: {
+        channels: { name: string, avatar?: string }[]
+        keywords: { keyword: string }[]
+        videos: ScannedVideo[]
+    }
+    onRemoveFromCart?: (type: 'channel' | 'keyword' | 'video', id: string) => void
 }
 
-import DownloadItemCard from './DownloadItemCard'
-// Campaign components moved to CampaignsView
-import { CreateCampaignModal } from './CreateCampaignModal' // Keeping import for now because I left a remnant render block? No I should remove it.
+import DownloadItemCard from './DownloadItemCard' // Fixing import if necessary, assuming it exists or using generic
+import { CreateCampaignModal } from './CreateCampaignModal'
 
 export const RightPanel: React.FC<RightPanelProps> = ({
     activeTab, onTabChange,
     scannedVideos, filters, onFilterChange, onFilterReset,
-    onToggleSelect, onAddSelected,
+    onToggleSelect, onAddSelected, onSelectAll, onDeselectAll,
     collectionVersion,
     isScanning,
     collectionCount,
@@ -41,7 +50,10 @@ export const RightPanel: React.FC<RightPanelProps> = ({
     onRemoveVideo,
     onRemoveAll,
     downloads = [],
-    downloadsCount = 0
+    downloadsCount = 0,
+    hideLibrary = false,
+    cart,
+    onRemoveFromCart
 }) => {
     const [collection, setCollection] = useState<SavedVideo[]>([])
     const [channels, setChannels] = useState<FollowedChannel[]>([])
@@ -72,9 +84,11 @@ export const RightPanel: React.FC<RightPanelProps> = ({
     }
 
     useEffect(() => {
-        if (activeTab === 'collection') loadCollection()
-        if (activeTab === 'sources') loadSources()
-    }, [activeTab, collectionVersion])
+        if (!hideLibrary) {
+            if (activeTab === 'collection') loadCollection()
+            if (activeTab === 'sources') loadSources()
+        }
+    }, [activeTab, collectionVersion, hideLibrary])
 
     // Scanned tab filtering
     const filteredScanned = scannedVideos.filter(v => {
@@ -153,6 +167,17 @@ export const RightPanel: React.FC<RightPanelProps> = ({
         }}>
             {/* Tabs */}
             <div className="tab-bar">
+                {/* Targets Tab (Only visible if wizard mode / cart exists) */}
+                {cart && (
+                    <div
+                        className={`tab-item ${activeTab === 'targets' ? 'active' : ''}`}
+                        onClick={() => onTabChange('targets')}
+                    >
+                        Targets
+                        <span className="tab-badge">{cart.channels.length + cart.keywords.length + cart.videos.length}</span>
+                    </div>
+                )}
+
                 <div
                     className={`tab-item ${activeTab === 'scanned' ? 'active' : ''}`}
                     onClick={() => onTabChange('scanned')}
@@ -164,30 +189,119 @@ export const RightPanel: React.FC<RightPanelProps> = ({
                     ) : 'Scanned'}
                     <span className="tab-badge">{scannedVideos.length}</span>
                 </div>
-                <div
-                    className={`tab-item ${activeTab === 'collection' ? 'active' : ''}`}
-                    onClick={() => onTabChange('collection')}
-                >
-                    Collection
-                    <span className="tab-badge">{collectionCount ?? collection.length}</span>
-                </div>
-                <div
-                    className={`tab-item ${activeTab === 'sources' ? 'active' : ''}`}
-                    onClick={() => onTabChange('sources')}
-                >
-                    Sources
-                    <span className="tab-badge">{sourcesCount ?? (channels.length + keywords.length)}</span>
-                </div>
-                <div
-                    className={`tab-item ${activeTab === 'downloads' ? 'active' : ''}`}
-                    onClick={() => onTabChange('downloads')}
-                >
-                    Downloads
-                    <span className="tab-badge">{downloadsCount ?? downloads.length}</span>
-                </div>
+                {!hideLibrary && (
+                    <>
+                        <div
+                            className={`tab-item ${activeTab === 'collection' ? 'active' : ''}`}
+                            onClick={() => onTabChange('collection')}
+                        >
+                            Collection
+                            <span className="tab-badge">{collectionCount ?? collection.length}</span>
+                        </div>
+                        <div
+                            className={`tab-item ${activeTab === 'sources' ? 'active' : ''}`}
+                            onClick={() => onTabChange('sources')}
+                        >
+                            Sources
+                            <span className="tab-badge">{sourcesCount ?? (channels.length + keywords.length)}</span>
+                        </div>
+                        <div
+                            className={`tab-item ${activeTab === 'downloads' ? 'active' : ''}`}
+                            onClick={() => onTabChange('downloads')}
+                        >
+                            Downloads
+                            <span className="tab-badge">{downloadsCount ?? downloads.length}</span>
+                        </div>
+                    </>
+                )}
             </div>
 
             {/* Content */}
+            {activeTab === 'targets' && cart && (
+                <div style={{ flex: 1, overflowY: 'auto', padding: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {cart.channels.length === 0 && cart.keywords.length === 0 && cart.videos.length === 0 ? (
+                        <div className="empty-state">
+                            <div className="empty-icon">🎯</div>
+                            <div className="empty-text">
+                                No targets selected yet.<br />
+                                Add channels, keywords, or videos to run your campaign on.
+                            </div>
+                        </div>
+                    ) : (
+                        <>
+                            {/* Channels */}
+                            {cart.channels.length > 0 && (
+                                <div style={{ marginBottom: '8px' }}>
+                                    <div style={{ fontSize: '10px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', padding: '4px 4px 6px' }}>
+                                        Target Channels ({cart.channels.length})
+                                    </div>
+                                    {cart.channels.map((ch, i) => (
+                                        <div key={i} className="video-card" style={{ cursor: 'default', padding: '8px' }}>
+                                            <div className="thumb" style={{ width: '32px', height: '32px', borderRadius: '50%' }}>
+                                                {ch.avatar ? <img src={ch.avatar} alt="" style={{ borderRadius: '50%' }} /> : <div className="thumb-placeholder">👤</div>}
+                                            </div>
+                                            <div className="meta">
+                                                <div className="desc" style={{ fontWeight: 600 }}>@{ch.name}</div>
+                                            </div>
+                                            <button className="btn-icon" onClick={() => onRemoveFromCart?.('channel', ch.name)} style={{ color: 'var(--accent-red)' }}>
+                                                ✕
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            {/* Keywords */}
+                            {cart.keywords.length > 0 && (
+                                <div style={{ marginBottom: '8px' }}>
+                                    <div style={{ fontSize: '10px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', padding: '4px 4px 6px' }}>
+                                        Target Keywords ({cart.keywords.length})
+                                    </div>
+                                    {cart.keywords.map((kw, i) => (
+                                        <div key={i} className="video-card" style={{ cursor: 'default', padding: '8px' }}>
+                                            <div className="thumb" style={{ width: '32px', height: '32px', background: 'var(--bg-tertiary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                                🔍
+                                            </div>
+                                            <div className="meta">
+                                                <div className="desc" style={{ fontWeight: 600 }}>{kw.keyword}</div>
+                                            </div>
+                                            <button className="btn-icon" onClick={() => onRemoveFromCart?.('keyword', kw.keyword)} style={{ color: 'var(--accent-red)' }}>
+                                                ✕
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            {/* Videos */}
+                            {cart.videos.length > 0 && (
+                                <div>
+                                    <div style={{ fontSize: '10px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', padding: '4px 4px 6px' }}>
+                                        Specific Videos ({cart.videos.length})
+                                    </div>
+                                    {cart.videos.map(video => (
+                                        <div key={video.id} className="video-card" style={{ cursor: 'default' }}>
+                                            <div className="thumb">
+                                                {video.thumbnail ? <img src={video.thumbnail} alt="" /> : <div className="thumb-placeholder">🎬</div>}
+                                            </div>
+                                            <div className="meta">
+                                                <div className="desc">{video.description}</div>
+                                                <div className="stats">
+                                                    <span>{formatNum(video.stats.views)} views</span>
+                                                </div>
+                                            </div>
+                                            <button className="btn-icon" onClick={() => onRemoveFromCart?.('video', video.id)} style={{ color: 'var(--accent-red)' }}>
+                                                ✕
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </>
+                    )}
+                </div>
+            )}
+
             {activeTab === 'scanned' && (
                 <>
                     <FilterBar
@@ -197,6 +311,16 @@ export const RightPanel: React.FC<RightPanelProps> = ({
                         visible={filteredScanned.length}
                         onReset={onFilterReset}
                     />
+                    {filteredScanned.length > 0 && (
+                        <div style={{ padding: '4px 8px', display: 'flex', gap: '8px', borderBottom: '1px solid var(--border-primary)' }}>
+                            <button className="btn btn-ghost btn-sm" onClick={onSelectAll} style={{ fontSize: '10px', padding: '2px 8px' }}>
+                                ☑ Select All
+                            </button>
+                            <button className="btn btn-ghost btn-sm" onClick={onDeselectAll} style={{ fontSize: '10px', padding: '2px 8px' }}>
+                                ☐ Deselect All
+                            </button>
+                        </div>
+                    )}
                     <div style={{ flex: 1, overflowY: 'auto', padding: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                         {filteredScanned.length === 0 ? (
                             <div className="empty-state">
@@ -245,7 +369,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({
                     {selectedCount > 0 && (
                         <div className="action-bar">
                             <button className="btn btn-primary" onClick={onAddSelected}>
-                                ✚ Add Selected ({selectedCount})
+                                {hideLibrary ? `✚ Add to Tasks (${selectedCount})` : `✚ Add Selected (${selectedCount})`}
                             </button>
                         </div>
                     )}

@@ -25,16 +25,15 @@ class JobQueue {
         this.isRunning = true
 
         try {
-            // Check concurrency (only for DOWNLOADs usually, but let's limit global for now to be safe)
+            // Check concurrency for running jobs
             const active = storageService.get("SELECT COUNT(*) as count FROM jobs WHERE status = 'running'").count
             if (active >= this.MAX_CONCURRENT) return
 
-            // Get next pending job
-            // Priority: DOWNLOAD > SCAN (Finish what we found before finding more?)
-            // Or SCAN > DOWNLOAD? Let's do FIFO for now.
+            // Get next pending job that is scheduled for now or earlier
             const job = storageService.get(`
                 SELECT * FROM jobs 
                 WHERE status = 'pending' 
+                AND (scheduled_for IS NULL OR scheduled_for <= datetime('now'))
                 ORDER BY created_at ASC 
                 LIMIT 1
             `)
@@ -60,11 +59,12 @@ class JobQueue {
             const data = JSON.parse(job.data_json || '{}')
             const tiktok = moduleManager.getModule('tiktok') as TikTokModule
 
+            // Initialize module if needed (e.g. browser context)
+            if (!tiktok) throw new Error('TikTok module missing')
+
             if (job.type === 'SCAN') {
-                if (!tiktok) throw new Error('TikTok module missing')
                 await this.handleScan(job, data, tiktok)
             } else if (job.type === 'DOWNLOAD') {
-                if (!tiktok) throw new Error('TikTok module missing')
                 await this.handleDownload(job, data, tiktok)
             }
 
@@ -81,55 +81,112 @@ class JobQueue {
     }
 
     private async handleScan(job: any, data: any, tiktok: TikTokModule) {
-        // data matches the campaign config structure:
-        // { source: { type: 'channel'|'keyword', value: '...' }, ... }
-
-        const source = data.source
-        if (!source || !source.value) {
-            console.error('JobQueue: No source defined for scan job', job.id)
-            return
+        // 1. Get Campaign Config (for Interval)
+        const campaign = storageService.get('SELECT * FROM campaigns WHERE id = ?', [job.campaign_id])
+        let intervalMinutes = 60 // Default 1 hour
+        if (campaign && campaign.config_json) {
+            try {
+                const cfg = JSON.parse(campaign.config_json)
+                if (cfg.schedule && cfg.schedule.interval) {
+                    intervalMinutes = parseInt(cfg.schedule.interval) || 60
+                }
+            } catch { }
         }
 
-        console.log(`Scanning target: ${source.value} (${source.type})`)
-        let foundCount = 0
+        // 2. Gather ALL videos (from Sources + Manual Selection)
+        let allVideos: any[] = []
+        let scannedCount = 0
 
-        try {
-            // We need to implement a true "scan and return items" in TikTokModule.
-            // For now, we will use the existing scanProfile but we need to ensure it returns items.
-            // If scanProfile writes to DB, we can just query the DB for the new items?
-            // Or we modify scanProfile. 
+        // 2a. Scan Sources (Channels/Keywords)
+        if (data.sources) {
+            if (data.sources.channels) {
+                for (const ch of data.sources.channels) {
+                    console.log(`Scanning channel: ${ch.name}`)
+                    this.updateJobData(job.id, { ...data, status: `Scanning channel: ${ch.name}`, scannedCount })
+                    const result = await tiktok.scanProfile(ch.name) || { videos: [] }
+                    const newVideos = result.videos || []
+                    allVideos.push(...newVideos)
+                    scannedCount += newVideos.length
+                    this.updateJobData(job.id, { ...data, status: `Scanned channel: ${ch.name}`, scannedCount })
+                }
+            }
+            for (const kw of data.sources.keywords) {
+                console.log(`Scanning keyword: ${kw.name}`)
+                this.updateJobData(job.id, { ...data, status: `Scanning keyword: ${kw.name}`, scannedCount })
+                const result = await tiktok.scanKeyword(kw.name, kw.maxScanCount || 50) || { videos: [] }
+                const newVideos = result.videos || []
+                allVideos.push(...newVideos)
+                scannedCount += newVideos.length
+                this.updateJobData(job.id, { ...data, status: `Scanned keyword: ${kw.name}`, scannedCount })
+            }
+        }
 
-            // ASSUMPTION: TikTokModule.scanProfile returns an array of { id, url, platform_id, ... }
-            // If not, we need to fix TikTokModule.
-            const newVideos = await tiktok.scanProfile(source.value) || []
+        // 2b. Add Manual Videos
+        if (data.videos && Array.isArray(data.videos)) {
+            allVideos.push(...data.videos)
+            scannedCount += data.videos.length
+        }
 
-            for (const v of newVideos) {
-                // Check if already downloaded/exists? 
-                // scanProfile might already check existence.
+        // 3. Deduplicate
+        const uniqueVideos = Array.from(new Map(allVideos.map(v => [v.id, v])).values())
 
-                // Create DOWNLOAD job
-                storageService.run(
-                    `INSERT INTO jobs (campaign_id, type, status, data_json) VALUES (?, 'DOWNLOAD', 'pending', ?)`,
-                    [job.campaign_id, JSON.stringify({
-                        url: v.url,
-                        platform_id: v.platform_id,
-                        video_id: v.id,
-                        target_account: data.target // Pass the publishing target
-                    })]
-                )
-                foundCount++
+        // 4. Sort by Post Order
+        const postOrder = data.postOrder || 'newest'
+        uniqueVideos.sort((a: any, b: any) => {
+            // Stats sorting
+            const aLikes = (a.stats?.likes || 0)
+            const bLikes = (b.stats?.likes || 0)
+            if (postOrder === 'most_likes') return bLikes - aLikes
+            if (postOrder === 'least_likes') return aLikes - bLikes
+            if (postOrder === 'oldest') return a.id.localeCompare(b.id)
+            return b.id.localeCompare(a.id) // newest (default)
+        })
+
+        console.log(`JobQueue: Found ${uniqueVideos.length} unique videos. Scheduling...`)
+        this.updateJobData(job.id, { ...data, status: `Found ${uniqueVideos.length} unique videos. Scheduling downloads...`, scannedCount })
+
+        // 5. Create Scheduled DOWNLOAD Jobs
+        let scheduleTime = new Date()
+
+        for (let i = 0; i < uniqueVideos.length; i++) {
+            const v = uniqueVideos[i]
+
+            // Check if already processed
+            const exists = storageService.get("SELECT id FROM videos WHERE platform_id = ? AND status = 'downloaded'", [v.id])
+            if (exists) {
+                console.log(`Skipping existing video ${v.id}`)
+                continue
             }
 
-            // Update job result
-            storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [JSON.stringify({ found: foundCount }), job.id])
+            if (i > 0) {
+                scheduleTime = new Date(scheduleTime.getTime() + intervalMinutes * 60000)
+            }
 
-        } catch (err: any) {
-            console.error('Scan failed:', err)
-            throw err
+            // Create DOWNLOAD job
+            storageService.run(
+                `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'DOWNLOAD', 'pending', ?, ?)`,
+                [
+                    job.campaign_id,
+                    scheduleTime.toISOString().replace('T', ' ').slice(0, 19),
+                    JSON.stringify({
+                        url: v.url,
+                        platform_id: v.platform_id || v.id,
+                        video_id: v.id,
+                        targetAccounts: data.targetAccounts,
+                        description: v.desc || v.description // Pass description
+                    })
+                ]
+            )
         }
+
+        // Update Job Result
+        const result = { found: uniqueVideos.length, scheduled: uniqueVideos.length }
+        storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [JSON.stringify(result), job.id])
     }
 
     private async handleDownload(job: any, data: any, tiktok: TikTokModule) {
+        this.updateJobData(job.id, { ...data, status: 'Downloading video...' })
+
         // 1. Download video
         const filePath = await tiktok.downloadVideo(data.url, data.platform_id)
         let finalPath = filePath
@@ -141,18 +198,48 @@ class JobQueue {
 
             // Use VideoEditEngine if pipeline has effects
             if (config.editPipeline && config.editPipeline.effects && config.editPipeline.effects.length > 0) {
+                this.updateJobData(job.id, { ...data, status: 'Processing video (AI editing)...' })
                 const { videoEditEngine } = require('./video-edit/VideoEditEngine')
-
-                console.log(`[JobQueue] Running edit pipeline (${config.editPipeline.effects.length} effects) on ${data.video_id}`)
                 const processedPath = filePath.replace('.mp4', '_edited.mp4')
-
                 await videoEditEngine.render(filePath, config.editPipeline, processedPath)
                 finalPath = processedPath
             }
         }
 
         // 3. Update video record
-        storageService.run("UPDATE videos SET local_path = ?, status = 'downloaded' WHERE id = ?", [finalPath, data.video_id])
+        const video = storageService.get("SELECT id FROM videos WHERE platform_id = ?", [data.platform_id])
+        if (video) {
+            storageService.run("UPDATE videos SET local_path = ?, status = 'downloaded' WHERE id = ?", [finalPath, video.id])
+        }
+
+        // 4. Create PUBLISH job
+        if (data.targetAccounts && data.targetAccounts.length > 0) {
+            this.updateJobData(job.id, { ...data, status: 'Scheduling publication...' })
+            for (const accId of data.targetAccounts) {
+                storageService.run(
+                    `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'PUBLISH', 'pending', datetime('now'), ?)`,
+                    [
+                        job.campaign_id,
+                        JSON.stringify({
+                            video_path: finalPath,
+                            account_id: accId,
+                            caption: data.description || ''
+                        })
+                    ]
+                )
+            }
+        }
+
+        // Store result path for "Open Folder" feature
+        storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [JSON.stringify({ path: require('path').dirname(finalPath) }), job.id])
+    }
+
+    private updateJobData(jobId: number, data: any) {
+        try {
+            storageService.run("UPDATE jobs SET data_json = ? WHERE id = ?", [JSON.stringify(data), jobId])
+        } catch (e) {
+            console.error('Failed to update job data:', e)
+        }
     }
 
     private broadcastUpdate() {

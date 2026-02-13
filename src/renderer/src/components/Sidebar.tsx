@@ -1,6 +1,6 @@
 import React from 'react'
 
-type Tab = 'campaigns' | 'resources' | 'schedule' | 'stats' | 'settings'
+type Tab = 'campaigns' | 'accounts' | 'resources' | 'schedule' | 'stats' | 'settings'
 
 interface SidebarProps {
     activeTab: Tab
@@ -10,6 +10,7 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange }) => {
     const tabs: { id: Tab; label: string; icon: string }[] = [
         { id: 'campaigns', label: 'Campaigns', icon: '📢' },
+        { id: 'accounts', label: 'Accounts', icon: '👤' },
         { id: 'resources', label: 'Resources', icon: '📦' },
         { id: 'schedule', label: 'Schedule', icon: '📅' },
         { id: 'stats', label: 'Statistics', icon: '📊' },

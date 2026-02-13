@@ -184,6 +184,8 @@ class StorageService {
             try {
                 this.db.run("ALTER TABLE jobs ADD COLUMN data_json TEXT")
                 this.db.run("ALTER TABLE jobs ADD COLUMN result_json TEXT")
+                this.db.run("ALTER TABLE jobs ADD COLUMN scheduled_for DATETIME")
+                this.db.run("ALTER TABLE accounts ADD COLUMN metadata TEXT")
             } catch (e) { /* ignore */ }
 
             await this.save()

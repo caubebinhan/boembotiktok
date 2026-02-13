@@ -3,6 +3,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 // Custom APIs for renderer
 const api = {
     invoke: (channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args),
+    openScannerWindow: () => ipcRenderer.invoke('open-scanner-window'),
+    openCampaignDetails: (id: number) => ipcRenderer.invoke('open-campaign-details', id),
     on: (channel: string, callback: (...args: unknown[]) => void) => {
         const subscription = (_event: Electron.IpcRendererEvent, ...args: unknown[]) => callback(...args)
         ipcRenderer.on(channel, subscription)

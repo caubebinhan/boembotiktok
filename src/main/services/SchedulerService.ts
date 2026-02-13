@@ -24,18 +24,18 @@ class SchedulerService {
 
         for (const campaign of campaigns) {
             try {
-                // Check if a job is already running for this campaign to prevent overlap?
-                // For MVP, simplistic check: don't spawn if there's a PENDING/RUNNING generic scan job
-                // Actually, let's just spawn. Queue handles concurrency.
-
-                // For MVP: Treat "Active" as "Run now" if we rely on the 1-min interval
-                // Or implement simple cron check. 
-                // Let's assume for now: Every active campaign runs every check cycle (temporary for testing)
-                // TODO: Implement actual cron parsing check.
+                // Check if there's already a pending/running job for this campaign
+                const existingJob = storageService.get(
+                    "SELECT id FROM jobs WHERE campaign_id = ? AND status IN ('pending', 'running') LIMIT 1",
+                    [campaign.id]
+                )
+                if (existingJob) {
+                    console.log(`Scheduler: Campaign ${campaign.name} already has active jobs, skipping`)
+                    continue
+                }
 
                 console.log(`Scheduler: Scheduling job for campaign ${campaign.name}`)
                 this.createScanJob(campaign)
-
             } catch (err) {
                 console.error(`Scheduler error for campaign ${campaign.id}:`, err)
             }
@@ -43,15 +43,28 @@ class SchedulerService {
     }
 
     private createScanJob(campaign: any) {
-        // Insert a SCAN job
+        let config: any = {}
+        try {
+            config = campaign.config_json ? JSON.parse(campaign.config_json) : {}
+        } catch { }
+
+        // Create a SCAN job with full config data (sources, postOrder, etc.)
+        const jobData = {
+            sources: config.sources || { channels: [], keywords: [] },
+            videos: config.videos || [],
+            postOrder: config.postOrder || 'newest',
+            campaignName: campaign.name
+        }
+
         storageService.run(
             `INSERT INTO jobs (campaign_id, type, status, data_json) VALUES (?, 'SCAN', 'pending', ?)`,
-            [campaign.id, campaign.config_json]
+            [campaign.id, JSON.stringify(jobData)]
         )
     }
+
     async triggerCampaign(id: number) {
         console.log(`Scheduler: Manual trigger for campaign ${id}`)
-        const campaign = storageService.get('SELECT * FROM campaigns WHERE id = ?', [id])
+        const campaign = campaignService.getCampaign(id)
         if (campaign) {
             this.createScanJob(campaign)
             return { success: true }
