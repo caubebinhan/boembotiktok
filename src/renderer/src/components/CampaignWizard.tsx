@@ -5,10 +5,12 @@ import 'react-datepicker/dist/react-datepicker.css'
 import { VideoEditor } from './VideoEditor'
 import { AccountSettingsModal } from './AccountSettingsModal'
 import { SchedulePreview } from './SchedulePreview'
+import { VideoCard } from './VideoCard'
 
 interface CampaignWizardProps {
     onClose: () => void
     onSave: (campaignData: any, runNow: boolean) => void
+    initialData?: any
 }
 
 interface SourceEntry {
@@ -21,22 +23,88 @@ interface SourceEntry {
     sortOrder?: string
 }
 
-export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave }) => {
+interface SourceEntry {
+    name: string
+    type: 'channel' | 'keyword'
+    videoCount?: number
+    maxScanCount?: number
+    minViews?: number
+    minLikes?: number
+    sortOrder?: string
+}
+
+export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave, initialData }) => {
+    // ... (state init code is already there from previous step) ...
+    // BUT I need to match the target content exactly to insert SourceEntry back.
+    // The previous edit replaced the SourceEntry block with just the component definition.
+    // So I need to find the component definition line and insert SourceEntry before it.
+    // Wait, the previous replace OUTPUT shows that I replaced lines 10-48. 
+    // The `SourceEntry` was at lines 15-23.
+    // So it IS GONE.
+    // I need to put it back before `export const CampaignWizard`.
+
+    // Let's use `export const CampaignWizard` as target.
+
     const [step, setStep] = useState(1)
-    const [formData, setFormData] = useState({
-        name: '',
-        type: 'one_time' as 'one_time' | 'scheduled',
-        editPipeline: { effects: [] as any[] },
-        targetAccounts: [] as string[],
-        postOrder: 'newest' as 'oldest' | 'newest' | 'most_likes' | 'least_likes',
-        schedule: {
-            runAt: '',
-            interval: 60,
-            startTime: '09:00',
-            endTime: '21:00',
-            days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+    const [runNow, setRunNow] = useState(false)
+    const [formData, setFormData] = useState(() => {
+        if (initialData) {
+            const config = typeof initialData.config_json === 'string' ? JSON.parse(initialData.config_json) : initialData.config_json || {}
+            return {
+                name: initialData.name + ' (Copy)',
+                type: initialData.type === 'scan_all' ? 'scheduled' : (initialData.type || 'scheduled'),
+                editPipeline: config.editPipeline || { effects: [] },
+                targetAccounts: config.targetAccounts || [],
+                postOrder: config.postOrder || 'newest',
+                schedule: config.schedule || {
+                    runAt: '',
+                    interval: 60,
+                    startTime: '09:00',
+                    endTime: '21:00',
+                    days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+                    jitter: false
+                },
+                executionOrder: [] as any[]
+            }
+        }
+        return {
+            name: '',
+            type: 'one_time' as 'one_time' | 'scheduled',
+            editPipeline: { effects: [] as any[] },
+            targetAccounts: [] as string[],
+            postOrder: 'newest' as 'oldest' | 'newest' | 'most_likes' | 'least_likes',
+            schedule: {
+                runAt: '',
+                interval: 60,
+                startTime: '09:00',
+                endTime: '21:00',
+                days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+                jitter: false
+            },
+            executionOrder: [] as any[]
         }
     })
+
+    // Init sources and videos from initialData if present
+    useEffect(() => {
+        if (initialData) {
+            const config = typeof initialData.config_json === 'string' ? JSON.parse(initialData.config_json) : initialData.config_json || {}
+            if (config.sources) {
+                const newSources: SourceEntry[] = []
+                if (config.sources.channels) {
+                    config.sources.channels.forEach((c: any) => newSources.push({ ...c, type: 'channel' }))
+                }
+                if (config.sources.keywords) {
+                    config.sources.keywords.forEach((k: any) => newSources.push({ ...k, type: 'keyword' }))
+                }
+                setSources(newSources)
+            }
+            if (config.videos) {
+                setSavedVideos(config.videos)
+                setVideoCount(config.videos.length)
+            }
+        }
+    }, [initialData])
 
     // Source data for Step 2 — received from scanner window
     const [sources, setSources] = useState<SourceEntry[]>([])
@@ -58,7 +126,44 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave 
         const removeListener = window.api.on('scanner-results-received', (results: any) => {
             if (!results) return
 
-            // Add source entry
+            // Add source entry from Cart (Channels & Keywords)
+            if (results.channels || results.keywords) {
+                setSources(prev => {
+                    const newSources = [...prev];
+
+                    // Process Channels
+                    if (Array.isArray(results.channels)) {
+                        results.channels.forEach((c: any) => {
+                            if (!newSources.some(s => s.name === c.name && s.type === 'channel')) {
+                                newSources.push({
+                                    name: c.name,
+                                    type: 'channel',
+                                    videoCount: 0,
+                                    maxScanCount: 50
+                                });
+                            }
+                        });
+                    }
+
+                    // Process Keywords
+                    if (Array.isArray(results.keywords)) {
+                        results.keywords.forEach((k: any) => {
+                            if (!newSources.some(s => s.name === k.keyword && s.type === 'keyword')) {
+                                newSources.push({
+                                    name: k.keyword,
+                                    type: 'keyword',
+                                    videoCount: 0,
+                                    maxScanCount: 50
+                                });
+                            }
+                        });
+                    }
+
+                    return newSources;
+                })
+            }
+
+            // Fallback for single item (legacy or standalone)
             if (results.type && results.value) {
                 setSources(prev => {
                     const exists = prev.some(s => s.name === results.value && s.type === results.type)
@@ -102,19 +207,55 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave 
         } catch { }
     }
 
-    const handleNext = () => setStep(s => s + 1)
-    const handleBack = () => setStep(s => s - 1)
+    const moveVideo = (index: number, direction: 'up' | 'down') => {
+        setSavedVideos(prev => {
+            const newArr = [...prev]
+            const targetIndex = direction === 'up' ? index - 1 : index + 1
+            if (targetIndex < 0 || targetIndex >= newArr.length) return prev
+                ;[newArr[index], newArr[targetIndex]] = [newArr[targetIndex], newArr[index]]
+            return newArr
+        })
+    }
 
-    const steps = [
-        { id: 1, label: 'Details', icon: '📝' },
-        { id: 2, label: 'Source', icon: '📡' },
-        { id: 3, label: 'Editor', icon: '✂️' },
-        { id: 4, label: 'Target', icon: '🎯' }
-    ]
+    const handleNext = () => {
+        console.log(`[Wizard] handleNext called. Current step: ${step}, Type: ${formData.type}`);
+        if (step === 2 && formData.type === 'one_time') {
+            // Single campaign: Source -> Editor (skip schedule preview)
+            console.log('[Wizard] Skipping schedule for one_time, going to step 4 (Editor)');
+            setStep(4)
+        } else {
+            console.log(`[Wizard] Advancing to step ${step + 1}`);
+            setStep(s => s + 1)
+        }
+    }
+    const handleBack = () => {
+        if (step === 4 && formData.type === 'one_time') {
+            setStep(2)
+        } else {
+            setStep(s => s - 1)
+        }
+    }
+
+    // For scheduled campaigns: Details(1) -> Source(2) -> Editor(3) -> SchedulePreview(4) -> Target(5)
+    // For single campaigns:    Details(1) -> Source(2) -> Editor(4) -> Target(5)
+    const steps = formData.type === 'scheduled'
+        ? [
+            { id: 1, label: 'Details', icon: '📝' },
+            { id: 2, label: 'Source', icon: '📡' },
+            { id: 3, label: 'Editor', icon: '✂️' },
+            { id: 4, label: 'Schedule', icon: '📅' },
+            { id: 5, label: 'Target', icon: '🎯' }
+        ]
+        : [
+            { id: 1, label: 'Details', icon: '📝' },
+            { id: 2, label: 'Source', icon: '📡' },
+            { id: 4, label: 'Editor', icon: '✂️' },
+            { id: 5, label: 'Target', icon: '🎯' }
+        ]
 
     const canAdvance = (): boolean => {
         if (step === 1 && !formData.name.trim()) return false
-        if (step === 1 && formData.type === 'one_time' && !formData.schedule.runAt) return false
+        if (step === 1 && formData.type === 'one_time' && !runNow && !formData.schedule.runAt) return false
         if (step === 1 && formData.type === 'scheduled' && formData.schedule.days.length === 0) return false
 
         // Step 2 Validation
@@ -125,7 +266,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave 
             if (sources.length === 0 && savedVideos.length === 0) return false
         }
 
-        if (step === 4 && formData.targetAccounts.length === 0) return false
+        if (step === 5 && formData.targetAccounts.length === 0) return false
         return true
     }
 
@@ -178,8 +319,8 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave 
                         value={formData.name}
                         onChange={e => setFormData({ ...formData, name: e.target.value })}
                         placeholder="e.g. Morning Motivation"
-                        style={{ width: '100%', padding: '12px', background: 'var(--bg-secondary)', border: '1px solid var(--border-primary)', borderRadius: '8px', color: '#fff', fontSize: '14px', userSelect: 'text', cursor: 'text' }}
-                        onMouseDown={e => e.stopPropagation()}
+                        data-testid="campaign-name-input"
+                        style={{ width: '100%', padding: '12px', background: 'var(--bg-secondary)', border: '1px solid var(--border-primary)', borderRadius: '8px', color: '#fff', fontSize: '14px', userSelect: 'text', cursor: 'text', pointerEvents: 'auto' } as any}
                     />
                 </div>
             </div>
@@ -196,7 +337,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave 
                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '15px', background: formData.type === 'scheduled' ? 'rgba(255,255,255,0.05)' : 'transparent', borderRadius: '8px', cursor: 'pointer', border: formData.type === 'scheduled' ? '1px solid var(--accent-primary)' : '1px solid transparent' }}>
                         <input type="radio" checked={formData.type === 'scheduled'} onChange={() => setFormData({ ...formData, type: 'scheduled' })} />
                         <div>
-                            <strong>Scheduled (Recurring)</strong>
+                            <strong data-testid="type-scheduled">Scheduled (Recurring)</strong>
                             <div style={{ fontSize: '10px', color: 'gray' }}>Run automatically on schedule</div>
                         </div>
                     </label>
@@ -205,53 +346,120 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave 
 
             {formData.type === 'one_time' ? (
                 <div className="card" style={{ padding: '20px', background: 'rgba(255, 255, 255, 0.05)', marginTop: '16px' }}>
-                    <h4 style={{ marginTop: 0 }}>⏰ Schedule Run Time</h4>
-                    <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginBottom: '16px' }}>
-                        Choose when this campaign should run. It will execute once at the selected time.
-                    </p>
-                    <div className="form-group">
-                        <label>Run At</label>
-                        <DatePicker
-                            selected={formData.schedule.runAt ? new Date(formData.schedule.runAt) : null}
-                            onChange={(date: Date | null) => {
-                                setFormData({
-                                    ...formData,
-                                    schedule: { ...formData.schedule, runAt: date ? date.toISOString() : '' }
-                                })
-                            }}
-                            showTimeSelect timeIntervals={15}
-                            dateFormat="yyyy-MM-dd HH:mm" timeFormat="HH:mm"
-                            minDate={new Date()}
-                            placeholderText="Select date and time" className="form-control" wrapperClassName="datepicker-wrapper"
-                        />
+                    <h4 style={{ marginTop: 0 }}>⏰ When to Run</h4>
+                    <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+                        <label style={{
+                            display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 16px',
+                            background: runNow ? 'rgba(74, 222, 128, 0.1)' : 'transparent',
+                            borderRadius: '8px', cursor: 'pointer',
+                            border: runNow ? '1px solid #4ade80' : '1px solid var(--border-primary)'
+                        }}>
+                            <input type="radio" checked={runNow} onChange={() => setRunNow(true)} />
+                            <div>
+                                <strong>🚀 Run Now</strong>
+                                <div style={{ fontSize: '10px', color: 'gray' }}>Start immediately after saving</div>
+                            </div>
+                        </label>
+                        <label style={{
+                            display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 16px',
+                            background: !runNow ? 'rgba(124, 92, 252, 0.1)' : 'transparent',
+                            borderRadius: '8px', cursor: 'pointer',
+                            border: !runNow ? '1px solid var(--accent-primary)' : '1px solid var(--border-primary)'
+                        }}>
+                            <input type="radio" checked={!runNow} onChange={() => setRunNow(false)} />
+                            <div>
+                                <strong>📅 Set Time</strong>
+                                <div style={{ fontSize: '10px', color: 'gray' }}>Schedule for a specific time</div>
+                            </div>
+                        </label>
                     </div>
-                    {!formData.schedule.runAt && (
-                        <div style={{ fontSize: '12px', color: '#ff9800', marginTop: '8px' }}>
-                            ⚠️ Please select a time. Or use "Save & Run Now" to run immediately.
+                    {!runNow && (
+                        <div className="form-group">
+                            <label>Run At</label>
+                            <DatePicker
+                                selected={formData.schedule.runAt ? new Date(formData.schedule.runAt) : null}
+                                onChange={(date: Date | null) => {
+                                    setFormData({
+                                        ...formData,
+                                        schedule: { ...formData.schedule, runAt: date ? date.toISOString() : '' }
+                                    })
+                                }}
+                                showTimeSelect timeIntervals={15}
+                                dateFormat="yyyy-MM-dd HH:mm" timeFormat="HH:mm"
+                                minDate={new Date()}
+                                placeholderText="Select date and time" className="form-control" wrapperClassName="datepicker-wrapper"
+                            />
                         </div>
                     )}
                 </div>
             ) : (
                 <div className="schedule-ui card" style={{ padding: '20px', marginTop: '16px' }}>
                     <div className="form-group">
-                        <label>Interval</label>
-                        <select className="form-control" value={formData.schedule.interval}
-                            onChange={e => setFormData({ ...formData, schedule: { ...formData.schedule, interval: parseInt(e.target.value) } })}>
-                            <option value="30">Every 30 Minutes</option>
-                            <option value="60">Every 1 Hour</option>
-                            <option value="120">Every 2 Hours</option>
-                            <option value="240">Every 4 Hours</option>
-                            <option value="1440">Daily</option>
-                        </select>
+                        <label>Interval (Minutes)</label>
+                        <input
+                            type="number"
+                            className="form-control"
+                            min="1"
+                            data-testid="interval-input"
+                            value={formData.schedule.interval}
+                            onChange={e => {
+                                const val = e.target.value
+                                // @ts-ignore
+                                setFormData({ ...formData, schedule: { ...formData.schedule, interval: val === '' ? '' : parseInt(val) } })
+                            }}
+                            onBlur={() => {
+                                if (!formData.schedule.interval || Number(formData.schedule.interval) < 1) {
+                                    setFormData({ ...formData, schedule: { ...formData.schedule, interval: 60 } })
+                                }
+                            }}
+                        />
+                    </div>
+                    <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '10px' }}>
+                        <label style={{ margin: 0 }}>Enable Jitter (Random ±50%)</label>
+                        <input type="checkbox"
+                            checked={(formData.schedule as any).jitter || false}
+                            onChange={e => setFormData({ ...formData, schedule: { ...formData.schedule, jitter: e.target.checked } as any })}
+                            style={{ width: '16px', height: '16px' }}
+                        />
+                    </div>
+                    <div className="form-group">
+                        <label>First Run (Start Date & Time)</label>
+                        <DatePicker
+                            selected={formData.schedule.runAt ? new Date(formData.schedule.runAt) : new Date()}
+                            onChange={(date: Date | null) => {
+                                setFormData({
+                                    ...formData,
+                                    schedule: { ...formData.schedule, runAt: date ? date.toISOString() : '' }
+                                })
+                            }}
+                            showTimeSelect
+                            dateFormat="yyyy-MM-dd HH:mm"
+                            minDate={new Date()}
+                            placeholderText="Select start date/time"
+                            className="form-control"
+                            wrapperClassName="datepicker-wrapper"
+                        />
                     </div>
                     <div className="form-row" style={{ display: 'flex', gap: '16px' }}>
                         <div className="form-group" style={{ flex: 1 }}>
-                            <label>Start Time</label>
-                            <input type="time" className="form-control" value={formData.schedule.startTime} onChange={e => setFormData({ ...formData, schedule: { ...formData.schedule, startTime: e.target.value } })} />
+                            <label>Daily Start Time</label>
+                            <input
+                                type="time"
+                                className="form-control"
+                                data-testid="start-time-input"
+                                value={formData.schedule.startTime}
+                                onChange={e => setFormData({ ...formData, schedule: { ...formData.schedule, startTime: e.target.value } })}
+                            />
                         </div>
                         <div className="form-group" style={{ flex: 1 }}>
-                            <label>End Time</label>
-                            <input type="time" className="form-control" value={formData.schedule.endTime} onChange={e => setFormData({ ...formData, schedule: { ...formData.schedule, endTime: e.target.value } })} />
+                            <label>Daily End Time</label>
+                            <input
+                                type="time"
+                                className="form-control"
+                                data-testid="end-time-input"
+                                value={formData.schedule.endTime}
+                                onChange={e => setFormData({ ...formData, schedule: { ...formData.schedule, endTime: e.target.value } })}
+                            />
                         </div>
                     </div>
                     <div className="form-group" style={{ marginTop: '12px' }}>
@@ -449,26 +657,44 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave 
                             </span>
                         </div>
                     ) : (
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '8px' }}>
-                            {savedVideos.map(video => (
-                                <div key={video.id} style={{
-                                    position: 'relative', borderRadius: '6px', overflow: 'hidden',
-                                    background: '#000', aspectRatio: '9/16', border: '1px solid var(--border-primary)'
-                                }}>
-                                    {video.thumbnail ? (
-                                        <img src={video.thumbnail} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.8 }} />
-                                    ) : (
-                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px' }}>🎬</div>
-                                    )}
-                                    <button onClick={() => removeVideo(video.id)} style={{
-                                        position: 'absolute', top: '2px', right: '2px',
-                                        width: '18px', height: '18px', borderRadius: '50%',
-                                        background: 'rgba(0,0,0,0.6)', color: '#fff', border: 'none',
-                                        display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', cursor: 'pointer'
-                                    }}>✕</button>
-                                    <div style={{ position: 'absolute', bottom: '0', left: '0', width: '100%', padding: '2px 4px', background: 'rgba(0,0,0,0.6)' }}>
-                                        <div style={{ fontSize: '9px', color: '#fff' }}>👁 {video.stats?.views || 0}</div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '8px' }}>
+                            {savedVideos.map((video, idx) => (
+                                <div key={video.id} style={{ position: 'relative' }}>
+                                    <VideoCard
+                                        video={video}
+                                        onRemove={() => removeVideo(video.id)}
+                                        showStats={true}
+                                    />
+                                    {/* Reorder buttons */}
+                                    <div style={{
+                                        position: 'absolute', top: '4px', left: '4px',
+                                        display: 'flex', flexDirection: 'column', gap: '2px', zIndex: 20
+                                    }}>
+                                        {idx > 0 && (
+                                            <button onClick={() => moveVideo(idx, 'up')} style={{
+                                                width: '20px', height: '20px', borderRadius: '4px',
+                                                background: 'rgba(0,0,0,0.7)', color: '#fff', border: 'none',
+                                                fontSize: '10px', cursor: 'pointer', display: 'flex',
+                                                alignItems: 'center', justifyContent: 'center'
+                                            }}>▲</button>
+                                        )}
+                                        {idx < savedVideos.length - 1 && (
+                                            <button onClick={() => moveVideo(idx, 'down')} style={{
+                                                width: '20px', height: '20px', borderRadius: '4px',
+                                                background: 'rgba(0,0,0,0.7)', color: '#fff', border: 'none',
+                                                fontSize: '10px', cursor: 'pointer', display: 'flex',
+                                                alignItems: 'center', justifyContent: 'center'
+                                            }}>▼</button>
+                                        )}
                                     </div>
+                                    {/* Order badge */}
+                                    <div style={{
+                                        position: 'absolute', bottom: '24px', right: '4px',
+                                        background: 'rgba(124, 92, 252, 0.9)', color: '#fff',
+                                        borderRadius: '50%', width: '20px', height: '20px',
+                                        fontSize: '10px', fontWeight: 700, display: 'flex',
+                                        alignItems: 'center', justifyContent: 'center', zIndex: 20
+                                    }}>{idx + 1}</div>
                                 </div>
                             ))}
                         </div>
@@ -485,10 +711,10 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave 
         </div>
     )
 
-    // ─── Step 3: Video Editor ────────────────────────────────────
-    const renderStep3_Editor = () => (
+    // ─── Step 3: Video Editor (for scheduled) or Step 4 (for one_time) ────────────────────────────────────
+    const renderStep_Editor = () => (
         <div className="wizard-step" style={{ height: '400px' }}>
-            <h3>Step 3: Video Editor</h3>
+            <h3>{formData.type === 'scheduled' ? 'Step 3' : 'Step 3'}: Video Editor</h3>
             <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginBottom: '15px' }}>
                 Add effects to process your videos before publishing. Effects are applied in order.
             </p>
@@ -632,29 +858,42 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave 
                 sortOrder: s.sortOrder
             })),
             videos: savedVideos
-        }
+        },
+        executionOrder: formData.executionOrder
     })
 
     return ReactDOM.createPortal(
-        <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.8)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }} className="no-drag">
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.8)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'auto' }} className="no-drag"
+        >
             <div
-                className="campaign-wizard-modal page-enter"
-                style={{ width: '900px', height: '85vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', borderRadius: '16px', overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}
-                onMouseDown={(e) => e.stopPropagation()}
+                className="campaign-wizard-modal page-enter no-drag"
+                style={{ width: '900px', height: '85vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', borderRadius: '16px', overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,0.5)', pointerEvents: 'auto' } as any}
+                onMouseDown={(e) => e.stopPropagation()} // Keep onMouseDown stopPropagation to prevent drag issues if relevant, but click should bubble for DatePicker?
             >
                 {renderStepper()}
 
                 <div className="wizard-content" style={{ flex: 1, padding: '20px', overflowY: 'auto' }}>
                     {step === 1 && renderStep1_Basic()}
                     {step === 2 && renderStep2_Source()}
-                    {step === 3 && (
+                    {step === 3 && formData.type === 'scheduled' && renderStep_Editor()}
+                    {step === 3 && formData.type !== 'scheduled' && null}
+                    {step === 4 && formData.type === 'scheduled' && (
                         <SchedulePreview
                             sources={sources}
                             savedVideos={savedVideos}
-                            schedule={formData.schedule as any}
+                            schedule={formData.schedule}
+                            onScheduleChange={(items) => setFormData(prev => ({
+                                ...prev,
+                                executionOrder: items.map(i => ({
+                                    ...i, // Persist all props including time
+                                    time: i.time // Ensure time is explicitly saved
+                                }))
+                            }))}
+                            onStartTimeChange={(date) => setFormData({ ...formData, schedule: { ...formData.schedule, runAt: date.toISOString() } })}
+                            onIntervalChange={(val) => setFormData(prev => ({ ...prev, schedule: { ...prev.schedule, interval: val } }))}
                         />
                     )}
-                    {step === 4 && renderStep3_Editor()}
+                    {step === 4 && formData.type === 'one_time' && renderStep_Editor()}
                     {step === 5 && renderStep4_Target()}
                 </div>
 
@@ -662,15 +901,22 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave 
                     <button className="btn btn-secondary" onClick={step === 1 ? onClose : handleBack}>
                         {step === 1 ? 'Cancel' : 'Back'}
                     </button>
-                    {step === 5 ? (
-                        <button className="btn btn-primary" onClick={() => onSave(formData, false)} disabled={!canAdvance()}>
-                            💾 Save & Close
-                        </button>
-                    ) : (
-                        <button className="btn btn-primary" onClick={handleNext} disabled={!canAdvance()}>
-                            Next &rarr;
-                        </button>
-                    )}
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                        {step === 5 && (
+                            <button className="btn btn-emerald" onClick={() => onSave(buildSaveData(), true)}>
+                                🚀 Save & Run Now
+                            </button>
+                        )}
+                        {step === 5 ? (
+                            <button className="btn btn-primary" onClick={() => onSave(buildSaveData(), false)} disabled={!canAdvance()}>
+                                💾 Save & Close
+                            </button>
+                        ) : (
+                            <button className="btn btn-primary" onClick={handleNext} disabled={!canAdvance()}>
+                                Next &rarr;
+                            </button>
+                        )}
+                    </div>
                 </div>
             </div>
 

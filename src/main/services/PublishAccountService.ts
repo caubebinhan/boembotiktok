@@ -31,7 +31,7 @@ class PublishAccountService {
      */
     private async hasSessionCookies(ses: Electron.Session): Promise<boolean> {
         try {
-            const cookies = await ses.cookies.get({ domain: '.tiktok.com' })
+            const cookies = await ses.cookies.get({})
             return cookies.some(c =>
                 c.name === 'sid_tt' ||
                 c.name === 'sessionid_ss' ||
@@ -55,8 +55,8 @@ class PublishAccountService {
         const hasSession = await this.hasSessionCookies(ses)
         if (!hasSession) return null
 
-        // Capture all TikTok cookies
-        const cookies = await ses.cookies.get({ domain: '.tiktok.com' })
+        // Capture all cookies
+        const cookies = await ses.cookies.get({})
         const cookiesJson = JSON.stringify(cookies)
 
         let username = ''
@@ -203,7 +203,7 @@ class PublishAccountService {
                 try {
                     const hasSession = await this.hasSessionCookies(ses)
                     if (hasSession) {
-                        const cookies = await ses.cookies.get({ domain: '.tiktok.com' })
+                        const cookies = await ses.cookies.get({})
                         const cookiesJson = JSON.stringify(cookies)
 
                         // Try to get username from current URL
@@ -370,7 +370,7 @@ class PublishAccountService {
 
                 const hasSession = await this.hasSessionCookies(ses)
                 if (hasSession) {
-                    const cookies = await ses.cookies.get({ domain: '.tiktok.com' })
+                    const cookies = await ses.cookies.get({})
                     await updateAndResolve(JSON.stringify(cookies))
                 }
             }
@@ -387,7 +387,7 @@ class PublishAccountService {
                 try {
                     const hasSession = await this.hasSessionCookies(ses)
                     if (hasSession) {
-                        const cookies = await ses.cookies.get({ domain: '.tiktok.com' })
+                        const cookies = await ses.cookies.get({})
                         storageService.run(
                             `UPDATE publish_accounts SET cookies_json = ?, session_valid = 1, last_login_at = datetime('now') WHERE id = ?`,
                             [JSON.stringify(cookies), id]

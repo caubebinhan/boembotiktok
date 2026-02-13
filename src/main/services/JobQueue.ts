@@ -2,6 +2,7 @@ import { storageService } from './StorageService'
 import { moduleManager } from './ModuleManager'
 import { TikTokModule } from '../modules/tiktok/TikTokModule'
 import { BrowserWindow } from 'electron'
+import { publishAccountService } from './PublishAccountService'
 
 class JobQueue {
     private intervalId: NodeJS.Timeout | null = null
@@ -66,6 +67,8 @@ class JobQueue {
                 await this.handleScan(job, data, tiktok)
             } else if (job.type === 'DOWNLOAD') {
                 await this.handleDownload(job, data, tiktok)
+            } else if (job.type === 'PUBLISH') {
+                await this.handlePublish(job, data, tiktok)
             }
 
             // Mark completed
@@ -81,59 +84,64 @@ class JobQueue {
     }
 
     private async handleScan(job: any, data: any, tiktok: TikTokModule) {
-        // 1. Get Campaign Config (for Interval)
-        const campaign = storageService.get('SELECT * FROM campaigns WHERE id = ?', [job.campaign_id])
-        let intervalMinutes = 60 // Default 1 hour
-        if (campaign && campaign.config_json) {
-            try {
-                const cfg = JSON.parse(campaign.config_json)
-                if (cfg.schedule && cfg.schedule.interval) {
-                    intervalMinutes = parseInt(cfg.schedule.interval) || 60
-                }
-            } catch { }
-        }
+        // 1. Get scheduling params from job data (set by triggerCampaign)
+        const intervalMinutes = data.intervalMinutes || 15
+        let scheduleTime = data.nextScheduleTime ? new Date(data.nextScheduleTime) : new Date()
+        const targetAccounts = data.targetAccounts || []
 
-        // 2. Gather ALL videos (from Sources + Manual Selection)
+        // 2. Scan ALL sources and collect videos
         let allVideos: any[] = []
         let scannedCount = 0
 
-        // 2a. Scan Sources (Channels/Keywords)
         if (data.sources) {
+            // 2a. Scan Channels
             if (data.sources.channels) {
                 for (const ch of data.sources.channels) {
                     console.log(`Scanning channel: ${ch.name}`)
-                    this.updateJobData(job.id, { ...data, status: `Scanning channel: ${ch.name}`, scannedCount })
+                    this.updateJobData(job.id, { ...data, status: `Scanning channel @${ch.name}...`, scannedCount })
                     const result = await tiktok.scanProfile(ch.name) || { videos: [] }
+                    const newVideos = result.videos || []
+
+                    // Apply source-level sorting before adding (per-source sort order)
+                    const sortOrder = ch.sortOrder || data.postOrder || 'newest'
+                    newVideos.sort((a: any, b: any) => {
+                        if (sortOrder === 'oldest') return (a.id || '').localeCompare(b.id || '')
+                        if (sortOrder === 'most_likes') return (b.stats?.likes || 0) - (a.stats?.likes || 0)
+                        return (b.id || '').localeCompare(a.id || '') // newest (default)
+                    })
+
+                    // Apply max scan limit
+                    const limited = ch.maxScanCount ? newVideos.slice(0, ch.maxScanCount) : newVideos
+
+                    allVideos.push(...limited)
+                    scannedCount += limited.length
+                    this.updateJobData(job.id, { ...data, status: `Scanned @${ch.name}: found ${limited.length} videos`, scannedCount })
+                }
+            }
+
+            // 2b. Scan Keywords
+            if (data.sources.keywords) {
+                for (const kw of data.sources.keywords) {
+                    console.log(`Scanning keyword: ${kw.name}`)
+                    this.updateJobData(job.id, { ...data, status: `Scanning keyword "${kw.name}"...`, scannedCount })
+                    const result = await tiktok.scanKeyword(kw.name, kw.maxScanCount || 50) || { videos: [] }
                     const newVideos = result.videos || []
                     allVideos.push(...newVideos)
                     scannedCount += newVideos.length
-                    this.updateJobData(job.id, { ...data, status: `Scanned channel: ${ch.name}`, scannedCount })
+                    this.updateJobData(job.id, { ...data, status: `Scanned keyword "${kw.name}": found ${newVideos.length} videos`, scannedCount })
                 }
             }
-            for (const kw of data.sources.keywords) {
-                console.log(`Scanning keyword: ${kw.name}`)
-                this.updateJobData(job.id, { ...data, status: `Scanning keyword: ${kw.name}`, scannedCount })
-                const result = await tiktok.scanKeyword(kw.name, kw.maxScanCount || 50) || { videos: [] }
-                const newVideos = result.videos || []
-                allVideos.push(...newVideos)
-                scannedCount += newVideos.length
-                this.updateJobData(job.id, { ...data, status: `Scanned keyword: ${kw.name}`, scannedCount })
-            }
-        }
-
-        // 2b. Add Manual Videos
-        if (data.videos && Array.isArray(data.videos)) {
-            allVideos.push(...data.videos)
-            scannedCount += data.videos.length
         }
 
         // 3. Deduplicate
         const uniqueVideos = Array.from(new Map(allVideos.map(v => [v.id, v])).values())
 
-        // 4. Sort by Post Order
+        // 4. Global sort by Post Order
         const postOrder = data.postOrder || 'newest'
+        const postOrderLabel = postOrder === 'most_likes' ? 'most likes first' : postOrder === 'oldest' ? 'oldest first' : 'newest first'
+        this.updateJobData(job.id, { ...data, status: `Sorting ${uniqueVideos.length} scanned videos (${postOrderLabel})...`, scannedCount })
+
         uniqueVideos.sort((a: any, b: any) => {
-            // Stats sorting
             const aLikes = (a.stats?.likes || 0)
             const bLikes = (b.stats?.likes || 0)
             if (postOrder === 'most_likes') return bLikes - aLikes
@@ -142,27 +150,22 @@ class JobQueue {
             return b.id.localeCompare(a.id) // newest (default)
         })
 
-        console.log(`JobQueue: Found ${uniqueVideos.length} unique videos. Scheduling...`)
-        this.updateJobData(job.id, { ...data, status: `Found ${uniqueVideos.length} unique videos. Scheduling downloads...`, scannedCount })
+        console.log(`JobQueue: Found ${uniqueVideos.length} unique scanned videos. Scheduling downloads starting at ${scheduleTime.toISOString()}`)
+        this.updateJobData(job.id, { ...data, status: `Scheduling ${uniqueVideos.length} download jobs...`, scannedCount })
 
-        // 5. Create Scheduled DOWNLOAD Jobs
-        let scheduleTime = new Date()
+        // 5. Create Scheduled DOWNLOAD Jobs (continuing from after single videos)
+        let scheduledCount = 0
 
         for (let i = 0; i < uniqueVideos.length; i++) {
             const v = uniqueVideos[i]
 
             // Check if already processed
-            const exists = storageService.get("SELECT id FROM videos WHERE platform_id = ? AND status = 'downloaded'", [v.id])
+            const exists = storageService.get("SELECT id FROM videos WHERE platform_id = ? AND status IN ('downloaded', 'published')", [v.id])
             if (exists) {
-                console.log(`Skipping existing video ${v.id}`)
+                console.log(`Skipping already processed video ${v.id}`)
                 continue
             }
 
-            if (i > 0) {
-                scheduleTime = new Date(scheduleTime.getTime() + intervalMinutes * 60000)
-            }
-
-            // Create DOWNLOAD job
             storageService.run(
                 `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'DOWNLOAD', 'pending', ?, ?)`,
                 [
@@ -172,16 +175,23 @@ class JobQueue {
                         url: v.url,
                         platform_id: v.platform_id || v.id,
                         video_id: v.id,
-                        targetAccounts: data.targetAccounts,
-                        description: v.desc || v.description // Pass description
+                        targetAccounts,
+                        description: v.desc || v.description,
+                        thumbnail: v.thumbnail || v.cover || '',
+                        videoStats: v.stats || { views: 0, likes: 0 },
+                        editPipeline: data.editPipeline,
+                        status: `Waiting to download`
                     })
                 ]
             )
+            scheduledCount++
+            scheduleTime = new Date(scheduleTime.getTime() + intervalMinutes * 60000)
         }
 
         // Update Job Result
-        const result = { found: uniqueVideos.length, scheduled: uniqueVideos.length }
+        const result = { found: uniqueVideos.length, scheduled: scheduledCount, skipped: uniqueVideos.length - scheduledCount }
         storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [JSON.stringify(result), job.id])
+        this.updateJobData(job.id, { ...data, status: `Scan complete: ${scheduledCount} videos scheduled`, scannedCount })
     }
 
     private async handleDownload(job: any, data: any, tiktok: TikTokModule) {
@@ -212,18 +222,25 @@ class JobQueue {
             storageService.run("UPDATE videos SET local_path = ?, status = 'downloaded' WHERE id = ?", [finalPath, video.id])
         }
 
-        // 4. Create PUBLISH job
+        // 4. Create PUBLISH job with video info
         if (data.targetAccounts && data.targetAccounts.length > 0) {
             this.updateJobData(job.id, { ...data, status: 'Scheduling publication...' })
             for (const accId of data.targetAccounts) {
+                // Get account info for display
+                const acc = storageService.get('SELECT username, display_name FROM publish_accounts WHERE id = ?', [accId])
                 storageService.run(
                     `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'PUBLISH', 'pending', datetime('now'), ?)`,
                     [
                         job.campaign_id,
                         JSON.stringify({
                             video_path: finalPath,
+                            platform_id: data.platform_id,
                             account_id: accId,
-                            caption: data.description || ''
+                            account_name: acc?.display_name || acc?.username || 'Unknown',
+                            caption: data.description || '',
+                            thumbnail: data.thumbnail || '',
+                            videoStats: data.videoStats || {},
+                            status: 'Waiting to publish'
                         })
                     ]
                 )
@@ -232,6 +249,45 @@ class JobQueue {
 
         // Store result path for "Open Folder" feature
         storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [JSON.stringify({ path: require('path').dirname(finalPath) }), job.id])
+    }
+
+    private async handlePublish(job: any, data: any, tiktok: TikTokModule) {
+        const { video_path, account_id, caption, account_name } = data
+
+        this.updateJobData(job.id, { ...data, status: `Publishing to @${account_name || 'account'}...` })
+
+        // 1. Load account cookies
+        const cookies = publishAccountService.getAccountCookies(Number(account_id))
+        if (!cookies || cookies.length === 0) {
+            throw new Error(`No valid cookies for account ${account_id}. Please re-login.`)
+        }
+
+        // 2. Verify video file exists
+        const fs = require('fs')
+        if (!fs.existsSync(video_path)) {
+            throw new Error(`Video file not found: ${video_path}`)
+        }
+
+        // 3. Publish using TikTok module
+        this.updateJobData(job.id, { ...data, status: `Uploading video to TikTok...` })
+        const result = await tiktok.publishVideo(video_path, caption || '', cookies)
+
+        if (!result.success) {
+            throw new Error(result.error || 'Upload failed (unknown error)')
+        }
+
+        // 4. Mark video as published in DB
+        if (data.platform_id) {
+            storageService.run("UPDATE videos SET status = 'published' WHERE platform_id = ?", [data.platform_id])
+        }
+
+        // Store result with video URL
+        storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [
+            JSON.stringify({ account: account_name, video_path, video_url: result.videoUrl, published_at: new Date().toISOString() }),
+            job.id
+        ])
+
+        this.updateJobData(job.id, { ...data, status: `Published to @${account_name}` })
     }
 
     private updateJobData(jobId: number, data: any) {

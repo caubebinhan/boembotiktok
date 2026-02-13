@@ -1,5 +1,6 @@
 import React from 'react'
 import { Campaign } from '../types/picker'
+import { formatFrequency } from '../utils/formatters'
 
 interface Props {
     campaigns: Campaign[]
@@ -8,20 +9,10 @@ interface Props {
     onSelect: (campaign: Campaign) => void
     onDelete?: (id: number) => void
     onRun?: (id: number) => void
+    onClone?: (id: number) => void
 }
 
-const cronToHuman = (cron: string): string => {
-    if (!cron) return 'Manual'
-    const parts = cron.split(' ')
-    if (parts.length >= 1 && parts[0].startsWith('*/')) {
-        const mins = parseInt(parts[0].replace('*/', ''))
-        if (mins >= 60) return `Every ${Math.round(mins / 60)}h`
-        return `Every ${mins} min`
-    }
-    return cron
-}
-
-export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleStatus, onSelect, onDelete, onRun }) => {
+export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleStatus, onSelect, onDelete, onRun, onClone }) => {
     return (
         <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-primary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -89,7 +80,21 @@ export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleSta
                                     <span>
                                         {c.type === 'scan_all' ? '🔄 Full Scan' : '📋 New Items'}
                                     </span>
-                                    <span>📅 {cronToHuman(c.schedule_cron)}</span>
+                                    <span>📅 {formatFrequency(c)}</span>
+                                </div>
+
+                                <div style={{ display: 'flex', gap: '12px', fontSize: '11px', marginTop: '6px', color: 'var(--text-muted)' }}>
+                                    <span title="Scanned Videos" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                        🔍 {c.scanned_count || 0}
+                                    </span>
+                                    <span title="Published Videos" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                        🚀 {c.published_count || 0}
+                                    </span>
+                                    {(c.failed_count || 0) > 0 && (
+                                        <span title="Failed Jobs" style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#fe2c55' }}>
+                                            ❌ {c.failed_count}
+                                        </span>
+                                    )}
                                 </div>
 
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
@@ -103,6 +108,17 @@ export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleSta
                                                 title="Run Now"
                                                 style={{ padding: '4px 8px', color: 'var(--accent-green)' }}>
                                                 ▶ Run
+                                            </button>
+                                        )}
+                                        {onClone && (
+                                            <button className="btn btn-ghost btn-sm"
+                                                onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    onClone(c.id)
+                                                }}
+                                                title="Clone Campaign"
+                                                style={{ padding: '4px 8px', color: 'var(--text-secondary)' }}>
+                                                👯
                                             </button>
                                         )}
                                         {onDelete && (

@@ -181,12 +181,11 @@ class StorageService {
                 // We might already have 'type' or 'platform', let's ensure we have what we need
             } catch (e) { /* ignore */ }
 
-            try {
-                this.db.run("ALTER TABLE jobs ADD COLUMN data_json TEXT")
-                this.db.run("ALTER TABLE jobs ADD COLUMN result_json TEXT")
-                this.db.run("ALTER TABLE jobs ADD COLUMN scheduled_for DATETIME")
-                this.db.run("ALTER TABLE accounts ADD COLUMN metadata TEXT")
-            } catch (e) { /* ignore */ }
+            // Individual column migrations to prevent one failure blocking others
+            try { this.db.run("ALTER TABLE jobs ADD COLUMN data_json TEXT") } catch (e) { /* ignore */ }
+            try { this.db.run("ALTER TABLE jobs ADD COLUMN result_json TEXT") } catch (e) { /* ignore */ }
+            try { this.db.run("ALTER TABLE jobs ADD COLUMN scheduled_for DATETIME") } catch (e) { /* ignore */ }
+            try { this.db.run("ALTER TABLE accounts ADD COLUMN metadata TEXT") } catch (e) { /* ignore */ }
 
             await this.save()
             console.log('Migrations executed')

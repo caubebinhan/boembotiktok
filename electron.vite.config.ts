@@ -4,10 +4,10 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin({ include: ['electron'] })],
+    plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        external: ['electron', 'electron-updater'],
+        external: ['electron', 'electron-updater', 'playwright-core', 'chromium-bidi', 'fs-extra', 'ffmpeg-static', 'ffprobe-static', 'fluent-ffmpeg'],
         input: {
           index: resolve(__dirname, 'src/main/index.ts')
         },

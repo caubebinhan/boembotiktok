@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react'
 import { CampaignList } from '../components/CampaignList'
 import { CampaignWizard } from '../components/CampaignWizard'
-import { CampaignDetailsModal } from '../components/CampaignDetailsModal'
+import { TodaySchedule } from '../components/TodaySchedule'
 
 export const CampaignsView: React.FC = () => {
     const [campaigns, setCampaigns] = useState<any[]>([])
-    const [showCreateModal, setShowCreateModal] = useState(false)
-    const [selectedCampaign, setSelectedCampaign] = useState<any>(null)
+    const [wizardState, setWizardState] = useState<{ isOpen: boolean, initialData?: any }>({ isOpen: false })
+    const [activeTab, setActiveTab] = useState<'all' | 'today'>('all')
+
+    // ... (loadCampaigns is same)
 
     const loadCampaigns = async () => {
         try {
@@ -20,21 +22,32 @@ export const CampaignsView: React.FC = () => {
 
     useEffect(() => {
         loadCampaigns()
+
+        // Listen for updates from other windows (e.g. details window closed)
+        // @ts-ignore
+        const removeListener = window.api.on('campaign-updated', () => {
+            loadCampaigns()
+        })
+        return () => {
+            if (removeListener) removeListener()
+        }
     }, [])
 
     const handleCreateCampaign = async (data: any, runNow: boolean) => {
         try {
             // Build cron from schedule
             let cron = ''
-            if (data.type === 'scheduled') {
-                cron = `*/${data.schedule.interval} * * * *`
+            if (data.type === 'scheduled' && data.schedule) {
+                // Ensure valid interval
+                const interval = Math.max(1, Number(data.schedule.interval) || 60)
+                cron = `*/${interval} * * * *`
             }
 
             // Full config includes all wizard data
             const config = {
-                sources: data.sourceData?.channels && data.sourceData?.keywords ? {
-                    channels: data.sourceData.channels,
-                    keywords: data.sourceData.keywords
+                sources: data.sourceData?.channels || data.sourceData?.keywords ? {
+                    channels: data.sourceData.channels || [],
+                    keywords: data.sourceData.keywords || []
                 } : { channels: [], keywords: [] },
                 videos: data.sourceData?.videos || [],
                 postOrder: data.postOrder || 'newest',
@@ -46,17 +59,20 @@ export const CampaignsView: React.FC = () => {
             // @ts-ignore
             const result = await window.api.invoke('create-campaign', data.name, data.type, cron, config)
 
-            if (runNow && result && result.lastInsertId) {
+            // triggerCampaign handles everything: singles first, then scans
+            if (result && result.lastInsertId) {
                 // @ts-ignore
-                await window.api.invoke('trigger-campaign', result.lastInsertId)
+                await window.api.invoke('trigger-campaign', result.lastInsertId, runNow)
             }
 
-            setShowCreateModal(false)
+            setWizardState({ isOpen: false })
             loadCampaigns()
         } catch (err) {
             console.error('Failed to create campaign:', err)
         }
     }
+
+    // ... (handlers)
 
     const handleToggleStatus = async (id: number, currentStatus: string) => {
         console.log('Toggle', id, currentStatus)
@@ -73,7 +89,7 @@ export const CampaignsView: React.FC = () => {
 
     const handleSelectCampaign = async (campaign: any) => {
         // @ts-ignore
-        await window.api.openCampaignDetails(campaign.id)
+        await window.api.invoke('open-campaign-details', campaign.id)
     }
 
     const handleDelete = async (id: number) => {
@@ -87,25 +103,30 @@ export const CampaignsView: React.FC = () => {
     }
 
     const handleRun = async (id: number) => {
-        // Find campaign name for better feedback
         const camp = campaigns.find(c => c.id === id)
         const name = camp ? camp.name : 'Campaign'
 
         try {
-            // Show toast/alert? Or just set a local loading state?
-            // For now, let's use a simple alert or console, but user asked for "feedback"
-            // Let's rely on job updates?
-            // Better: optimistic UI or toast. Since I don't have a toast lib setup, I'll use window.alert or a custom overlay.
-            // Actually, let's just log it and maybe show a "Triggered" badge?
-            // User specifically asked: "bấm run campaign không có phản hồi gì hết"
-
             if (!confirm(`Run "${name}" immediately?`)) return
 
             // @ts-ignore
             await window.api.invoke('trigger-campaign', id)
-            loadCampaigns() // Refresh to show running status if applicable
+            loadCampaigns()
         } catch (err) {
             console.error('Failed to run campaign:', err)
+        }
+    }
+
+    const handleClone = async (id: number) => {
+        try {
+            // Fetch full campaign details including config
+            // @ts-ignore
+            const details = await window.api.invoke('get-campaign-details', id)
+            if (details) {
+                setWizardState({ isOpen: true, initialData: details })
+            }
+        } catch (e) {
+            console.error('Failed to prepare clone:', e)
         }
     }
 
@@ -138,29 +159,50 @@ export const CampaignsView: React.FC = () => {
                     <button className="btn btn-secondary" onClick={handleOpenScanner}>
                         🔍 Scanner Tool
                     </button>
-                    <button className="btn btn-primary" onClick={() => setShowCreateModal(true)}>
+                    <button className="btn btn-primary" data-testid="wizard-new-campaign-btn" onClick={() => setWizardState({ isOpen: true })}>
                         + New Campaign
                     </button>
                 </div>
             </div>
 
-            <div style={{ flex: 1, overflow: 'hidden' }}>
-                <CampaignList
-                    campaigns={campaigns}
-                    // @ts-ignore
-                    onCreate={() => setShowCreateModal(true)}
-                    // @ts-ignore
-                    onToggleStatus={handleToggleStatus}
-                    onSelect={handleSelectCampaign}
-                    onDelete={handleDelete}
-                    onRun={handleRun}
-                />
+            <div className="tabs" style={{ marginBottom: '15px', borderBottom: '1px solid var(--border-primary)' }}>
+                <button
+                    className={`tab ${activeTab === 'all' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('all')}
+                >
+                    📁 All Campaigns
+                </button>
+                <button
+                    className={`tab ${activeTab === 'today' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('today')}
+                >
+                    📅 Today's Schedule
+                </button>
             </div>
 
-            {showCreateModal && (
+            <div style={{ flex: 1, overflow: 'hidden' }}>
+                {activeTab === 'all' ? (
+                    <CampaignList
+                        campaigns={campaigns}
+                        // @ts-ignore
+                        onCreate={() => setWizardState({ isOpen: true })}
+                        // @ts-ignore
+                        onToggleStatus={handleToggleStatus}
+                        onSelect={handleSelectCampaign}
+                        onDelete={handleDelete}
+                        onRun={handleRun}
+                        onClone={handleClone}
+                    />
+                ) : (
+                    <TodaySchedule />
+                )}
+            </div>
+
+            {wizardState.isOpen && (
                 <CampaignWizard
-                    onClose={() => setShowCreateModal(false)}
+                    onClose={() => setWizardState({ isOpen: false })}
                     onSave={handleCreateCampaign}
+                    initialData={wizardState.initialData}
                 />
             )}
         </div>

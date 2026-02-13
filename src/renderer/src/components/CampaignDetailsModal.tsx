@@ -10,6 +10,7 @@ export const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ camp
     const [config, setConfig] = useState<any>(null)
     const [activeTab, setActiveTab] = useState<'sources' | 'videos' | 'jobs'>('sources')
     const [jobs, setJobs] = useState<any[]>([])
+    const [stats, setStats] = useState({ scanned: 0, downloaded: 0, scheduled: 0, published: 0 })
 
     useEffect(() => {
         if (campaign?.config_json) {
@@ -19,6 +20,7 @@ export const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ camp
                 setConfig({})
             }
         }
+        if (campaign) loadStats()
     }, [campaign])
 
     useEffect(() => {
@@ -26,6 +28,16 @@ export const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ camp
             loadJobs()
         }
     }, [activeTab])
+
+    const loadStats = async () => {
+        try {
+            // @ts-ignore
+            const s = await window.api.invoke('get-campaign-stats', campaign.id)
+            setStats(s || { scanned: 0, downloaded: 0, scheduled: 0, published: 0 })
+        } catch (e) {
+            console.error('Failed to load stats', e)
+        }
+    }
 
     const loadJobs = async () => {
         try {
@@ -85,6 +97,7 @@ export const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ camp
             alert('Campaign triggered successfully!')
             onUpdate()
             if (activeTab === 'jobs') loadJobs()
+            loadStats()
         } catch (e) {
             console.error('Failed to trigger campaign', e)
         }
@@ -130,6 +143,25 @@ export const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ camp
                     {/* SOURCES TAB */}
                     {activeTab === 'sources' && (
                         <div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '10px', marginBottom: '20px' }}>
+                                <div style={{ background: 'rgba(37, 244, 238, 0.1)', padding: '15px', borderRadius: '8px', textAlign: 'center', border: '1px solid rgba(37, 244, 238, 0.2)' }}>
+                                    <div style={{ fontSize: '24px', fontWeight: 'bold', color: 'var(--accent-primary)' }}>{stats.scanned}</div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Scanned</div>
+                                </div>
+                                <div style={{ background: 'rgba(255, 152, 0, 0.1)', padding: '15px', borderRadius: '8px', textAlign: 'center', border: '1px solid rgba(255, 152, 0, 0.2)' }}>
+                                    <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#ff9800' }}>{stats.downloaded}</div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Downloaded</div>
+                                </div>
+                                <div style={{ background: 'rgba(33, 150, 243, 0.1)', padding: '15px', borderRadius: '8px', textAlign: 'center', border: '1px solid rgba(33, 150, 243, 0.2)' }}>
+                                    <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#2196f3' }}>{stats.scheduled}</div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Scheduled</div>
+                                </div>
+                                <div style={{ background: 'rgba(76, 175, 80, 0.1)', padding: '15px', borderRadius: '8px', textAlign: 'center', border: '1px solid rgba(76, 175, 80, 0.2)' }}>
+                                    <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#4caf50' }}>{stats.published}</div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Published</div>
+                                </div>
+                            </div>
+
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
                                 <h3>Active Sources</h3>
                                 <button className="btn btn-primary" onClick={handleRunNow}>

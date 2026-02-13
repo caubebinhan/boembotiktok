@@ -124,8 +124,8 @@ app.whenReady().then(async () => {
             return campaignService.create(name, type, cron, config)
         })
 
-        ipcMain.handle('trigger-campaign', async (_event: any, id: number) => {
-            return schedulerService.triggerCampaign(id)
+        ipcMain.handle('trigger-campaign', async (_event: any, id: number, ignoreSchedule?: boolean) => {
+            return schedulerService.triggerCampaign(id, ignoreSchedule)
         })
 
         ipcMain.handle('get-campaigns', async () => {
@@ -138,6 +138,26 @@ app.whenReady().then(async () => {
 
         ipcMain.handle('update-campaign-config', async (_event: any, id: number, config: any) => {
             return campaignService.updateConfig(id, config)
+        })
+
+        ipcMain.handle('clone-campaign', async (_event: any, id: number) => {
+            return campaignService.clone(id)
+        })
+
+        ipcMain.handle('get-campaign-stats', async (_event: any, id: number) => {
+            return campaignService.getCampaignStats(id)
+        })
+
+        ipcMain.handle('get-scheduled-jobs', async (_event: any, start: string, end: string) => {
+            return campaignService.getScheduledJobs(start, end)
+        })
+
+        ipcMain.handle('get-campaign-jobs', async (_event: any, id: number) => {
+            return campaignService.getCampaignJobs(id)
+        })
+
+        ipcMain.handle('get-campaign-details', async (_event: any, id: number) => {
+            return campaignService.getCampaign(id)
         })
 
         ipcMain.handle('open-campaign-details', async (_event, id) => {
@@ -161,6 +181,14 @@ app.whenReady().then(async () => {
 
             win.once('ready-to-show', () => {
                 win.show()
+            })
+
+            // When closed, notify main window to refresh stats
+            win.on('closed', () => {
+                const allWindows = BrowserWindow.getAllWindows()
+                for (const w of allWindows) {
+                    w.webContents.send('campaign-updated')
+                }
             })
         })
 
@@ -266,6 +294,22 @@ app.whenReady().then(async () => {
             return { success: true }
         })
 
+        ipcMain.handle('job:retry', async (_event: any, jobId: number) => {
+            storageService.run(
+                "UPDATE jobs SET status = 'pending', error_message = NULL, started_at = NULL, completed_at = NULL, scheduled_for = datetime('now') WHERE id = ? AND status = 'failed'",
+                [jobId]
+            )
+            return { success: true }
+        })
+
+        ipcMain.handle('job:retry-all', async (_event: any, campaignId: number) => {
+            storageService.run(
+                "UPDATE jobs SET status = 'pending', error_message = NULL, started_at = NULL, completed_at = NULL, scheduled_for = datetime('now') WHERE campaign_id = ? AND status = 'failed'",
+                [campaignId]
+            )
+            return { success: true }
+        })
+
         ipcMain.handle('job:delete', async (_event: any, jobId: number) => {
             storageService.run(
                 "DELETE FROM jobs WHERE id = ? AND status IN ('pending', 'paused', 'failed')",
@@ -344,6 +388,15 @@ app.whenReady().then(async () => {
         // ─── Self Test IPC ───────────────────────────────────────
         ipcMain.handle('run-self-test', async () => {
             return selfTestService.runTest()
+        })
+
+        // ─── Test Helpers ────────────────────────────────────────
+        ipcMain.handle('test:seed-account', async () => {
+            const result = storageService.run(
+                `INSERT OR IGNORE INTO publish_accounts (username, display_name, session_valid, created_at) 
+                 VALUES ('test_user', 'Test User', 1, datetime('now'))`
+            )
+            return { success: result.changes > 0 }
         })
 
         // Start background services

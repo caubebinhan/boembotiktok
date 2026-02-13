@@ -70,6 +70,11 @@ export interface Campaign {
     schedule_cron: string
     config_json: string
     created_at: string
+    pending_count?: number
+    scanned_count?: number
+    published_count?: number
+    failed_count?: number
+    total_recent?: number
 }
 
 
