@@ -399,6 +399,23 @@ app.whenReady().then(async () => {
             return { success: result.changes > 0 }
         })
 
+        ipcMain.handle('test:create-job', async (_event: any, type: string, data: any) => {
+            const result = storageService.run(
+                `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json, created_at) 
+                 VALUES (0, ?, 'pending', datetime('now'), ?, datetime('now'))`,
+                [type, JSON.stringify(data)]
+            )
+            return { id: result.lastInsertId }
+        })
+
+        ipcMain.handle('test:update-cookies', async (_event: any, id: number, cookies: any[]) => {
+            storageService.run(
+                `UPDATE publish_accounts SET cookies_json = ? WHERE id = ?`,
+                [JSON.stringify(cookies), id]
+            )
+            return { success: true }
+        })
+
         // Start background services
         schedulerService.start()
         jobQueue.start()

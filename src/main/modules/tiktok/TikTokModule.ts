@@ -294,8 +294,9 @@ export class TikTokModule implements PlatformModule {
         }
     }
 
-    async publishVideo(filePath: string, caption: string, cookies?: any[]): Promise<{ success: boolean, videoUrl?: string, error?: string }> {
+    async publishVideo(filePath: string, caption: string, cookies?: any[], onProgress?: (msg: string) => void): Promise<{ success: boolean, videoUrl?: string, error?: string }> {
         console.log(`Publishing video: ${filePath}`)
+        if (onProgress) onProgress('Initializing browser...')
         let page: Page | null = null
 
         try {
@@ -323,53 +324,113 @@ export class TikTokModule implements PlatformModule {
                 throw new Error('No cookies provided. Please re-login the publish account.')
             }
 
-            // ─── Helper: Dismiss ALL popups/modals/backdrops ───
-            const dismissOverlays = async () => {
-                const dismissSelectors = [
-                    'button:has-text("Got it")',
-                    'button:has-text("OK")',
-                    'button:has-text("Close")',
-                    'button:has-text("Dismiss")',
-                    'button:has-text("Đóng")',
-                    '[class*="modal"] button[class*="close"]',
-                    '[class*="Modal"] button[class*="close"]',
-                    '[aria-label="Close"]',
-                    '[aria-label="close"]',
+            // ─── Helper: Smart Overlay/Modal Cleaner ───
+            const cleanOverlays = async (targetSelector?: string) => {
+                if (onProgress) onProgress('Checking for overlays...')
+
+                const commonSelectors = [
+                    'button[aria-label="Close"]', 'button[aria-label="close"]',
+                    'svg[data-icon="close"]', 'div[role="dialog"] button[aria-label="Close"]',
+                    'button:has-text("Got it")', 'button:has-text("OK")',
+                    'button:has-text("Dismiss")', 'button:has-text("Not now")',
+                    'button:has-text("Skip")', 'div[class*="modal"] button',
+                    'button:has-text("Turn on")', 'button:has-text("Run check")', 'button:has-text("Try it now")',
+                    '[data-e2e="modal-close-inner-button"]', '[data-e2e="modal-close-button"]'
                 ]
-                for (const sel of dismissSelectors) {
+
+                for (const sel of commonSelectors) {
                     try {
-                        const btn = await page!.$(sel)
-                        if (btn && await btn.isVisible()) {
-                            await btn.click()
-                            console.log(`  Dismissed overlay: ${sel}`)
-                            await page!.waitForTimeout(500)
+                        const btns = await page!.$(sel)
+                        if (btns && await btns.isVisible()) {
+                            const allBtns = await page!.$$(sel)
+                            for (const btn of allBtns) {
+                                if (await btn.isVisible()) {
+                                    console.log(`  Dismissing overlay: ${sel}`)
+                                    await btn.click({ force: true, timeout: 500 }).catch(() => { })
+                                    await page!.waitForTimeout(300)
+                                }
+                            }
                         }
-                    } catch { /* ignore */ }
+                    } catch { }
                 }
-                // Press Escape for remaining backdrops
-                try {
-                    const hasBackdrop = await page!.evaluate(() => {
-                        const overlays = document.querySelectorAll('[class*="backdrop"], [class*="Backdrop"], [class*="overlay"], [class*="Overlay"], [class*="mask"], [class*="Mask"]')
-                        for (const el of overlays) {
-                            const style = getComputedStyle(el)
-                            if (style.display !== 'none' && style.visibility !== 'hidden' && (el as HTMLElement).offsetParent !== null) return true
+
+                await page!.keyboard.press('Escape')
+
+                // 3. Obstruction Detection (Target-based)
+                if (targetSelector) {
+                    try {
+                        const target = await page!.$(targetSelector)
+                        if (target) {
+                            const isObscured = await page!.evaluate((el) => {
+                                const rect = el.getBoundingClientRect()
+                                const x = rect.left + rect.width / 2
+                                const y = rect.top + rect.height / 2
+                                const topEl = document.elementFromPoint(x, y)
+
+                                // Check if topEl is the target or a descendant
+                                if (topEl && el !== topEl && !el.contains(topEl)) {
+                                    console.log('Obscured by:', topEl)
+                                    return true
+                                }
+                                return false
+                            }, target)
+
+                            if (isObscured) {
+                                console.log(`  ⚠️ Target ${targetSelector} is still obscured!`)
+                                // Attempt to remove aggressive modals by z-index
+                                await page!.evaluate(() => {
+                                    const all = document.querySelectorAll('*')
+                                    for (const el of Array.from(all)) {
+                                        const style = window.getComputedStyle(el)
+                                        const z = parseInt(style.zIndex)
+                                        if (z > 50 && el.getBoundingClientRect().height > 0) {
+                                            const rect = el.getBoundingClientRect()
+                                            // Heuristic: overlapping center/large area
+                                            if (rect.width > window.innerWidth * 0.5 && rect.height > window.innerHeight * 0.5) {
+                                                // (el as HTMLElement).click(); // Try clicking backdrop
+                                                // el.remove(); // Removing might break app state, cleaner to click close btn
+                                            }
+                                        }
+                                    }
+                                })
+                            }
                         }
-                        return false
-                    })
-                    if (hasBackdrop) {
-                        await page!.keyboard.press('Escape')
-                        console.log('  Pressed Escape to dismiss backdrop')
-                        await page!.waitForTimeout(500)
+                    } catch (e) {
+                        console.warn('Overlay check error:', e)
                     }
-                } catch { /* ignore */ }
+                }
+            }
+
+            // Helper to Retry Actions with cleaning
+            const interactWithRetry = async (action: () => Promise<any>, targetSel: string) => {
+                for (let i = 0; i < 5; i++) {
+                    try {
+                        await cleanOverlays(targetSel)
+                        await action()
+                        return
+                    } catch (e: any) {
+                        if (i === 4) throw e
+                        console.log(`   Action failed, retrying after cleaning...`)
+                        await page!.waitForTimeout(1000)
+                    }
+                }
             }
 
             // ─── Navigate to TikTok Studio Upload ───
             console.log('Navigating to TikTok Studio upload page...')
-            await page.goto('https://www.tiktok.com/tiktokstudio/upload?from=upload&lang=en', {
-                waitUntil: 'domcontentloaded',
-                timeout: 60000
-            })
+            if (onProgress) onProgress('Navigating to upload page...')
+            try {
+                await page.goto('https://www.tiktok.com/tiktokstudio/upload?from=upload&lang=en', {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 60000
+                })
+            } catch (e: any) {
+                if (e.message.includes('interrupted by another navigation') || e.message.includes('navigating to')) {
+                    console.log('  ⚠️ Navigation redirected (expected)')
+                } else {
+                    throw e
+                }
+            }
             await page.waitForTimeout(3000)
             console.log('Upload page URL:', page.url())
 
@@ -383,9 +444,12 @@ export class TikTokModule implements PlatformModule {
 
             for (let uploadAttempt = 1; uploadAttempt <= MAX_UPLOAD_RETRIES; uploadAttempt++) {
                 console.log(`\n📤 Upload attempt ${uploadAttempt}/${MAX_UPLOAD_RETRIES}...`)
-                await dismissOverlays()
+                if (onProgress) onProgress(`Uploading video (Attempt ${uploadAttempt})...`)
+                await cleanOverlays()
 
-                const fileInput = await page.waitForSelector('input[type="file"]', { timeout: 15000 })
+                // Wait for file input (might be hidden)
+                // Using state: attached handles hidden inputs better than default waitForSelector sometimes
+                const fileInput = await page.waitForSelector('input[type="file"]', { state: 'attached', timeout: 15000 })
                 if (!fileInput) throw new Error('File input not found on upload page')
                 await fileInput.setInputFiles(filePath)
                 console.log('  File selected')
@@ -410,7 +474,7 @@ export class TikTokModule implements PlatformModule {
 
                     if (uploadError) {
                         console.log('  Dismissing error popup...')
-                        await dismissOverlays()
+                        await cleanOverlays()
                         // Try Retry button
                         try {
                             const retryBtn = await page.$('button:has-text("Retry")')
@@ -422,15 +486,6 @@ export class TikTokModule implements PlatformModule {
                                 continue
                             }
                         } catch { /* no retry */ }
-                        // Try Replace button
-                        try {
-                            const replaceBtn = await page.$('button:has-text("Replace")')
-                            if (replaceBtn && await replaceBtn.isVisible()) {
-                                await replaceBtn.click()
-                                console.log('  Clicked "Replace" to re-upload')
-                                await page.waitForTimeout(1000)
-                            }
-                        } catch { /* ignore */ }
                         break
                     }
 
@@ -453,32 +508,50 @@ export class TikTokModule implements PlatformModule {
                 if (uploadReady) { fileUploaded = true; break }
                 if (uploadAttempt < MAX_UPLOAD_RETRIES) {
                     console.log(`  Attempt ${uploadAttempt} failed, retrying...`)
-                    await dismissOverlays()
-                    await page.waitForTimeout(2000)
+                    await cleanOverlays()
+                    await page.reload()
+                    await page.waitForTimeout(3000)
                 }
             }
 
             if (!fileUploaded) throw new Error(`File upload failed after ${MAX_UPLOAD_RETRIES} attempts`)
 
-            // ─── Dismiss any overlays blocking caption ───
-            console.log('\n🧹 Clearing overlays before caption...')
-            await dismissOverlays()
+            // ─── Handle Content Check Popups & Clear Overlays ───
+            console.log('\n🧹 Handling special popups (Content Check, etc)...')
+            if (onProgress) onProgress('Checking for content warnings...')
+            // Handle "Run a copyright check" or "Automatic content checks"
+            try {
+                const checkPopup = await page.locator('text="Run a copyright check"').or(page.locator('text="Automatic content checks"'))
+                if (await checkPopup.isVisible({ timeout: 5000 })) {
+                    console.log('  ⚠️ Detected Content Check popup')
+                    const turnOnBtn = await page.locator('button:has-text("Turn on"), button:has-text("Try it now"), button:has-text("Run check")').first()
+                    if (await turnOnBtn.isVisible()) {
+                        await turnOnBtn.click()
+                        console.log('  Clicked "Turn on" / "Run check"')
+                        await page.waitForTimeout(1000)
+                    }
+                }
+            } catch { /* ignore */ }
+
+            await cleanOverlays()
             await page.waitForTimeout(500)
 
             // ─── Set Caption ───
             console.log('✏️ Setting caption...')
+            if (onProgress) onProgress('Setting video caption...')
             let captionSet = false
             for (const sel of ['.public-DraftEditor-content', '[contenteditable="true"][role="textbox"]', '[contenteditable="true"].notranslate', 'div[contenteditable="true"][data-placeholder]', '[contenteditable="true"]']) {
                 try {
-                    const editor = await page.$(sel)
+                    const editor = await page!.$(sel)
                     if (editor && await editor.isVisible()) {
-                        await dismissOverlays()
-                        await editor.click()
-                        await page.waitForTimeout(300)
-                        await page.keyboard.press('Control+a')
-                        await page.keyboard.press('Backspace')
-                        await page.waitForTimeout(200)
-                        await page.keyboard.type(caption, { delay: 20 })
+                        await interactWithRetry(async () => {
+                            await editor!.click()
+                            await page!.waitForTimeout(300)
+                            await page!.keyboard.press('Control+a')
+                            await page!.keyboard.press('Backspace')
+                            await page!.waitForTimeout(200)
+                            await page!.keyboard.type(caption, { delay: 20 })
+                        }, sel)
                         console.log(`  Caption set (${sel})`)
                         captionSet = true
                         break
@@ -491,37 +564,191 @@ export class TikTokModule implements PlatformModule {
 
             // ─── Click Post button ───
             console.log('\n🚀 Posting video...')
+            if (onProgress) onProgress('Clicking Post button...')
             let posted = false
-            for (const sel of ['button:has-text("Post")', 'button:has-text("Đăng")', '[data-e2e="post-button"]']) {
-                try {
-                    const btn = await page.$(sel)
-                    if (btn && await btn.isVisible()) {
-                        for (let i = 0; i < 15; i++) {
-                            const isDisabled = await btn.evaluate((el: HTMLButtonElement) => el.disabled)
-                            if (!isDisabled) break
-                            console.log(`  Post button disabled, waiting... (${i + 1}/15)`)
-                            await page.waitForTimeout(2000)
+            // FIX: Re-added "Đăng" because logs showed "Upload ready: button:has-text("Đăng")"
+            const postSelectors = ['button:has-text("Post")', 'button:has-text("Đăng")', '[data-e2e="post-button"]']
+
+            // Ensure overlays are gone before clicking post
+            await cleanOverlays()
+
+            // ─── Verified Smart Scroll & Click Logic with Retry ───
+            if (onProgress) onProgress('Locating Post button...')
+            console.log('📜 Looking for scrollable container...')
+
+            let bestBtn = null
+            let maxY = -1
+            let postButtonFound = false
+
+            // Retry loop for finding the button (30 seconds)
+            for (let i = 0; i < 15; i++) {
+                if (onProgress) onProgress(`Searching for Post button (Attempt ${i + 1}/15)...`)
+
+                // ─── EXACT SYNC with research-upload.spec.ts ───
+                // Find the largest scrollable element OR documentElement
+                const scrollHandle = await page!.evaluateHandle(() => {
+                    const potential = Array.from(document.querySelectorAll('*')).filter(el => {
+                        const style = window.getComputedStyle(el)
+                        return (style.overflowY === 'scroll' || style.overflowY === 'auto') && el.scrollHeight > el.clientHeight
+                    })
+                    potential.sort((a, b) => b.scrollHeight - a.scrollHeight)
+                    return potential.length > 0 ? potential[0] : document.documentElement
+                })
+
+                if (scrollHandle) {
+                    await scrollHandle.evaluate((el: Element) => {
+                        console.log(`Debug: Scrolling <${el.tagName.toLowerCase()} class="${el.className}"> to bottom...`)
+                        el.scrollTop = el.scrollHeight
+                    })
+                    // Report scroll action to UI
+                    const tagName = await scrollHandle.evaluate((el: Element) => el.tagName.toLowerCase())
+                    if (onProgress) onProgress(`Scrolled container <${tagName}> to bottom...`)
+                }
+
+                // Helper: also trigger a window scroll just in case (test does this in fallback, we can allow both safely)
+                // But primarily rely on the logic above
+                await page!.waitForTimeout(2000)
+
+                // DEBUG SNAPSHOT every 5 attempts
+                if (i % 5 === 0) {
+                    const ts = Date.now()
+                    await page!.screenshot({ path: require('path').join(process.cwd(), 'debug_artifacts', `scroll_attempt_${i}_${ts}.png`) }).catch(() => { })
+                }
+
+                // Find all candidates
+                // Use the updated selectors that include "Đăng"
+                const candidates = await page!.$$('button:has-text("Post"), button:has-text("Đăng"), [data-e2e="post-button"]')
+                console.log(`   Attempt ${i + 1}: Found ${candidates.length} candidate "Post" buttons.`)
+                if (onProgress) onProgress(`Found ${candidates.length} Post buttons...`)
+
+                bestBtn = null
+                maxY = -1
+
+                for (const btn of candidates) {
+                    const box = await btn.boundingBox()
+                    if (box && await btn.isVisible()) {
+                        const text = await btn.innerText()
+                        console.log(`   Candidate: "${text}" at y=${box.y}`)
+                        if (onProgress) onProgress(`Checking candidate: "${text.substring(0, 10)}..."`)
+
+                        if (box.y > maxY) {
+                            maxY = box.y
+                            bestBtn = btn
                         }
-                        await btn.click()
-                        console.log(`  ✅ Post clicked (${sel})`)
-                        posted = true
-                        break
                     }
-                } catch { /* try next */ }
+                }
+
+                if (bestBtn) {
+                    console.log(`   🎯 Selected best Post button at y=${maxY}`)
+                    postButtonFound = true
+                    break
+                }
+
+                console.log('   ⚠️ Post button not found yet, retrying...')
             }
-            if (!posted) throw new Error('Could not find or click Post button')
+
+            // Final pre-click debug dump
+            const fs = require('fs')
+            const path = require('path')
+            const debugDir = path.join(process.cwd(), 'debug_artifacts')
+            if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true })
+            const tsPreClick = Date.now()
+            await page!.screenshot({ path: path.join(debugDir, `pre_click_state_${tsPreClick}.png`), fullPage: true }).catch(() => { })
+            fs.writeFileSync(path.join(debugDir, `pre_click_state_${tsPreClick}.html`), await page!.content())
+
+            if (bestBtn) {
+                try {
+                    if (onProgress) onProgress('Clicking Post button...')
+                    await bestBtn.scrollIntoViewIfNeeded()
+                    await page!.waitForTimeout(500)
+                    await cleanOverlays()
+                    await bestBtn.click({ timeout: 5000 })
+                    console.log(`  ✅ Post clicked (Best candidate)`)
+                    posted = true
+                } catch (e) {
+                    console.log(`  Click failed on best candidate, trying force...`)
+                    await bestBtn.click({ force: true })
+                    posted = true
+                }
+            } else {
+                console.error('❌ CRITICAL: Could not find Post button after retries.')
+                if (onProgress) onProgress('Failed to find Post button. Saving debug info...')
+
+                // 📸 CAPTURE DEBUG ARTIFACTS ON FAILURE
+                const timestamp = Date.now()
+                try {
+                    await page!.screenshot({ path: path.join(debugDir, `post_fail_${timestamp}.png`), fullPage: true })
+                    const html = await page!.content()
+                    fs.writeFileSync(path.join(debugDir, `post_fail_${timestamp}.html`), html)
+                    console.log(`  📸 Debug artifacts saved to ${debugDir}`)
+                } catch (err) {
+                    console.error('  Failed to save debug artifacts:', err)
+                }
+
+                // Fallback to simple selector logic just in case
+                console.log('   ⚠️ Smart selection failed, trying fallback selectors...')
+                for (const sel of postSelectors) {
+                    try {
+                        const btn = await page!.$(sel)
+                        if (btn && await btn.isVisible()) {
+                            await btn.click({ timeout: 2000 })
+                            console.log(`  ✅ Post clicked (Fallback: ${sel})`)
+                            posted = true
+                            break
+                        }
+                    } catch { /* try next */ }
+                }
+            }
+
+            if (!posted) throw new Error('Could not find or click Post button - Debug artifacts saved.')
 
             // ─── Verify success & extract video link ───
             console.log('\n⏳ Verifying post success...')
+            if (onProgress) onProgress('Verifying publication...')
             let videoUrl: string | undefined
+            let isSuccess = false
 
             for (let i = 0; i < 30; i++) {
-                await page.waitForTimeout(2000)
+                try {
+                    await page!.waitForTimeout(2000)
+                } catch { break }
 
-                let isSuccess = false
-                for (const sel of ['text="Your video is being uploaded"', 'text="Your video has been published"', 'text="Manage your posts"', 'text="Video published"', 'text="Upload another video"']) {
+                // Dismiss any post-upload popups (e.g. "Manage your posts", "View Profile")
+                try {
+                    const managePopup = await page!.locator('text="Manage your posts"')
+                    if (await managePopup.isVisible()) {
+                        console.log('  ✅ Detected "Manage your posts" popup -> upload success!')
+                        isSuccess = true
+
+                        // Try to click "View Profile" BEFORE cleaning overlays
+                        try {
+                            const viewProfileBtn = await page!.locator('button:has-text("View Profile"), a:has-text("View Profile")').first()
+                            if (await viewProfileBtn.isVisible()) {
+                                console.log('  Found View Profile button inside popup, clicking...')
+                                await viewProfileBtn.click()
+                                await page!.waitForTimeout(2000)
+                            } else {
+                                // FALLBACK: Click the profile icon in the header
+                                console.log('  "View Profile" button not found. Attempting to click User Avatar...')
+                                const profileIcon = await page!.locator('[data-e2e="user-icon"], [data-e2e="profile-icon"]').first()
+                                if (await profileIcon.isVisible()) {
+                                    await profileIcon.click()
+                                    await page!.waitForURL(/tiktok\.com\/@/, { timeout: 10000 }).catch(() => { })
+                                }
+                            }
+                        } catch (e) {
+                            console.log('  Failed to click View Profile in popup:', e)
+                        }
+                    }
+
+                    if (page!.url().includes('upload')) {
+                        await cleanOverlays()
+                    }
+                } catch { /* ignore */ }
+
+                for (const sel of ['text="Your video has been published"', 'text="Manage your posts"', 'text="Video published"', 'text="Upload another video"']) {
                     try {
-                        const el = await page.$(sel)
+                        const el = await page!.$(sel)
                         if (el && await el.isVisible()) {
                             console.log(`  ✅ Success confirmed: ${sel}`)
                             isSuccess = true
@@ -530,38 +757,74 @@ export class TikTokModule implements PlatformModule {
                     } catch { /* ignore */ }
                 }
 
-                if (isSuccess) {
-                    // Extract video link
-                    try {
-                        videoUrl = await page.evaluate(() => {
-                            const links = Array.from(document.querySelectorAll('a'))
-                            for (const a of links) {
-                                if (a.href.includes('/video/') && a.href.includes('tiktok.com')) return a.href
-                            }
-                            if (window.location.href.includes('/video/')) return window.location.href
-                            return undefined
-                        })
-                        if (videoUrl) console.log(`  🔗 Video URL: ${videoUrl}`)
-                    } catch { /* ignore */ }
+                // Check for upload progress (not success)
+                try {
+                    const uploadingEl = await page!.$('text="Your video is being uploaded"')
+                    if (uploadingEl && await uploadingEl.isVisible()) {
+                        console.log('  ⏳ Upload in progress...')
+                        if (onProgress) onProgress('Uploading video...')
+                    }
+                } catch { /* ignore */ }
 
-                    // Try "Manage your posts" for the link
+                if (isSuccess) {
+                    console.log('  🎉 Verify success logic triggering...')
+                    await page!.waitForTimeout(2000)
+
+                    // Helper to extract first video link from profile
+                    const extractProfileVideo = async () => {
+                        try {
+                            await page!.waitForSelector('[data-e2e="user-post-item"] a', { timeout: 5000 })
+                            const firstVideoLink = await page!.$eval('[data-e2e="user-post-item"] a', (el: any) => el.href)
+                            if (firstVideoLink) return firstVideoLink
+                        } catch { }
+                        return undefined
+                    }
+
+                    // Strategy 1: Check for direct "View Profile" button
+                    try {
+                        const viewProfileBtn = await page!.locator('button:has-text("View Profile"), a:has-text("View Profile")').first()
+                        if (await viewProfileBtn.isVisible()) {
+                            console.log('  Found View Profile button, clicking to find video...')
+                            await viewProfileBtn.click()
+                            await page!.waitForURL(/tiktok\.com\/@/, { timeout: 10000 }).catch(() => { })
+                            const link = await extractProfileVideo()
+                            if (link) videoUrl = link
+                        }
+                    } catch (e) { console.log('  Verification via Profile button failed:', e) }
+
+                    if (!videoUrl) {
+                        // Strategy 2: If we are already on profile page (due to avatar click above)
+                        if (page!.url().includes('/@')) {
+                            const link = await extractProfileVideo()
+                            if (link) videoUrl = link
+                        }
+                    }
+
                     if (!videoUrl) {
                         try {
-                            const manageLink = await page.$('a:has-text("Manage your posts")')
-                            if (manageLink) {
-                                const href = await manageLink.getAttribute('href')
-                                console.log(`  📋 Manage posts: ${href}`)
-                            }
+                            videoUrl = await page!.evaluate(() => {
+                                const links = Array.from(document.querySelectorAll('a'))
+                                for (const a of links) {
+                                    if ((a.href.includes('/video/') || a.href.includes('/v/')) && a.href.includes('tiktok.com')) return a.href
+                                }
+                                if (window.location.href.includes('/video/')) return window.location.href
+                                return undefined
+                            })
                         } catch { /* ignore */ }
                     }
 
-                    return { success: true, videoUrl }
+                    if (videoUrl) {
+                        console.log(`  🔗 Video URL: ${videoUrl}`)
+                        return { success: true, videoUrl }
+                    } else {
+                        console.log('  ⚠️ Success detected but videoUrl not found yet, retrying...')
+                    }
                 }
 
                 // Check for post error
                 try {
                     for (const errSel of ['text="Failed to post"', 'text="failed to post"']) {
-                        const errEl = await page.$(errSel)
+                        const errEl = await page!.$(errSel)
                         if (errEl && await errEl.isVisible()) throw new Error('TikTok reported: Failed to post video')
                     }
                 } catch (e: any) {
@@ -571,8 +834,11 @@ export class TikTokModule implements PlatformModule {
                 if (i % 5 === 0 && i > 0) console.log(`  Processing... (${i * 2}s)`)
             }
 
-            console.warn('  ⚠️ Post clicked but could not confirm success within timeout')
-            return { success: true, videoUrl: undefined }
+            if (!videoUrl) {
+                throw new Error('Post clicked but could not verify success (no video URL found).')
+            }
+
+            return { success: true, videoUrl }
 
         } catch (error: any) {
             console.error('Publish failed:', error)

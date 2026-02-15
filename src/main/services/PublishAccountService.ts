@@ -117,6 +117,10 @@ class PublishAccountService {
             const partitionName = `persist:tiktok-login-${Date.now()}`
             const ses = session.fromPartition(partitionName)
 
+            // Set a realistic User-Agent to avoid detection
+            const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+            ses.setUserAgent(userAgent)
+
             const loginWindow = new BrowserWindow({
                 width: 480,
                 height: 720,

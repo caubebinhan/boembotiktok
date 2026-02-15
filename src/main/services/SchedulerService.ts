@@ -48,6 +48,12 @@ class SchedulerService {
             config = campaign.config_json ? JSON.parse(campaign.config_json) : {}
         } catch { }
 
+        const hasSources = (config.sources?.channels?.length > 0) || (config.sources?.keywords?.length > 0)
+        if (!hasSources) {
+            console.log(`Scheduler: Campaign ${campaign.name} has no sources, skipping SCAN job creation.`)
+            return
+        }
+
         // Create a SCAN job with full config data (sources, postOrder, etc.)
         const jobData = {
             sources: config.sources || { channels: [], keywords: [] },
@@ -191,8 +197,8 @@ class SchedulerService {
                     if (campaignHasSources) {
                         const sourceId = item.sourceId
                         // Find the source details
-                        const channel = config.sources?.channels?.find(c => c.name === sourceId)
-                        const keyword = config.sources?.keywords?.find(k => k === sourceId)
+                        const channel = config.sources?.channels?.find((c: any) => c.name === sourceId)
+                        const keyword = config.sources?.keywords?.find((k: any) => k.name === sourceId)
 
                         const singleSource = {
                             channels: channel ? [channel] : [],

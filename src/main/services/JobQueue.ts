@@ -3,6 +3,7 @@ import { moduleManager } from './ModuleManager'
 import { TikTokModule } from '../modules/tiktok/TikTokModule'
 import { BrowserWindow } from 'electron'
 import { publishAccountService } from './PublishAccountService'
+import { campaignService } from './CampaignService'
 
 class JobQueue {
     private intervalId: NodeJS.Timeout | null = null
@@ -77,7 +78,7 @@ class JobQueue {
 
         } catch (error: any) {
             console.error(`Job #${job.id} failed:`, error)
-            storageService.run("UPDATE jobs SET status = 'failed', error_message = ? WHERE id = ?", [error.message, job.id])
+            storageService.run("UPDATE jobs SET status = ?, error_message = ? WHERE id = ?", [`Failed: ${error.message.substring(0, 50)}`, error.message, job.id])
         } finally {
             this.broadcastUpdate()
         }
@@ -191,7 +192,7 @@ class JobQueue {
         // Update Job Result
         const result = { found: uniqueVideos.length, scheduled: scheduledCount, skipped: uniqueVideos.length - scheduledCount }
         storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [JSON.stringify(result), job.id])
-        this.updateJobData(job.id, { ...data, status: `Scan complete: ${scheduledCount} videos scheduled`, scannedCount })
+        this.updateJobData(job.id, { ...data, status: `Scan complete: Found ${scheduledCount} new videos today`, scannedCount })
     }
 
     private async handleDownload(job: any, data: any, tiktok: TikTokModule) {
@@ -268,9 +269,17 @@ class JobQueue {
             throw new Error(`Video file not found: ${video_path}`)
         }
 
-        // 3. Publish using TikTok module
-        this.updateJobData(job.id, { ...data, status: `Uploading video to TikTok...` })
-        const result = await tiktok.publishVideo(video_path, caption || '', cookies)
+        // 3. Publish using TikTok module with Progress Callback
+        this.updateJobData(job.id, { ...data, status: `Initializing upload...` })
+
+        const result = await tiktok.publishVideo(
+            video_path,
+            caption || '',
+            cookies,
+            (msg) => {
+                this.updateJobData(job.id, { ...data, status: msg })
+            }
+        )
 
         if (!result.success) {
             throw new Error(result.error || 'Upload failed (unknown error)')
@@ -288,11 +297,54 @@ class JobQueue {
         ])
 
         this.updateJobData(job.id, { ...data, status: `Published to @${account_name}` })
+
+        // 5. Check if Campaign is Completed
+        this.checkCampaignCompletion(job.campaign_id)
+    }
+
+    private checkCampaignCompletion(campaignId: number) {
+        try {
+            // Check for any pending or running jobs for this campaign
+            const pendingJobs = storageService.get(
+                "SELECT COUNT(*) as count FROM jobs WHERE campaign_id = ? AND status IN ('pending', 'running')",
+                [campaignId]
+            ).count
+
+            if (pendingJobs === 0) {
+                const campaign = storageService.get('SELECT * FROM campaigns WHERE id = ?', [campaignId])
+                if (campaign) {
+                    const config = JSON.parse(campaign.config_json || '{}')
+                    // If no recurring sources (channel/keyword scans), mark as completed
+                    // Scans create new jobs, so if no scan jobs are pending/running/scheduled, and no sources config...
+                    // Wait, SCAN jobs are "pending" until run. If a SCAN job exists, pendingJobs > 0.
+                    // The only case to NOT mark complete is if the schedule implies FUTURE scans that haven't been created yet.
+                    // But SchedulerService creates SCAN jobs based on schedule.
+                    // If SchedulerService sees 'completed', it stops.
+                    // So we must be careful.
+
+                    // Logic: 
+                    // If it was a "One-time" run (no interval schedule) -> Mark Complete
+                    // If it has "sources" (dynamic), it usually runs forever (interval).
+                    // If it has "videos" (static) only -> Mark Complete when all done.
+
+                    const hasSources = (config.sources?.channels?.length > 0) || (config.sources?.keywords?.length > 0)
+                    const isRecurring = config.schedule?.interval || false
+
+                    if (!hasSources || !isRecurring) {
+                        storageService.run("UPDATE campaigns SET status = 'completed' WHERE id = ?", [campaignId])
+                        console.log(`Campaign ${campaignId} completed (all jobs finished).`)
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('Error checking campaign completion:', e)
+        }
     }
 
     private updateJobData(jobId: number, data: any) {
         try {
             storageService.run("UPDATE jobs SET data_json = ? WHERE id = ?", [JSON.stringify(data), jobId])
+            this.broadcastUpdate()
         } catch (e) {
             console.error('Failed to update job data:', e)
         }
@@ -302,6 +354,10 @@ class JobQueue {
         try {
             const jobs = storageService.getAll("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 50")
             BrowserWindow.getAllWindows().forEach(win => win.webContents.send('jobs-updated', jobs))
+
+            // Broadcast campaigns too (for realtime stats)
+            const campaigns = campaignService.getAll()
+            BrowserWindow.getAllWindows().forEach(win => win.webContents.send('campaigns-updated', campaigns))
         } catch (e) { /* ignore */ }
     }
 }
