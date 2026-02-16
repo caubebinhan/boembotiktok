@@ -1,7 +1,7 @@
 import { PlatformModule } from '../../services/ModuleManager'
 import { browserService } from '../../services/BrowserService'
 import { storageService } from '../../services/StorageService'
-import { Page } from 'playwright-core'
+import { Page, Response } from 'playwright-core'
 import axios from 'axios'
 import fs from 'fs-extra'
 import path from 'path'
@@ -269,10 +269,6 @@ export class TikTokModule implements PlatformModule {
             console.log('[TikTok] Mock download triggered for E2E test.')
             const mockPath = path.join(app.getPath('userData'), 'mock_video_e2e.mp4')
             if (!fs.existsSync(mockPath)) {
-                // Create a valid-ish dummy file (needs to be mp4-like enough for some uploaders, but text is fine for browser input usually)
-                // Actually TikTok might validate header.
-                // Let's hope simple text works for file input selector.
-                // Or copy from project root if possible.
                 fs.writeFileSync(mockPath, 'fake video content')
             }
             return mockPath
@@ -283,12 +279,68 @@ export class TikTokModule implements PlatformModule {
         const diff = 'tiktok_' + platformId + '.mp4'
         const filePath = path.join(downloadsDir, diff)
 
+        // Use Browser to get actual video stream
+        // We need 'headed' sometimes for some sites, but headless usually works for extraction if undetected.
+        // Using existing browserService.
+        if (!browserService.isConnected()) {
+            await browserService.init(true)
+        }
+
+        const page = await browserService.newPage()
+        if (!page) throw new Error('Failed to create page for download')
+
+        let videoStreamUrl = ''
+
+        // Timeout race: Network Intercept vs DOM Extraction
+        try {
+            // 1. Setup Network Interception
+            page.on('response', async (response: Response) => {
+                const resourceType = response.request().resourceType()
+                const respUrl = response.url()
+                // TikTok video streams often come from *.tiktokcdn.com/... or similar
+                // They are usually type 'media'.
+                if (resourceType === 'media' || (respUrl.includes('.mp4') && !respUrl.includes('.html'))) {
+                    // Check content-length if possible to ignore small clips? 
+                    // For now, first media is usually the video.
+                    if (!videoStreamUrl && !respUrl.startsWith('blob:')) {
+                        console.log(`Found candidate video stream: ${respUrl}`)
+                        videoStreamUrl = respUrl
+                    }
+                }
+            })
+
+            console.log('Navigating to video page...')
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+
+            // Wait a bit for media to load
+            await page.waitForTimeout(3000)
+
+            // 2. Fallback / DOM Extraction
+            if (!videoStreamUrl) {
+                console.log('Network intercept empty, trying DOM extraction...')
+                videoStreamUrl = await page.evaluate(() => {
+                    const video = document.querySelector('video')
+                    return video ? video.src : ''
+                })
+            }
+
+            console.log(`Extracted Video URL: ${videoStreamUrl}`)
+
+        } catch (e) {
+            console.error('Extraction error:', e)
+        } finally {
+            await page.close()
+        }
+
+        if (!videoStreamUrl || videoStreamUrl.startsWith('blob:')) {
+            throw new Error(`Failed to extract valid video URL. Got: ${videoStreamUrl || 'nothing'}`)
+        }
+
+        // 3. Download the Extracted URL
         try {
             const writer = fs.createWriteStream(filePath)
-            // Note: TikTok might require headers/cookies. For MVP we try direct axios.
-            // If that fails, we might need to get cookies from browserService.
             const response = await axios({
-                url,
+                url: videoStreamUrl,
                 method: 'GET',
                 responseType: 'stream',
                 headers: {
@@ -306,7 +358,6 @@ export class TikTokModule implements PlatformModule {
                         const stats = await fs.stat(filePath)
                         if (stats.size < 50 * 1024) { // < 50KB
                             // Don't delete, let user inspect.
-                            // await fs.remove(filePath) 
                             reject(new Error(`Downloaded file too small (${stats.size} bytes). Path: ${filePath}`))
                         } else {
                             resolve(filePath)
