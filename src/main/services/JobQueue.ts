@@ -76,6 +76,9 @@ class JobQueue {
             storageService.run("UPDATE jobs SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?", [job.id])
             console.log(`Job #${job.id} completed`)
 
+            // Check if Campaign is Completed
+            this.checkCampaignCompletion(job.campaign_id)
+
         } catch (error: any) {
             console.error(`Job #${job.id} failed:`, error)
             storageService.run("UPDATE jobs SET status = ?, error_message = ? WHERE id = ?", [`Failed: ${error.message.substring(0, 50)}`, error.message, job.id])
@@ -297,9 +300,6 @@ class JobQueue {
         ])
 
         this.updateJobData(job.id, { ...data, status: `Published to @${account_name}` })
-
-        // 5. Check if Campaign is Completed
-        this.checkCampaignCompletion(job.campaign_id)
     }
 
     private checkCampaignCompletion(campaignId: number) {

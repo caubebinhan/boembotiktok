@@ -343,9 +343,9 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                                             onChange={(e) => handleManualTimeChange(index, e.target.value)}
                                             className="no-drag"
                                             style={{
-                                                background: 'transparent', border: '1px solid var(--border-primary)',
+                                                background: 'var(--bg-input)', border: '1px solid var(--border-primary)',
                                                 color: 'var(--text-primary)', borderRadius: '4px', padding: '2px 4px',
-                                                fontSize: '12px', width: '60px', textAlign: 'center'
+                                                fontSize: '12px', width: '70px', textAlign: 'center'
                                             }}
                                             onClick={(e) => e.stopPropagation()} // Prevent drag start on input
                                         />
@@ -377,12 +377,14 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                                             </div>
                                         )}
                                     </div>
+
                                 </div>
                             ))}
                         </div>
                     </div>
-                ))}
-            </div>
-        </div>
+                ))
+                }
+            </div >
+        </div >
     )
 }

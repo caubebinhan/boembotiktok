@@ -1,43 +1,28 @@
 export const formatFrequency = (campaign: any): string => {
-    try {
-        if (campaign.type !== 'scheduled') return 'Manual Trigger'
-        // Handle both parsed object (if pre-processed) or raw string
-        let config = campaign.config_json
-        if (typeof config === 'string') {
-            config = JSON.parse(config || '{}')
-        } else if (!config) {
-            config = {}
-        }
+    if (!campaign?.config_json) return 'Manual'
+    const config = JSON.parse(campaign.config_json)
+    if (!config.schedule) return 'Manual'
 
-        const schedule = config.schedule || {}
-        const interval = parseInt(schedule.interval) || 15
-        const jitter = !!schedule.jitter
+    const { interval } = config.schedule
+    if (!interval) return 'One-time'
 
-        let text = `Every ${interval}m`
-        if (interval >= 60) {
-            text = `Every ${Math.round(interval / 60 * 10) / 10}h`
-        }
-
-        if (jitter) {
-            const variance = Math.round(interval * 0.5)
-            // If variance is 0 (e.g. 1 min interval -> 0.5 -> 1?), strictly 0.5m = 30s.
-            if (interval === 1) text += ` (±30s)`
-            else text += ` (±${variance}m)`
-        }
-        return text
-    } catch {
-        return 'Every 15m'
-    }
+    // Simple formatter, can be expanded
+    return `Every ${interval}m`
 }
 
-export const formatDateTime = (isoString?: string): string => {
-    if (!isoString) return 'N/A'
-    const date = new Date(isoString)
-    if (isNaN(date.getTime())) return isoString
-    // Format: "Feb 12, 17:23"
-    return new Intl.DateTimeFormat('default', {
-        month: 'short', day: 'numeric',
-        hour: '2-digit', minute: '2-digit',
-        hour12: false
-    }).format(date)
+export const formatDateTime = (dateStr: string, timeOnly: boolean = false): string => {
+    if (!dateStr) return '-'
+
+    // SQLite returns "YYYY-MM-DD HH:MM:SS" which is UTC but parsed as Local by JS if no 'Z'
+    // If it looks like SQLite format, append 'Z'
+    const isSQLite = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(dateStr)
+    const safeDateStr = isSQLite ? dateStr.replace(' ', 'T') + 'Z' : dateStr
+
+    const date = new Date(safeDateStr)
+    if (isNaN(date.getTime())) return '-'
+
+    if (timeOnly) {
+        return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+    }
+    return date.toLocaleTimeString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }

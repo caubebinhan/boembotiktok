@@ -24,13 +24,26 @@ class SchedulerService {
 
         for (const campaign of campaigns) {
             try {
+                // Check Schedule Timing
+                let config: any = {}
+                try { config = campaign.config_json ? JSON.parse(campaign.config_json) : {} } catch { }
+
+                if (config.schedule && config.schedule.runAt) {
+                    const runAt = new Date(config.schedule.runAt)
+                    if (runAt > new Date()) {
+                        // Future campaign, skip
+                        // console.log(`Scheduler: Campaign ${campaign.name} runAt is in future (${config.schedule.runAt}), skipping.`)
+                        continue
+                    }
+                }
+
                 // Check if there's already a pending/running job for this campaign
                 const existingJob = storageService.get(
                     "SELECT id FROM jobs WHERE campaign_id = ? AND status IN ('pending', 'running') LIMIT 1",
                     [campaign.id]
                 )
                 if (existingJob) {
-                    console.log(`Scheduler: Campaign ${campaign.name} already has active jobs, skipping`)
+                    // console.log(`Scheduler: Campaign ${campaign.name} already has active jobs, skipping`)
                     continue
                 }
 
@@ -62,8 +75,14 @@ class SchedulerService {
             campaignName: campaign.name
         }
 
+        // Set scheduled_for to Now (since we already verified runAt passed or doesn't exist)
+        // Ensure to use LOCAL time for database if needed? No, standard is UTC storage, converted at display.
+        // But previously createScanJob didn't specify scheduled_for in columns??
+        // The previous code was: `INSERT INTO jobs (..., data_json) VALUES (..., ?)`
+        // It relied on Default CURRENT_TIMESTAMP.
+
         storageService.run(
-            `INSERT INTO jobs (campaign_id, type, status, data_json) VALUES (?, 'SCAN', 'pending', ?)`,
+            `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json, created_at) VALUES (?, 'SCAN', 'pending', datetime('now'), ?, datetime('now'))`,
             [campaign.id, JSON.stringify(jobData)]
         )
     }

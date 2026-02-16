@@ -16,6 +16,7 @@ export interface VideoCardProps {
     showStats?: boolean
     compact?: boolean
     className?: string
+    children?: React.ReactNode
 }
 
 const formatCount = (n: number | string | undefined): string => {
@@ -25,7 +26,7 @@ const formatCount = (n: number | string | undefined): string => {
     return String(num)
 }
 
-export const VideoCard: React.FC<VideoCardProps> = ({ video, onRemove, showStats = true, compact = false, className = '' }) => {
+export const VideoCard: React.FC<VideoCardProps> = ({ video, onRemove, showStats = true, compact = false, className = '', children }) => {
     const [isHovered, setIsHovered] = useState(false)
     const [popupPos, setPopupPos] = useState<{ top: number; left: number; side: 'left' | 'right' } | null>(null)
     const cardRef = useRef<HTMLDivElement>(null)
@@ -197,6 +198,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({ video, onRemove, showStats
                         ▶
                     </div>
                 )}
+                {children}
             </div>
 
             {/* Floating popup portal */}

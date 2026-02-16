@@ -85,10 +85,12 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         }
     })
 
-    // Init sources and videos from initialData if present
+    // Init sources and videos AND formData from initialData if present
     useEffect(() => {
         if (initialData) {
             const config = typeof initialData.config_json === 'string' ? JSON.parse(initialData.config_json) : initialData.config_json || {}
+
+            // Sync Sources
             if (config.sources) {
                 const newSources: SourceEntry[] = []
                 if (config.sources.channels) {
@@ -99,10 +101,30 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 }
                 setSources(newSources)
             }
+            // Sync Videos
             if (config.videos) {
                 setSavedVideos(config.videos)
                 setVideoCount(config.videos.length)
             }
+
+            // Sync Form Data (Critical for Clone/Edit)
+            setFormData(prev => ({
+                ...prev,
+                name: initialData.name + (initialData.id ? ' (Copy)' : ''), // Append copy only if cloning existing
+                type: initialData.type === 'scan_all' ? 'scheduled' : (initialData.type || 'scheduled'),
+                editPipeline: config.editPipeline || { effects: [] },
+                targetAccounts: config.targetAccounts || [],
+                postOrder: config.postOrder || 'newest',
+                schedule: config.schedule || {
+                    runAt: '',
+                    interval: 60,
+                    startTime: '09:00',
+                    endTime: '21:00',
+                    days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+                    jitter: false
+                },
+                executionOrder: [] // Do not copy execution order, generate fresh
+            }))
         }
     }, [initialData])
 
@@ -354,7 +376,18 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                             borderRadius: '8px', cursor: 'pointer',
                             border: runNow ? '1px solid #4ade80' : '1px solid var(--border-primary)'
                         }}>
-                            <input type="radio" checked={runNow} onChange={() => setRunNow(true)} />
+                            <input type="radio" checked={runNow} onChange={() => {
+                                setRunNow(true)
+                                // If Run Now is selected, push the scheduled First Run to (Now + Interval) to avoid duplicate
+                                if (formData.type === 'scheduled') {
+                                    const intervalMs = (formData.schedule.interval || 60) * 60000
+                                    const nextRun = new Date(Date.now() + intervalMs)
+                                    setFormData(prev => ({
+                                        ...prev,
+                                        schedule: { ...prev.schedule, runAt: nextRun.toISOString() }
+                                    }))
+                                }
+                            }} />
                             <div>
                                 <strong>🚀 Run Now</strong>
                                 <div style={{ fontSize: '10px', color: 'gray' }}>Start immediately after saving</div>
@@ -386,8 +419,8 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                                 }}
                                 showTimeSelect timeIntervals={15}
                                 dateFormat="yyyy-MM-dd HH:mm" timeFormat="HH:mm"
-                                minDate={new Date()}
-                                placeholderText="Select date and time" className="form-control" wrapperClassName="datepicker-wrapper"
+                                minDate={new Date(Date.now() + 60000)}
+                                placeholderText="Select date and time (min 1m future)" className="form-control" wrapperClassName="datepicker-wrapper"
                             />
                         </div>
                     )}
@@ -434,11 +467,16 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                             }}
                             showTimeSelect
                             dateFormat="yyyy-MM-dd HH:mm"
-                            minDate={new Date()}
-                            placeholderText="Select start date/time"
+                            minDate={new Date(Date.now() + 60000)}
+                            placeholderText="Select start date/time (min 1m future)"
                             className="form-control"
                             wrapperClassName="datepicker-wrapper"
                         />
+                        {runNow && (
+                            <div style={{ fontSize: '11px', color: 'var(--accent-primary)', marginTop: '4px' }}>
+                                ℹ️ Since "Run Now" is active, this schedule will apply for the <b>next</b> run.
+                            </div>
+                        )}
                     </div>
                     <div className="form-row" style={{ display: 'flex', gap: '16px' }}>
                         <div className="form-group" style={{ flex: 1 }}>
@@ -740,14 +778,19 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         try {
             // @ts-ignore
             const account = await window.api.invoke('publish-account:add')
+            // Refresh list regardless of return to be safe
+            await loadAccounts()
+
             if (account) {
-                setPublishAccounts(prev => [account, ...prev])
+                // If we got the account directly, ensure it's selected
                 setFormData(prev => ({
                     ...prev,
                     targetAccounts: [...prev.targetAccounts, String(account.id)]
                 }))
             }
-        } catch { }
+        } catch {
+            await loadAccounts()
+        }
         setAddingAccount(false)
     }
 
@@ -761,7 +804,33 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
 
     const renderStep4_Target = () => (
         <div className="wizard-step">
-            <h3>Step 4: Publish Target</h3>
+            <h3>Step 4: Review & Publish Target</h3>
+
+            {/* Summary Card for Review */}
+            <div style={{
+                background: 'rgba(124, 92, 252, 0.1)', border: '1px solid var(--accent-primary)',
+                borderRadius: '8px', padding: '16px', marginBottom: '20px', display: 'flex', gap: '20px', alignItems: 'center'
+            }}>
+                <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Campaign Name</div>
+                    <div style={{ fontSize: '15px', fontWeight: 700, color: '#fff' }}>{formData.name || 'Untitled Campaign'}</div>
+                </div>
+                <div style={{ width: '1px', height: '30px', background: 'var(--border-primary)' }}></div>
+                <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Schedule</div>
+                    <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--accent-teal)' }}>
+                        {formData.type === 'one_time'
+                            ? (runNow ? '🚀 Run Immediately' : `📅 ${formData.schedule.runAt ? new Date(formData.schedule.runAt).toLocaleString() : 'Not set'}`)
+                            : `📅 Recurring (Every ${formData.schedule.interval}m)`}
+                    </div>
+                </div>
+                <div style={{ width: '1px', height: '30px', background: 'var(--border-primary)' }}></div>
+                <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Videos</div>
+                    <div style={{ fontSize: '15px', fontWeight: 700, color: '#fff' }}>{savedVideos.length} Selected</div>
+                </div>
+            </div>
+
             <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginBottom: '16px' }}>
                 Select one or more accounts to publish to.
             </p>

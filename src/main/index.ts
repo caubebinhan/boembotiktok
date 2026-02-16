@@ -318,6 +318,21 @@ app.whenReady().then(async () => {
             return { success: true }
         })
 
+        ipcMain.handle('job:open-browser', async (_event: any, jobId: number) => {
+            const job = storageService.get('SELECT * FROM jobs WHERE id = ?', [jobId])
+            if (!job) throw new Error('Job not found')
+
+            const data = JSON.parse(job.data_json || '{}')
+            const username = data.account_name || data.targetAccount
+
+            if (!username) throw new Error('No account associated with this job')
+
+            const account = storageService.get('SELECT * FROM publish_accounts WHERE username = ?', [username])
+            if (!account) throw new Error(`Account ${username} not found`)
+
+            return publishAccountService.reLoginAccount(account.id)
+        })
+
         ipcMain.handle('get-downloads', async () => {
             return storageService.getAll(`
                 SELECT j.*, j.data_json as metadata, j.status
@@ -406,6 +421,11 @@ app.whenReady().then(async () => {
                 [type, JSON.stringify(data)]
             )
             return { id: result.lastInsertId }
+        })
+
+        ipcMain.handle('test:run-scheduler', async () => {
+            await schedulerService.checkAndSchedule()
+            return { success: true }
         })
 
         ipcMain.handle('test:update-cookies', async (_event: any, id: number, cookies: any[]) => {
