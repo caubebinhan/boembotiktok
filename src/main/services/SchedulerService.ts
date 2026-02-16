@@ -19,7 +19,7 @@ class SchedulerService {
     }
 
     async checkAndSchedule() {
-        console.log('Scheduler: Checking active campaigns...')
+        console.log(`Scheduler: Checking active campaigns... System Time: ${new Date().toISOString()}`)
         const campaigns = campaignService.getDueCampaigns()
 
         for (const campaign of campaigns) {
@@ -28,64 +28,60 @@ class SchedulerService {
                 let config: any = {}
                 try { config = campaign.config_json ? JSON.parse(campaign.config_json) : {} } catch { }
 
+                console.log(`[Campaign ${campaign.id} "${campaign.name}"] Checking... Status: ${campaign.status}`)
+
                 if (config.schedule && config.schedule.runAt) {
-                    const runAt = new Date(config.schedule.runAt)
-                    if (runAt > new Date()) {
+                    const runAtVal = config.schedule.runAt
+                    const runAt = new Date(runAtVal)
+                    const now = new Date()
+
+                    console.log(`  > Schedule RunAt: ${runAtVal} (Parsed: ${runAt.toISOString()}) vs Now: ${now.toISOString()}`)
+
+                    if (runAt > now) {
                         // Future campaign, skip
-                        // console.log(`Scheduler: Campaign ${campaign.name} runAt is in future (${config.schedule.runAt}), skipping.`)
+                        console.log(`  > Future campaign, skipping.`)
                         continue
                     }
+                } else {
+                    console.log(`  > No schedule or runAt found.`)
                 }
 
                 // Check if there's already a pending/running job for this campaign
                 const existingJob = storageService.get(
-                    "SELECT id FROM jobs WHERE campaign_id = ? AND status IN ('pending', 'running') LIMIT 1",
+                    "SELECT id, status, scheduled_for FROM jobs WHERE campaign_id = ? AND status IN ('pending', 'running') LIMIT 1",
                     [campaign.id]
                 )
                 if (existingJob) {
-                    // console.log(`Scheduler: Campaign ${campaign.name} already has active jobs, skipping`)
+                    console.log(`  > Active Job Found: ID ${existingJob.id} (${existingJob.status}) Scheduled: ${existingJob.scheduled_for}. Skipping trigger.`)
                     continue
                 }
 
-                console.log(`Scheduler: Scheduling job for campaign ${campaign.name}`)
-                this.createScanJob(campaign)
+                console.log(`Scheduler: Triggering scheduled campaign ${campaign.name}`)
+                const result = await this.triggerCampaign(campaign.id, false)
+
+                // Advance RunAt for next cycle if successful
+                if (result && result.success && config.schedule) {
+                    const interval = parseInt(config.schedule.interval) || 60
+                    const intervalMs = interval * 60000
+
+                    // Logic: Next run = NOW + Interval (to avoid catching up on missed runs)
+                    const nextRun = new Date(Date.now() + intervalMs)
+
+                    config.schedule.runAt = nextRun.toISOString()
+
+                    console.log(`Scheduler: Updating next run for campaign ${campaign.name} to ${config.schedule.runAt}`)
+                    campaignService.updateConfig(campaign.id, config)
+                } else {
+                    console.log(`  > Trigger failed or no result:`, result)
+                }
+
             } catch (err) {
                 console.error(`Scheduler error for campaign ${campaign.id}:`, err)
             }
         }
     }
 
-    private createScanJob(campaign: any) {
-        let config: any = {}
-        try {
-            config = campaign.config_json ? JSON.parse(campaign.config_json) : {}
-        } catch { }
 
-        const hasSources = (config.sources?.channels?.length > 0) || (config.sources?.keywords?.length > 0)
-        if (!hasSources) {
-            console.log(`Scheduler: Campaign ${campaign.name} has no sources, skipping SCAN job creation.`)
-            return
-        }
-
-        // Create a SCAN job with full config data (sources, postOrder, etc.)
-        const jobData = {
-            sources: config.sources || { channels: [], keywords: [] },
-            videos: config.videos || [],
-            postOrder: config.postOrder || 'newest',
-            campaignName: campaign.name
-        }
-
-        // Set scheduled_for to Now (since we already verified runAt passed or doesn't exist)
-        // Ensure to use LOCAL time for database if needed? No, standard is UTC storage, converted at display.
-        // But previously createScanJob didn't specify scheduled_for in columns??
-        // The previous code was: `INSERT INTO jobs (..., data_json) VALUES (..., ?)`
-        // It relied on Default CURRENT_TIMESTAMP.
-
-        storageService.run(
-            `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json, created_at) VALUES (?, 'SCAN', 'pending', datetime('now'), ?, datetime('now'))`,
-            [campaign.id, JSON.stringify(jobData)]
-        )
-    }
 
     async triggerCampaign(id: number, ignoreSchedule = false) {
         console.log(`Scheduler: Manual trigger for campaign ${id} (ignoreSchedule=${ignoreSchedule})`)

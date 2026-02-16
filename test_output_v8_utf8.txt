@@ -1,0 +1,136 @@
+﻿
+Running 2 tests using 1 worker
+
+--- Starting App ---
+App launched. URL: file:///C:/boembo/out/renderer/index.html
+Test 1: Create Campaign via Wizard
+Clicking Campaigns...
+Clicking New Campaign...
+Step 1: Details & Schedule
+Step 2: Source
+Opening Scanner Window...
+Scanner Window opened.
+Clicking Scan Page Videos...
+Waiting for scanned videos...
+node.exe : Test 1 Failed: page.w
+aitForSelector: Timeout 30000ms 
+exceeded.
+発生場所 行:1 文字:1
++ & "C:\Program Files\nodejs/nod
+e.exe" "C:\Program Files\nodejs/
+node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~
+    + CategoryInfo          : N 
+   otSpecified: (Test 1 Failed  
+  : ...000ms exceeded.:String   
+ ) [], RemoteException
+    + FullyQualifiedErrorId : N 
+   ativeCommandError
+ 
+Call log:
+[2m  - waiting for locator('.vi
+deo-card') to be visible[22m
+
+    at [90mC:\boembo\[39mtests
+\campaign-full-flow.spec.ts:73:3
+3 {
+  name: [32m'TimeoutError'[39m
+,
+  [32mSymbol(step)[39m: {
+    location: {
+      file: [32m'C:\\boembo\\te
+sts\\campaign-full-flow.spec.ts'
+[39m,
+      line: [33m73[39m,
+      column: [33m33[39m
+    },
+    category: [32m'pw:api'[39m
+,
+    title: [32m"Wait for select
+or locator('.video-card')"[39m,
+    apiName: [32m'page.waitForS
+elector'[39m,
+    params: { selector: [32m'.v
+ideo-card'[39m, timeout: [33m3
+0000[39m },
+    group: [90mundefined[39m,
+    stepId: [32m'pw:api@100'[3
+9m,
+    boxedStack: [90mundefined[
+39m,
+    steps: [],
+    attachmentIndices: [],
+    info: TestStepInfoImpl {
+      annotations: [],
+      _testInfo: [36m[TestInfoI
+mpl][39m,
+      _stepId: [32m'pw:api@100'
+[39m,
+      _title: [32m"Wait for sel
+ector locator('.video-card')"[3
+9m,
+      _parentStep: [90mundefine
+d[39m,
+      skip: [36m[Function (anon
+ymous)][39m
+    },
+    complete: [36m[Function: co
+mplete][39m,
+    endWallTime: [33m1771228712
+932[39m,
+    error: {
+      message: [32m'TimeoutErro
+r: page.waitForSelector: Timeout
+ 30000ms exceeded.\n'[39m +
+        [32m'Call log:\n'[39m 
++
+        [32m"\x1B[2m  - waiting
+ for locator('.video-card') to b
+e visible\x1B[22m\n"[39m,
+      stack: [32m'TimeoutError:
+ page.waitForSelector: Timeout 3
+0000ms exceeded.\n'[39m +
+        [32m'Call log:\n'[39m 
++
+        [32m"\x1B[2m  - waiting
+ for locator('.video-card') to b
+e visible\x1B[22m\n"[39m +
+        [32m'\n'[39m +
+        [32m'    at C:\\boembo\
+\tests\\campaign-full-flow.spec.
+ts:73:33'[39m,
+      cause: [90mundefined[39m
+    }
+  }
+}
+  笨・ 1 tests\campaign-full-flow.spec.ts:31:9 窶ｺ Campaign Full Flow & UI Verification (Electron) 窶ｺ Create Campaign via Wizard (32.4s)
+--- Starting App ---
+App launched. URL: file:///C:/boembo/out/renderer/index.html
+Test 2: Verify Campaign Details
+No campaign found to verify details.
+  笨・ 2 tests\campaign-full-flow.spec.ts:120:9 窶ｺ Campaign Full Flow & UI Verification (Electron) 窶ｺ Verify Campaign Details UI Structure (432ms)
+
+
+  1) tests\campaign-full-flow.spec.ts:31:9 窶ｺ Campaign Full Flow & UI Verification (Electron) 窶ｺ Create Campaign via Wizard 
+
+    TimeoutError: page.waitForSelector: Timeout 30000ms exceeded.
+    Call log:
+    [2m  - waiting for locator('.video-card') to be visible[22m
+
+
+      71 |             // 3. Wait for videos
+      72 |             console.log('Waiting for scanned videos...');
+    > 73 |             await scannerWindow.waitForSelector('.video-card', { timeout: 30000 });
+         |                                 ^
+      74 |
+      75 |             // 4. Select first video
+      76 |             console.log('Selecting first video...');
+        at C:\boembo\tests\campaign-full-flow.spec.ts:73:33
+
+    Error Context: test-results\campaign-full-flow-Campaig-f7fa0--Create-Campaign-via-Wizard\error-context.md
+
+  1 failed
+    tests\campaign-full-flow.spec.ts:31:9 窶ｺ Campaign Full Flow & UI Verification (Electron) 窶ｺ Create Campaign via Wizard 
+  1 passed (41.5s)

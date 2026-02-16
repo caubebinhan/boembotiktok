@@ -24,5 +24,5 @@ export const formatDateTime = (dateStr: string, timeOnly: boolean = false): stri
     if (timeOnly) {
         return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
     }
-    return date.toLocaleTimeString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    return date.toLocaleTimeString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
 }

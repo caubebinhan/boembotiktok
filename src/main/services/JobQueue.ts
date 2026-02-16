@@ -76,13 +76,27 @@ class JobQueue {
             storageService.run("UPDATE jobs SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?", [job.id])
             console.log(`Job #${job.id} completed`)
 
-            // Check if Campaign is Completed
-            this.checkCampaignCompletion(job.campaign_id)
-
         } catch (error: any) {
             console.error(`Job #${job.id} failed:`, error)
+
+            // Extract path if present in error message (for "file too small" or similar)
+            let resultUpdate = ''
+            const pathMatch = error.message.match(/Path: (.+)$/)
+            if (pathMatch && pathMatch[1]) {
+                const failPath = pathMatch[1].trim()
+                try {
+                    // Save path so user can inspect corrupt file
+                    storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [
+                        JSON.stringify({ video_path: failPath, folder_path: require('path').dirname(failPath), error: error.message }),
+                        job.id
+                    ])
+                } catch (e) { }
+            }
+
             storageService.run("UPDATE jobs SET status = ?, error_message = ? WHERE id = ?", [`Failed: ${error.message.substring(0, 50)}`, error.message, job.id])
         } finally {
+            // Check if Campaign is Completed (regardless of success/failure)
+            this.checkCampaignCompletion(job.campaign_id)
             this.broadcastUpdate()
         }
     }
@@ -252,7 +266,7 @@ class JobQueue {
         }
 
         // Store result path for "Open Folder" feature
-        storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [JSON.stringify({ path: require('path').dirname(finalPath) }), job.id])
+        storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [JSON.stringify({ video_path: finalPath, folder_path: require('path').dirname(finalPath) }), job.id])
     }
 
     private async handlePublish(job: any, data: any, tiktok: TikTokModule) {

@@ -11,8 +11,17 @@ class BrowserService {
     constructor() { }
 
     async init(headless: boolean = false): Promise<void> {
+        if (this.isConnected()) {
+            if (this.isHeadless === headless) {
+                console.log('BrowserService already initialized in correct mode.')
+                return
+            }
+            console.log(`Switching browser mode (Headless: ${this.isHeadless} -> ${headless}). Restarting...`)
+            await this.close()
+        }
+
         this.isHeadless = headless
-        console.log('Initializing BrowserService...')
+        console.log(`Initializing BrowserService (Headless: ${headless})...`)
 
         try {
             // Try to find executable path or use channel

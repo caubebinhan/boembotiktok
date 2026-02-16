@@ -126,14 +126,34 @@ export const TimelineItem: React.FC<Props> = ({ video, status, downloadJob, publ
                 <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border-primary)', fontSize: '11px', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                     {downloadJob && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <span style={{ color: downloadJob.status === 'completed' ? '#4ade80' : 'var(--text-muted)' }}>
-                                {downloadJob.status === 'completed' ? '✓' : (downloadJob.status === 'running' ? '⬇️' : '⏱️')}
-                            </span>
-                            {downloadJob.status === 'completed'
-                                ? `Downloaded ${downloadJob.result_json ? `(${JSON.parse(downloadJob.result_json).video_path ? 'Ready' : ''})` : ''} - ${formatDateTime(downloadJob.created_at)}`
-                                : (downloadJob.status === 'running'
-                                    ? `Downloading... - ${formatDateTime(downloadJob.created_at)}`
-                                    : `Scheduled Download - ${formatDateTime(downloadJob.scheduled_for || downloadJob.created_at)}`)
+                            {(downloadJob.status === 'completed' || (downloadJob.status.startsWith('Failed') && JSON.parse(downloadJob.result_json || '{}').video_path)) ? (() => {
+                                const res = downloadJob.result_json ? JSON.parse(downloadJob.result_json) : {}
+                                const filename = res.video_path ? res.video_path.split(/[\\/]/).pop() : ''
+                                return (
+                                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                        <span style={{ color: downloadJob.status === 'completed' ? '#4ade80' : '#ef4444' }}>
+                                            {downloadJob.status === 'completed' ? '✓' : '⚠️'}
+                                        </span>
+                                        {downloadJob.status === 'completed' ? 'Downloaded' : 'Failed Download'}
+                                        {res.video_path && (
+                                            <span
+                                                title={res.video_path}
+                                                style={{ cursor: 'pointer', color: 'var(--accent-primary)', textDecoration: 'underline', fontSize: '10px' }}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    // @ts-ignore
+                                                    window.api.invoke('open-path', res.folder_path || res.video_path)
+                                                }}
+                                            >
+                                                📂 {filename || 'Open File'}
+                                            </span>
+                                        )}
+                                        <span style={{ color: 'var(--text-muted)' }}>- {formatDateTime(downloadJob.created_at)}</span>
+                                    </span>
+                                )
+                            })() : (downloadJob.status === 'running'
+                                ? `Downloading... - ${formatDateTime(downloadJob.created_at)}`
+                                : `Scheduled Download - ${formatDateTime(downloadJob.scheduled_for || downloadJob.created_at)}`)
                             }
                         </div>
                     )}

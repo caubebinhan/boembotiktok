@@ -57,7 +57,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 targetAccounts: config.targetAccounts || [],
                 postOrder: config.postOrder || 'newest',
                 schedule: config.schedule || {
-                    runAt: '',
+                    runAt: new Date(Date.now() + 60000).toISOString(),
                     interval: 60,
                     startTime: '09:00',
                     endTime: '21:00',
@@ -74,7 +74,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
             targetAccounts: [] as string[],
             postOrder: 'newest' as 'oldest' | 'newest' | 'most_likes' | 'least_likes',
             schedule: {
-                runAt: '',
+                runAt: new Date(Date.now() + 60000).toISOString(),
                 interval: 60,
                 startTime: '09:00',
                 endTime: '21:00',
@@ -108,6 +108,23 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
             }
 
             // Sync Form Data (Critical for Clone/Edit)
+            // Adjust runAt: if the original schedule's start time is in the past, set to now + 1 minute
+            const clonedSchedule = config.schedule || {
+                runAt: '',
+                interval: 60,
+                startTime: '09:00',
+                endTime: '21:00',
+                days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+                jitter: false
+            }
+            if (clonedSchedule.runAt) {
+                const runAtDate = new Date(clonedSchedule.runAt)
+                if (runAtDate.getTime() < Date.now() + 60000) {
+                    // Set to 5 minutes in future to give user time to edit comfortably
+                    clonedSchedule.runAt = new Date(Date.now() + 300000).toISOString()
+                }
+            }
+
             setFormData(prev => ({
                 ...prev,
                 name: initialData.name + (initialData.id ? ' (Copy)' : ''), // Append copy only if cloning existing
@@ -115,14 +132,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 editPipeline: config.editPipeline || { effects: [] },
                 targetAccounts: config.targetAccounts || [],
                 postOrder: config.postOrder || 'newest',
-                schedule: config.schedule || {
-                    runAt: '',
-                    interval: 60,
-                    startTime: '09:00',
-                    endTime: '21:00',
-                    days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-                    jitter: false
-                },
+                schedule: clonedSchedule,
                 executionOrder: [] // Do not copy execution order, generate fresh
             }))
         }
@@ -240,6 +250,19 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
     }
 
     const handleNext = () => {
+        // Validate Step 1 Schedule (Time check)
+        if (step === 1 && !runNow) {
+            const runAt = formData.schedule.runAt ? new Date(formData.schedule.runAt) : null
+            if (!runAt || isNaN(runAt.getTime())) {
+                alert('Please select a valid start time.')
+                return
+            }
+            if (runAt.getTime() <= Date.now()) {
+                alert('Start time must be in the future (greater than now).')
+                return
+            }
+        }
+
         console.log(`[Wizard] handleNext called. Current step: ${step}, Type: ${formData.type}`);
         if (step === 2 && formData.type === 'one_time') {
             // Single campaign: Source -> Editor (skip schedule preview)
@@ -399,7 +422,17 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                             borderRadius: '8px', cursor: 'pointer',
                             border: !runNow ? '1px solid var(--accent-primary)' : '1px solid var(--border-primary)'
                         }}>
-                            <input type="radio" checked={!runNow} onChange={() => setRunNow(false)} />
+                            <input type="radio" checked={!runNow} onChange={() => {
+                                setRunNow(false)
+                                // If current time is in the past, update to Now + 1m
+                                const currentRunAt = formData.schedule.runAt ? new Date(formData.schedule.runAt) : new Date()
+                                if (currentRunAt.getTime() <= Date.now()) {
+                                    setFormData(prev => ({
+                                        ...prev,
+                                        schedule: { ...prev.schedule, runAt: new Date(Date.now() + 60000).toISOString() }
+                                    }))
+                                }
+                            }} />
                             <div>
                                 <strong>📅 Set Time</strong>
                                 <div style={{ fontSize: '10px', color: 'gray' }}>Schedule for a specific time</div>
@@ -419,7 +452,8 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                                 }}
                                 showTimeSelect timeIntervals={15}
                                 dateFormat="yyyy-MM-dd HH:mm" timeFormat="HH:mm"
-                                minDate={new Date(Date.now() + 60000)}
+                                minDate={new Date()}
+
                                 placeholderText="Select date and time (min 1m future)" className="form-control" wrapperClassName="datepicker-wrapper"
                             />
                         </div>
@@ -467,7 +501,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                             }}
                             showTimeSelect
                             dateFormat="yyyy-MM-dd HH:mm"
-                            minDate={new Date(Date.now() + 60000)}
+                            minDate={new Date()}
                             placeholderText="Select start date/time (min 1m future)"
                             className="form-control"
                             wrapperClassName="datepicker-wrapper"
@@ -937,7 +971,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
             <div
                 className="campaign-wizard-modal page-enter no-drag"
                 style={{ width: '900px', height: '85vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', borderRadius: '16px', overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,0.5)', pointerEvents: 'auto' } as any}
-                onMouseDown={(e) => e.stopPropagation()} // Keep onMouseDown stopPropagation to prevent drag issues if relevant, but click should bubble for DatePicker?
+            // onMouseDown={(e) => e.stopPropagation()} // REMOVED: Caused DatePicker to not close on outside click.
             >
                 {renderStepper()}
 

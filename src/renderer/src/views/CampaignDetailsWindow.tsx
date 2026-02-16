@@ -26,7 +26,7 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
 
             // Load accounts used in this campaign (mocking for now, or fetching all)
             // @ts-ignore
-            const allAccounts = await window.api.invoke('get-publish-accounts')
+            const allAccounts = await window.api.invoke('publish-account:list')
             if (c && c.config_json) {
                 const conf = JSON.parse(c.config_json)
                 if (conf.targetAccounts && conf.targetAccounts.length > 0) {

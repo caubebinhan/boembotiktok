@@ -44,18 +44,41 @@ const config = {
     schedule: { interval: 30, startTime: '08:00', endTime: '20:00', days: ['Mon'] }
 };
 
+// Insert a valid account check
+const account = db.prepare('SELECT * FROM publish_accounts WHERE session_valid = 1 LIMIT 1').get();
+if (account) {
+    console.log(`Found valid account: ${account.username} (ID: ${account.id})`);
+
+    // Create dummy video file
+    const fixturePath = path.resolve(__dirname, 'fixtures', 'test-video.mp4');
+    if (!fs.existsSync(path.dirname(fixturePath))) fs.mkdirSync(path.dirname(fixturePath), { recursive: true });
+    if (!fs.existsSync(fixturePath)) fs.writeFileSync(fixturePath, 'fake video content'); // Ensure file exists
+
+    // Create PUBLISH job
+    const jobData = {
+        video_path: fixturePath,
+        platform_id: 'test_vid_' + Date.now(),
+        account_id: account.id,
+        account_name: account.username,
+        caption: 'Manual Test Upload ' + new Date().toISOString(),
+        videoStats: {},
+        status: 'Waiting to publish'
+    };
+
+    console.log('Injecting PUBLISH job...');
+    db.prepare(`
+        INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json, created_at)
+        VALUES (?, 'PUBLISH', 'pending', datetime('now'), ?, datetime('now'))
+    `).run(999, JSON.stringify(jobData));
+    console.log('PUBLISH job injected.');
+} else {
+    console.log('No valid account found. Skipping publish job injection.');
+}
+
 db.prepare(`
     INSERT INTO campaigns (name, type, status, config_json) 
     VALUES (?, ?, ?, ?)
 `).run('Template Campaign', 'scheduled', 'active', JSON.stringify(config));
-
-console.log('Inserting Publish Account...');
-const existing = db.prepare('SELECT id FROM publish_accounts WHERE username = ?').get('test_user_clone');
-if (!existing) {
-    db.prepare(`
-        INSERT INTO publish_accounts (username, session_valid, avatar_url) VALUES (?, ?, ?)
-    `).run('test_user_clone', 1, 'https://example.com/avatar.png');
-}
 
 console.log('Seeding Complete.');
 db.close();
