@@ -472,10 +472,17 @@ export class TikTokModule implements PlatformModule {
         })
     }
 
-    async publishVideo(filePath: string, caption: string, cookies?: any[], onProgress?: (msg: string) => void): Promise<{ success: boolean, videoUrl?: string, error?: string }> {
-        console.log(`Publishing video: ${filePath}`)
+    async publishVideo(filePath: string, caption: string, cookies?: any[], onProgress?: (msg: string) => void, options?: { advancedVerification?: boolean }): Promise<{ success: boolean, videoUrl?: string, error?: string, videoId?: string, isReviewing?: boolean }> {
+        // Generate unique hashtag for verification ONLY if requested
+        const useUniqueTag = options?.advancedVerification || false
+        const uniqueTag = '#' + Math.random().toString(36).substring(2, 8);
+        const finalCaption = useUniqueTag ? (caption + ' ' + uniqueTag) : caption;
+
+        console.log(`Publishing video: ${filePath} (Tag: ${useUniqueTag ? uniqueTag : 'Disabled'})`)
         if (onProgress) onProgress('Initializing browser...')
         let page: Page | null = null
+
+        let uploadStartTime = 0 // Timestamp to match video creation time if tag is disabled
 
         try {
             // Ensure headed browser for upload reliability
@@ -576,6 +583,7 @@ export class TikTokModule implements PlatformModule {
 
             // ─── Navigate to TikTok Studio Upload ───
             console.log('Navigating to TikTok Studio upload page...')
+            uploadStartTime = Math.floor(Date.now() / 1000)
             if (onProgress) onProgress('Navigating to upload page...')
             try {
                 await page.goto('https://www.tiktok.com/tiktokstudio/upload?from=webapp', {
@@ -810,7 +818,7 @@ export class TikTokModule implements PlatformModule {
                             await page!.keyboard.press('Control+a')
                             await page!.keyboard.press('Backspace')
                             await page!.waitForTimeout(200)
-                            await page!.keyboard.type(caption, { delay: 20 })
+                            await page!.keyboard.type(finalCaption, { delay: 20 })
                         }, sel)
                         console.log(`  Caption set (${sel})`)
                         captionSet = true
@@ -853,41 +861,65 @@ export class TikTokModule implements PlatformModule {
             for (let i = 0; i < 15; i++) {
                 if (onProgress) onProgress(`Searching for Post button (Attempt ${i + 1}/15)...`)
 
-                // Smart Selection: Find bottom-most visible Post button
-                const buttonSelector = await page.evaluate(() => {
-                    const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
-                    const candidates = buttons.filter(b => {
-                        const style = window.getComputedStyle(b);
-                        const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
-                        const text = (b.textContent || '').trim();
-                        // Check for specific attributes or text
-                        const isPost = b.getAttribute('data-e2e') === 'post-video-button' ||
-                            text === 'Post' || text === 'Đăng' || text.includes('Post') ||
-                            b.className.includes('btn-post');
-                        return isVisible && isPost;
-                    });
+                // Smart Selection: Find bottom-most visible Post button using Playwright Locators
+                // Priority: 1. data-e2e OR Text Match (English/Vietnamese) OR "Red Button"
+                // This makes it language agnostic.
+                const buttons = page.locator('button, div[role="button"]');
+                const count = await buttons.count();
 
-                    if (candidates.length === 0) return null;
+                let bestBtn = null;
+                let bestScore = -1;
+                let maxY = -1;
 
-                    // Sort by Y coordinate descending (bottom-most first)
-                    candidates.sort((a, b) => {
-                        const rectA = a.getBoundingClientRect();
-                        const rectB = b.getBoundingClientRect();
-                        return rectB.top - rectA.top;
-                    });
+                for (let j = 0; j < count; j++) {
+                    const btn = buttons.nth(j);
+                    if (await btn.isVisible()) {
+                        const box = await btn.boundingBox();
+                        if (!box) continue;
 
-                    // Return a unique selector for the best candidate
-                    const best = candidates[0];
-                    // Add a temporary unique ID to target it easily
-                    if (!best.id) best.id = 'target-post-btn-' + Date.now();
-                    return '#' + best.id;
-                });
+                        // Calculate Score
+                        let score = 0;
+                        const text = (await btn.innerText()).trim();
+                        const dataE2E = await btn.getAttribute('data-e2e');
+                        const style = await btn.evaluate((el) => {
+                            const s = window.getComputedStyle(el);
+                            return { bg: s.backgroundColor };
+                        });
 
-                if (buttonSelector) {
-                    console.log(`  ✅ Found candidate button: ${buttonSelector}`)
+                        // 1. Exact ID Match (Strongest)
+                        if (dataE2E === 'post-video-button') score += 100;
+
+                        // 2. Text Match (Medium)
+                        if (text === 'Post' || text === 'Đăng' || text.includes('Post')) score += 50;
+
+                        // 3. Visual Match: Red Color (Strong Fallback for any language)
+                        // TikTok Red is roughly rgb(254, 44, 85) or #fe2c55
+                        if (style.bg.includes('254') && style.bg.includes('44') && style.bg.includes('85')) {
+                            score += 80; // High confidence for Red button
+                        }
+
+                        // Filter out non-candidates
+                        if (score === 0) continue;
+
+                        // Select best logic: Higher score wins. If tie, bottom-most wins.
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestBtn = btn;
+                            maxY = box.y;
+                        } else if (score === bestScore) {
+                            if (box.y > maxY) {
+                                maxY = box.y;
+                                bestBtn = btn;
+                            }
+                        }
+                    }
+                }
+
+                if (bestBtn) {
+                    console.log(`  ✅ Found candidate button at Y=${maxY} (Score: ${bestScore})`)
                     try {
                         await cleanOverlays()
-                        await page.click(buttonSelector)
+                        await bestBtn.click()
                         console.log('🚀 Clicked Post button via Smart Selection')
                         postButtonFound = true
                         posted = true
@@ -947,19 +979,18 @@ export class TikTokModule implements PlatformModule {
             console.log('\n⏳ Verifying post success...')
             if (onProgress) onProgress('Verifying publication...')
             let videoUrl: string | undefined
+            let videoId: string | undefined
+            let isReviewing = false
             let isSuccess = false
 
-            // Define helper locally
+            // Define helper locally for Fallback Profile Scan
             const extractProfileVideo = async () => {
                 try {
-                    // 1. Try specific selector
                     const videoEl = await page!.$('[data-e2e="user-post-item"] a');
                     if (videoEl) {
                         const href = await videoEl.getAttribute('href');
                         if (href && (href.includes('/video/') || href.includes('/v/'))) return href;
                     }
-
-                    // 2. Fallback: Scan all links on page
                     const links = await page!.$$eval('a', els => els.map(e => e.href));
                     const videoLink = links.find(l => (l.includes('/video/') || l.includes('/v/')) && l.includes('tiktok.com'));
                     if (videoLink) return videoLink;
@@ -967,22 +998,21 @@ export class TikTokModule implements PlatformModule {
                 return undefined
             }
 
-            for (let i = 0; i < 60; i++) { // Increase wait to 2 minutes max (60 * 2s)
-                try {
-                    await page!.waitForTimeout(2000)
-                } catch { break }
+            // 1. Wait for Verification Success Message (UI)
+            for (let i = 0; i < 120; i++) { // Increase wait to 2 minutes max
+                try { await page!.waitForTimeout(1000) } catch { break }
 
-                // 1. Check for "Uploading..." state
+                // Check for "Uploading..."
                 try {
                     const uploadingEl = await page!.$('text="Your video is being uploaded"') || await page!.$('text="Video của bạn đang được tải lên"')
                     if (uploadingEl && await uploadingEl.isVisible()) {
-                        console.log('  ⏳ Upload in progress...')
-                        if (onProgress) onProgress('Uploading video...')
-                        continue; // Keep waiting
+                        if (i % 5 === 0) console.log('  ⏳ Upload in progress...')
+                        if (onProgress && i % 10 === 0) onProgress('Uploading video...')
+                        continue;
                     }
-                } catch { /* ignore */ }
+                } catch { }
 
-                // 2. Check for Success indicators
+                // Check for Success
                 try {
                     const successSelectors = [
                         'text="Manage your posts"', 'text="Quản lý bài đăng"',
@@ -990,7 +1020,6 @@ export class TikTokModule implements PlatformModule {
                         'text="Video published"',
                         'text="Upload another video"', 'text="Tải video khác lên"'
                     ]
-
                     for (const sel of successSelectors) {
                         const el = await page!.$(sel)
                         if (el && await el.isVisible()) {
@@ -999,54 +1028,11 @@ export class TikTokModule implements PlatformModule {
                             break
                         }
                     }
-                } catch { /* ignore */ }
+                } catch { }
 
-                // 3. If Success detected, try to get the link
-                if (isSuccess) {
-                    if (onProgress) onProgress('Upload complete. fetching video link...')
+                if (isSuccess) break
 
-                    // Try to click "View Profile" to go to profile
-                    try {
-                        const viewProfileBtn = await page!.locator('button:has-text("View Profile"), a:has-text("View Profile"), button:has-text("Xem hồ sơ"), a:has-text("Xem hồ sơ")').first()
-                        if (await viewProfileBtn.isVisible()) {
-                            console.log('  Found View Profile button, clicking...')
-                            await viewProfileBtn.click()
-                            await page!.waitForURL(/tiktok\.com\/@/, { timeout: 10000 }).catch(() => { })
-                        } else if (!page!.url().includes('/@')) {
-                            // Fallback: Click Avatar
-                            console.log('  "View Profile" not found, clicking Avatar...')
-                            const profileIcon = await page!.locator('[data-e2e="user-icon"], [data-e2e="profile-icon"]').first()
-                            if (await profileIcon.isVisible()) {
-                                await profileIcon.click()
-                                await page!.waitForURL(/tiktok\.com\/@/, { timeout: 10000 }).catch(() => { })
-                            }
-                        }
-                    } catch { }
-
-                    // Now on profile page (hopefully), try to extract link
-                    // Retry extraction with reload if needed
-                    for (let attempt = 0; attempt < 5; attempt++) {
-                        console.log(`  Scanning for video link (Attempt ${attempt + 1}/5)...`)
-                        const link = await extractProfileVideo()
-                        if (link) {
-                            videoUrl = link
-                            break
-                        }
-
-                        // If not found, reload profile page after a short delay
-                        if (page!.url().includes('/@')) {
-                            console.log('  Video not found on profile yet, reloading...')
-                            await page!.waitForTimeout(3000)
-                            await page!.reload({ waitUntil: 'domcontentloaded' })
-                        } else {
-                            await page!.waitForTimeout(2000)
-                        }
-                    }
-
-                    if (videoUrl) break; // We found it!
-                }
-
-                // Check for post error
+                // Check errors
                 try {
                     for (const errSel of ['text="Failed to post"', 'text="failed to post"', 'text="Đăng không thành công"', 'text="Không thể đăng"']) {
                         const errEl = await page!.$(errSel)
@@ -1055,16 +1041,121 @@ export class TikTokModule implements PlatformModule {
                 } catch (e: any) {
                     if (e.message?.includes('TikTok reported')) throw e
                 }
+            }
 
-                if (i % 5 === 0 && i > 0) console.log(`  Processing... (${i * 2}s)`)
+            if (!isSuccess) {
+                throw new Error('Upload timed out or success message not found.')
+            }
+
+            // 2. Strict Verification via Content Dashboard (JSON)
+            console.log('  🎉 UI Success detected. Navigating to Content Dashboard for Status Check...')
+            if (onProgress) onProgress('Checking video status...')
+
+            try {
+                await page!.goto('https://www.tiktok.com/tiktokstudio/content', { waitUntil: 'domcontentloaded' })
+
+                // Retry loop for JSON data availability (5 attempts, ~30s total)
+                for (let check = 1; check <= 5; check++) {
+                    console.log(`  🕵️♂️ Status Check Attempt ${check}/5...`)
+                    await page!.waitForTimeout(5000) // Wait for data load
+
+                    const videoStatus = await page!.evaluate(({ tag, useUniqueTag, startTime }) => {
+                        try {
+                            const script = document.getElementById('__Creator_Center_Context__');
+                            if (!script || !script.textContent) return null;
+                            const data = JSON.parse(script.textContent);
+                            const itemList = data?.uploadUserProfile?.firstBatchQueryItems?.item_list || [];
+                            const user = data?.uploadUserProfile?.user;
+
+                            const match = itemList.find((v: any) => {
+                                // 1. Unique Tag Match (Strongest)
+                                if (useUniqueTag && tag && v.desc && v.desc.includes(tag)) return true;
+
+                                // 2. Time Match (Fallback)
+                                if (!useUniqueTag && v.create_time) {
+                                    const createTime = parseInt(v.create_time);
+                                    // Check if video created after upload started (minus 60s buffer)
+                                    // And not too far in future (plus 15 mins)
+                                    if (createTime >= (startTime - 60) && createTime <= (startTime + 900)) return true;
+                                }
+                                return false;
+                            });
+
+                            if (!match) return null;
+
+                            return {
+                                id: match.item_id,
+                                desc: match.desc,
+                                privacy_level: match.privacy_level, // 1=Public
+                                status: match.status, // 102=Public? 
+                                uniqueId: user?.unique_id,
+                                createTime: match.create_time
+                            };
+                        } catch (e) { return null; }
+                    }, { tag: uniqueTag, useUniqueTag, startTime: uploadStartTime });
+
+                    if (videoStatus) {
+                        console.log(`  ✅ Video Match Found: ${videoStatus.id}`)
+                        console.log(`     Status: ${videoStatus.status}, Privacy: ${videoStatus.privacy_level}`)
+
+                        videoId = videoStatus.id
+                        videoUrl = `https://www.tiktok.com/@${videoStatus.uniqueId}/video/${videoStatus.id}`
+
+                        // Determine if Reviewing
+                        // privacy_level: 1 = Public, 2 = Friends, 4 = Private/OnlyMe
+                        // If it's NOT Public (1), treat as Reviewing (or Private)
+                        if (videoStatus.privacy_level === 1) {
+                            console.log('  🟢 Video is PUBLIC.')
+                            isReviewing = false
+                        } else {
+                            console.log('  🟡 Video is UNDER REVIEW / PRIVATE.')
+                            isReviewing = true
+                        }
+                        break;
+                    } else {
+                        console.log('  ⚠️ Video not found in list yet. Refreshing...')
+                        await page!.reload({ waitUntil: 'domcontentloaded' })
+                    }
+                }
+            } catch (e) {
+                console.warn('  ⚠️ Content Dashboard verification failed:', e)
+            }
+
+            // 3. Fallback: Profile Scan (only if Dashboard failed to find it)
+            if (!videoUrl) {
+                console.warn('  ⚠️ Dashboard check failed to find video. Falling back to Profile Scan...')
+                if (onProgress) onProgress('Fallback: Scanning profile...')
+
+                try {
+                    await page!.goto('https://www.tiktok.com/@profile', { waitUntil: 'domcontentloaded' })
+                    // ... (Existing Profile Scan Logic) ...
+                    // Retry extraction with reload
+                    for (let attempt = 0; attempt < 5; attempt++) {
+                        console.log(`  Scanning for video link (Attempt ${attempt + 1}/5)...`)
+                        const link = await extractProfileVideo()
+                        if (link) {
+                            videoUrl = link
+                            const idMatch = link.match(/\/video\/(\d+)/)
+                            if (idMatch) videoId = idMatch[1]
+                            console.log(`  ✅ Found video via profile: ${link}`)
+                            break
+                        }
+                        if (page!.url().includes('/@')) {
+                            await page!.waitForTimeout(3000)
+                            await page!.reload({ waitUntil: 'domcontentloaded' })
+                        } else {
+                            await page!.waitForTimeout(2000)
+                        }
+                    }
+                } catch (e) { console.warn('  ⚠️ Profile scan fallback failed:', e) }
             }
 
             if (!videoUrl) {
-                throw new Error('Post success detected but could not retrieve video URL (Timeout).')
+                throw new Error('Post success detected but could not verify video URL.')
             }
 
-            console.log(`  🔗 Video URL Verified: ${videoUrl}`)
-            return { success: true, videoUrl }
+            console.log(`  🔗 Final Video URL: ${videoUrl} (Reviewing: ${isReviewing})`)
+            return { success: true, videoUrl, videoId, isReviewing: isReviewing }
 
         } catch (error: any) {
             console.error('Publish failed:', error)
@@ -1146,6 +1237,39 @@ export class TikTokModule implements PlatformModule {
                 [filterCriteria || '{}', keyword]
             )
             console.log(`Updated keyword: ${keyword}`)
+        }
+    }
+
+    async checkVideoStatus(videoId: string, username: string): Promise<'public' | 'private' | 'unavailable'> {
+        try {
+            const url = `https://www.tiktok.com/@${username}/video/${videoId}`
+            console.log(`Checking video status: ${url}`)
+
+            const response = await axios.get(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                },
+                validateStatus: () => true // Handle 404/302 manually
+            })
+
+            console.log(`Status check response: ${response.status}`)
+
+            if (response.status === 200) {
+                // If the video is truly public, the page should load.
+                // If it's under review/private, TikTok might return 200 but show "Video currently unavailable"
+                if (response.data.includes('Video currently unavailable') || response.data.includes('not_found')) {
+                    return 'private'
+                }
+                return 'public'
+            } else if (response.status === 404) {
+                return 'unavailable'
+            }
+
+            return 'private'
+        } catch (e) {
+            console.error('Check status failed:', e)
+            return 'unavailable' // Assume unavailable on network error to retry?
         }
     }
 

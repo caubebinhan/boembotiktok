@@ -84,19 +84,24 @@ export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleSta
                                 </div>
 
                                 <div style={{ display: 'flex', gap: '12px', fontSize: '11px', marginTop: '6px', color: 'var(--text-muted)' }}>
-                                    <span title="Queued Videos" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                        📥 {c.queued_count || 0}
+                                    <span title="Queued Videos">
+                                        Queued: <b>{c.queued_count || 0}</b>
                                     </span>
-                                    <span title="Downloaded Videos" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                        ⬇️ {c.downloaded_count || 0}
+                                    <span style={{ color: 'var(--border-primary)' }}>|</span>
+                                    <span title="Downloaded Videos">
+                                        Downloaded: <b>{c.downloaded_count || 0}</b>
                                     </span>
-                                    <span title="Published Videos" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                        🚀 {c.published_count || 0}
+                                    <span style={{ color: 'var(--border-primary)' }}>|</span>
+                                    <span title="Published Videos">
+                                        Published: <b>{c.published_count || 0}</b>
                                     </span>
                                     {(c.failed_count || 0) > 0 && (
-                                        <span title="Failed Jobs" style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#fe2c55' }}>
-                                            ❌ {c.failed_count}
-                                        </span>
+                                        <>
+                                            <span style={{ color: 'var(--border-primary)' }}>|</span>
+                                            <span title="Failed Jobs" style={{ color: '#fe2c55', fontWeight: 600 }}>
+                                                Failed: {c.failed_count}
+                                            </span>
+                                        </>
                                     )}
                                 </div>
 

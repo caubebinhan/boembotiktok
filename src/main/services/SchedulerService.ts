@@ -200,6 +200,7 @@ class SchedulerService {
                                 thumbnail: v.thumbnail || '',
                                 videoStats: v.stats || { views: 0, likes: 0 },
                                 editPipeline: config.editPipeline,
+                                advancedVerification: config.advancedVerification,
                                 status: 'Waiting to download'
                             })
                         ]
@@ -246,7 +247,8 @@ class SchedulerService {
                         const jobData = {
                             video,
                             postOrder: config.postOrder,
-                            campaignName: campaign.name
+                            campaignName: campaign.name,
+                            advancedVerification: config.advancedVerification
                         }
 
                         const type = item.type === 'download' ? 'DOWNLOAD' : 'PUBLISH'
@@ -293,6 +295,7 @@ class SchedulerService {
                                 thumbnail: v.thumbnail || '',
                                 videoStats: v.stats || { views: 0, likes: 0 },
                                 editPipeline: config.editPipeline,
+                                advancedVerification: config.advancedVerification,
                                 status: 'Waiting to download'
                             })
                         ]
@@ -312,7 +315,8 @@ class SchedulerService {
                     editPipeline: config.editPipeline,
                     // Tell handleScan where to start scheduling scanned videos
                     nextScheduleTime: scheduleTime.toISOString(),
-                    intervalMinutes
+                    intervalMinutes,
+                    advancedVerification: config.advancedVerification
                 }
 
                 storageService.run(

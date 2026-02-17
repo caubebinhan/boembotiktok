@@ -140,13 +140,16 @@ test('Debug TikTok Upload - Strict Fix', async () => {
         console.log('✅ File uploaded, caption input found.');
         await takeDebugSnapshot('2-file-uploaded');
 
-        // 3. Set Caption
-        console.log('✏️ Setting caption...');
+        // 3. Set Caption with Unique Hashtag (User Request)
+        const uniqueTag = '#' + Math.random().toString(36).substring(2, 8);
+        const caption = `Debug Test Upload ${uniqueTag}`;
+        console.log(`✏️ Setting caption with unique tag: ${uniqueTag}`);
+
         await cleanOverlays();
         const captionEditor = await page.locator('.public-DraftEditor-content').first();
         if (await captionEditor.isVisible()) {
             await captionEditor.click();
-            await page.keyboard.type('Debug Test Upload #automated', { delay: 50 });
+            await page.keyboard.type(caption, { delay: 50 });
         }
         await takeDebugSnapshot('3-caption-set');
 
@@ -218,7 +221,7 @@ test('Debug TikTok Upload - Strict Fix', async () => {
             throw new Error('Post button not visible');
         }
 
-        // 6. Verify Success (Logic mirrors TikTokModule.ts)
+        // 6. Verify Success & Privacy (Content Dashboard)
         console.log('\n⏳ Verifying post success...')
         let videoUrl: string | undefined
         let isSuccess = false
@@ -251,44 +254,45 @@ test('Debug TikTok Upload - Strict Fix', async () => {
             }
 
             if (isSuccess) {
-                // Try to go to profile
-                try {
-                    const viewProfileBtn = await page.locator('button:has-text("View Profile"), a:has-text("View Profile"), button:has-text("Xem hồ sơ"), a:has-text("Xem hồ sơ")').first()
-                    if (await viewProfileBtn.isVisible()) {
-                        console.log('  Found View Profile button, clicking...')
-                        await viewProfileBtn.click()
-                        await page.waitForURL(/tiktok\.com\/@/, { timeout: 10000 }).catch(() => { })
-                    } else if (!page.url().includes('/@')) {
-                        // Fallback: Click Avatar
-                        console.log('  "View Profile" not found, clicking Avatar...')
-                        const profileIcon = await page.locator('[data-e2e="user-icon"], [data-e2e="profile-icon"]').first()
-                        if (await profileIcon.isVisible()) {
-                            await profileIcon.click()
-                            await page.waitForURL(/tiktok\.com\/@/, { timeout: 10000 }).catch(() => { })
+                console.log('  🎉 Success detected. Navigating to Content Dashboard for Privacy Check...');
+                await page.goto('https://www.tiktok.com/tiktokstudio/content', { waitUntil: 'domcontentloaded' });
+
+                // RESEARCH: Loop 5 times (30s interval) to observe status transitions
+                for (let check = 1; check <= 5; check++) {
+                    console.log(`  🕵️♂️ Status Research Check ${check}/5...`);
+                    await page.waitForTimeout(30000); // 30s interval
+
+                    // Analyze JSON for Video Status
+                    const videoData = await page.evaluate((tag) => {
+                        try {
+                            const script = document.getElementById('__Creator_Center_Context__');
+                            if (!script || !script.textContent) return null;
+                            const data = JSON.parse(script.textContent);
+                            const itemList = data?.uploadUserProfile?.firstBatchQueryItems?.item_list || [];
+
+                            const match = itemList.find((v: any) => v.desc && v.desc.includes(tag));
+                            return match; // Return FULL match object to see all properties
+                        } catch (e) { return null; }
+                    }, uniqueTag);
+
+                    if (videoData) {
+                        console.log(`  ✅ Video Match Data (Check ${check}):`);
+                        console.log(JSON.stringify(videoData, null, 2)); // Log EVERYTHING
+
+                        // Check if Public
+                        if (videoData.privacy_level === 1 && videoData.status === 102) { // Hypothesized success codes
+                            console.log('  🟢 Video appears PUBLIC.');
                         }
-                    }
-                } catch { }
-
-                // Scan for link
-                for (let attempt = 0; attempt < 15; attempt++) {
-                    console.log(`  Scanning for video link (Attempt ${attempt + 1}/15)...`)
-                    try {
-                        await page.waitForSelector('[data-e2e="user-post-item"] a', { timeout: 5000 })
-                        videoUrl = await page.$eval('[data-e2e="user-post-item"] a', (el: any) => el.href)
-                    } catch { }
-
-                    if (videoUrl) break
-
-                    // Reload if not found
-                    if (page.url().includes('/@')) {
-                        console.log('  Video not found, reloading profile...')
-                        await page.reload({ waitUntil: 'domcontentloaded' })
-                        await page.waitForTimeout(3000)
                     } else {
-                        await page.waitForTimeout(2000)
+                        console.log('  ⚠️ Video not found in list yet.');
                     }
+
+                    console.log('  🔄 Reloading page...');
+                    await page.reload({ waitUntil: 'domcontentloaded' });
                 }
-                if (videoUrl) break
+
+                // End test after research
+                return;
             }
         }
 

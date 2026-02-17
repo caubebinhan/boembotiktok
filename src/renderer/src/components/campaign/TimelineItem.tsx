@@ -99,6 +99,13 @@ export const TimelineItem: React.FC<Props> = ({ video, status, downloadJob, publ
                                 ✋ Solve CAPTCHA
                             </button>
                         )}
+                        {publishJob && publishJob.status === 'completed' && (
+                            <button className="btn btn-sm" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border-primary)', fontSize: '11px' }}
+                                onClick={() => onAction('refresh', publishJob.id)}
+                                title="Check generic status again">
+                                🔄 Status
+                            </button>
+                        )}
                         <button className="btn btn-ghost btn-sm">⋮</button>
                     </div>
                 </div>

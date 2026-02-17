@@ -264,6 +264,7 @@ class JobQueue {
                             platform_id: data.platform_id,
                             account_id: accId,
                             account_name: acc?.display_name || acc?.username || 'Unknown',
+                            account_username: acc?.username || '',
                             caption: data.description || '',
                             thumbnail: data.thumbnail || '',
                             videoStats: data.videoStats || {},
@@ -304,25 +305,44 @@ class JobQueue {
             cookies,
             (msg) => {
                 this.updateJobData(job.id, { ...data, status: msg })
-            }
+            },
+            { advancedVerification: data.advancedVerification }
         )
 
         if (!result.success) {
             throw new Error(result.error || 'Upload failed (unknown error)')
         }
 
-        // 4. Mark video as published in DB
-        if (data.platform_id) {
-            storageService.run("UPDATE videos SET status = 'published' WHERE platform_id = ?", [data.platform_id])
+        if (result.isReviewing && result.videoId) {
+            // Update video status to 'reviewing'
+            if (data.platform_id) {
+                storageService.run("UPDATE videos SET status = 'reviewing', platform_id = ? WHERE platform_id = ?", [result.videoId, data.platform_id])
+            }
+
+            // Start background polling (10 mins, every 30s)
+            this.startBackgroundStatusCheck(result.videoId, job.id, data.account_username || account_name)
+
+            this.updateJobData(job.id, { ...data, status: `In Review (Polling started)...` })
+        } else {
+            // Mark video as published in DB
+            if (data.platform_id) {
+                storageService.run("UPDATE videos SET status = 'published' WHERE platform_id = ?", [data.platform_id])
+            }
+            this.updateJobData(job.id, { ...data, status: `Published to @${account_name}` })
         }
 
-        // Store result with video URL
+        // Store result with video URL & ID
         storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [
-            JSON.stringify({ account: account_name, video_path, video_url: result.videoUrl, published_at: new Date().toISOString() }),
+            JSON.stringify({
+                account: account_name,
+                video_path,
+                video_url: result.videoUrl,
+                video_id: result.videoId,
+                published_at: new Date().toISOString(),
+                is_reviewing: result.isReviewing
+            }),
             job.id
         ])
-
-        this.updateJobData(job.id, { ...data, status: `Published to @${account_name}` })
     }
 
     private checkCampaignCompletion(campaignId: number) {
@@ -369,6 +389,105 @@ class JobQueue {
             this.broadcastUpdate()
         } catch (e) {
             console.error('Failed to update job data:', e)
+        }
+    }
+
+    private startBackgroundStatusCheck(videoId: string, jobId: number, username: string) {
+        console.log(`[JobQueue] Starting background check for video ${videoId} (@${username})`)
+        let attempts = 0
+        const MAX_ATTEMPTS = 20 // 10 mins / 30s = 20
+
+        const poller = setInterval(async () => {
+            attempts++
+            try {
+                // 1. Get TikTok module
+                const tiktok = moduleManager.getModule('tiktok') as TikTokModule
+                if (!tiktok) { clearInterval(poller); return }
+
+                const status = await tiktok.checkVideoStatus(videoId, username)
+                console.log(`[JobQueue] Polling ${videoId}: ${status}`)
+
+                if (status === 'public') {
+                    storageService.run("UPDATE videos SET status = 'published' WHERE platform_id = ?", [videoId])
+
+                    // Update job status text (even if completed)
+                    const job = storageService.get('SELECT data_json FROM jobs WHERE id = ?', [jobId])
+                    if (job) {
+                        const data = JSON.parse(job.data_json || '{}')
+                        this.updateJobData(jobId, { ...data, status: `Published (Verified Public)` })
+
+                        // Update Result JSON to define is_reviewing = false
+                        const result = JSON.parse(job.result_json || '{}')
+                        result.is_reviewing = false
+                        storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [JSON.stringify(result), jobId])
+                    }
+
+                    clearInterval(poller)
+                    return
+                }
+
+                // Update text to show alive
+                const job = storageService.get('SELECT data_json FROM jobs WHERE id = ?', [jobId])
+                if (job) {
+                    const data = JSON.parse(job.data_json || '{}')
+                    this.updateJobData(jobId, { ...data, status: `Reviewing... (Check ${attempts}/${MAX_ATTEMPTS})` })
+                }
+
+                if (attempts >= MAX_ATTEMPTS) {
+                    clearInterval(poller)
+                    console.log(`[JobQueue] Polling finished for ${videoId}. Video might still be in review.`)
+
+                    // Final status update
+                    const job = storageService.get('SELECT data_json FROM jobs WHERE id = ?', [jobId])
+                    if (job) {
+                        const data = JSON.parse(job.data_json || '{}')
+                        this.updateJobData(jobId, { ...data, status: `Finished (Check later)` })
+                    }
+                    return
+                }
+
+            } catch (e) {
+                console.error(`[JobQueue] Polling error for ${videoId}:`, e)
+            }
+        }, 30000) // 30s
+    }
+
+
+    async manualStatusCheck(jobId: number): Promise<string> {
+        const job = storageService.get('SELECT * FROM jobs WHERE id = ?', [jobId])
+        if (!job) return 'Job not found'
+
+        const data = JSON.parse(job.data_json || '{}')
+        const result = JSON.parse(job.result_json || '{}')
+
+        if (!result.video_id || !data.account_username) {
+            return 'Cannot check status: Missing video ID or username'
+        }
+
+        const tiktok = moduleManager.getModule('tiktok') as TikTokModule
+        if (!tiktok) return 'TikTok module not ready'
+
+        try {
+            this.updateJobData(jobId, { ...data, status: `Checking status...` })
+            const status = await tiktok.checkVideoStatus(result.video_id, data.account_username)
+            console.log(`[JobQueue] Manual check ${result.video_id}: ${status}`)
+
+            if (status === 'public') {
+                storageService.run("UPDATE videos SET status = 'published' WHERE platform_id = ?", [result.video_id])
+                this.updateJobData(jobId, { ...data, status: `Published (Verified Public)` })
+
+                result.is_reviewing = false
+                storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [JSON.stringify(result), jobId])
+                return 'Video is Public'
+            } else if (status === 'private') {
+                this.updateJobData(jobId, { ...data, status: `In Review / Private` })
+                return 'Video is Private/Reviewing'
+            } else {
+                this.updateJobData(jobId, { ...data, status: `Status Unavailable` })
+                return 'Status Unavailable'
+            }
+        } catch (e: any) {
+            return `Check failed: ${e.message}`
         }
     }
 

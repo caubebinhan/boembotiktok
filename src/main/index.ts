@@ -310,6 +310,10 @@ app.whenReady().then(async () => {
             return { success: true }
         })
 
+        ipcMain.handle('job:check-status', async (_event: any, jobId: number) => {
+            return jobQueue.manualStatusCheck(jobId)
+        })
+
         ipcMain.handle('job:delete', async (_event: any, jobId: number) => {
             storageService.run(
                 "DELETE FROM jobs WHERE id = ? AND status IN ('pending', 'paused', 'failed')",

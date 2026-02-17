@@ -64,6 +64,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                     days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
                     jitter: false
                 },
+                advancedVerification: config.advancedVerification || false,
                 executionOrder: [] as any[]
             }
         }
@@ -81,6 +82,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
                 jitter: false
             },
+            advancedVerification: false,
             executionOrder: [] as any[]
         }
     })
@@ -387,6 +389,25 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                         </div>
                     </label>
                 </div>
+            </div>
+
+            <div className="form-group" style={{ marginTop: '16px', background: 'rgba(255,255,255,0.03)', padding: '12px', borderRadius: '8px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', margin: 0 }}>
+                    <input
+                        type="checkbox"
+                        checked={(formData as any).advancedVerification || false}
+                        onChange={e => setFormData({ ...formData, advancedVerification: e.target.checked } as any)}
+                        style={{ width: '18px', height: '18px', accentColor: 'var(--accent-primary)' }}
+                    />
+                    <div>
+                        <div style={{ fontWeight: 600, fontSize: '13px' }}>Advanced Verification (Unique Tag)</div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                            Appends a unique 6-char tag to caption to 100% match the published video.
+                            <br />
+                            <span style={{ color: 'var(--accent-primary)' }}>Default: Off (Checks by recent upload time)</span>
+                        </div>
+                    </div>
+                </label>
             </div>
 
             {formData.type === 'one_time' ? (

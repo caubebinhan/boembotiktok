@@ -87,6 +87,14 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
                 await window.api.invoke('job:open-browser', jobId)
             } catch (e: any) { console.error(e); alert('Failed to open browser: ' + e.message) }
         }
+        if (action === 'refresh') {
+            try {
+                // @ts-ignore
+                const status = await window.api.invoke('job:check-status', jobId)
+                // alert(`Status Check: ${status}`) // Optional feedback
+                loadData()
+            } catch (e: any) { console.error(e); alert('Failed to refresh status: ' + e.message) }
+        }
     }
 
     if (!campaign) return <div className="spinner" />

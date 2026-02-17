@@ -17,6 +17,7 @@ export interface CampaignConfig {
     editPipeline: any
     targetAccounts: string[]
     schedule: any
+    advancedVerification?: boolean
 }
 
 class CampaignService {
