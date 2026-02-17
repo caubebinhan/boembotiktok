@@ -13,7 +13,8 @@ interface SettingItem {
 const SETTING_DEFINITIONS: SettingItem[] = [
     // General
     { key: 'app.downloadPath', label: 'Download Path', description: 'Where downloaded videos are saved', type: 'text', section: 'General', default: '' },
-    { key: 'app.maxConcurrentDownloads', label: 'Max Concurrent Downloads', description: 'Number of simultaneous downloads', type: 'number', section: 'General', default: '3' },
+    { key: 'app.maxConcurrentDownloads', label: 'Max Concurrent Downloads (Threads)', description: 'Simultaneous threads per job', type: 'number', section: 'General', default: '3' },
+    { key: 'app.maxConcurrentJobs', label: 'Max Concurrent Jobs', description: 'Total jobs running at once', type: 'number', section: 'General', default: '100' },
     { key: 'app.autoStartScheduler', label: 'Auto-start Scheduler', description: 'Automatically start the scheduler on app launch', type: 'toggle', section: 'General', default: 'true' },
 
     // Browser

@@ -84,8 +84,11 @@ export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleSta
                                 </div>
 
                                 <div style={{ display: 'flex', gap: '12px', fontSize: '11px', marginTop: '6px', color: 'var(--text-muted)' }}>
-                                    <span title="Scanned Videos" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                        🔍 {c.scanned_count || 0}
+                                    <span title="Queued Videos" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                        📥 {c.queued_count || 0}
+                                    </span>
+                                    <span title="Downloaded Videos" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                        ⬇️ {c.downloaded_count || 0}
                                     </span>
                                     <span title="Published Videos" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                                         🚀 {c.published_count || 0}

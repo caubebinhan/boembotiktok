@@ -16,6 +16,8 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
     const [accounts, setAccounts] = useState<any[]>([])
     const [activeTab, setActiveTab] = useState<'timeline' | 'accounts' | 'logs'>('timeline')
 
+    const [stats, setStats] = useState({ queued: 0, preparing: 0, uploading: 0, published: 0, failed: 0, skipped: 0 })
+
     // Data Loading
     const loadCampaign = useCallback(async () => {
         try {
@@ -40,27 +42,33 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
         } catch (err) { console.error(err) }
     }, [id])
 
-    const loadJobs = useCallback(async () => {
+    const loadData = useCallback(async () => {
         try {
             // @ts-ignore
-            const campaignJobs = await window.api.invoke('get-campaign-jobs', Number(id))
+            const [campaignJobs, campaignStats] = await Promise.all([
+                // @ts-ignore
+                window.api.invoke('get-campaign-jobs', Number(id)),
+                // @ts-ignore
+                window.api.invoke('get-campaign-stats', Number(id))
+            ])
             setJobs(campaignJobs || [])
+            if (campaignStats) setStats(campaignStats)
         } catch (e) { console.error(e) }
     }, [id])
 
     useEffect(() => {
         loadCampaign()
-        loadJobs()
-        const interval = setInterval(loadJobs, 2000)
+        loadData()
+        const interval = setInterval(loadData, 2000)
         return () => clearInterval(interval)
-    }, [id, loadCampaign, loadJobs])
+    }, [id, loadCampaign, loadData])
 
     // Actions
     const handleRunNow = async () => {
         try {
             // @ts-ignore
             await window.api.invoke('trigger-campaign', id)
-            loadJobs()
+            loadData()
         } catch (e) { console.error(e) }
     }
 
@@ -70,14 +78,14 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
             try {
                 // @ts-ignore
                 await window.api.invoke('job:retry', jobId)
-                loadJobs()
+                loadData()
             } catch (e) { console.error(e) }
         }
         if (action === 'captcha') {
             try {
                 // @ts-ignore
                 await window.api.invoke('job:open-browser', jobId)
-            } catch (e) { console.error(e); alert('Failed to open browser: ' + e.message) }
+            } catch (e: any) { console.error(e); alert('Failed to open browser: ' + e.message) }
         }
     }
 
@@ -87,38 +95,9 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
     const config = JSON.parse(campaign.config_json || '{}')
     const videos = config.videos || []
 
-    // Calculate Real-time Stats
-    const stats = { queued: 0, preparing: 0, uploading: 0, published: 0, failed: 0, skipped: 0 }
-
-    // Quick separate pass for stats
-    const videoMap = new Map<string, { download?: any, publish?: any }>()
-    jobs.forEach(j => {
-        try {
-            const vid = JSON.parse(j.data_json || '{}').platform_id || JSON.parse(j.data_json || '{}').video_id
-            if (vid) {
-                const cur = videoMap.get(vid) || {}
-                if (j.type === 'DOWNLOAD') cur.download = j
-                if (j.type === 'PUBLISH') cur.publish = j
-                videoMap.set(vid, cur)
-            }
-        } catch { }
-    })
-
-    videos.forEach((v: any) => {
-        const jobs = videoMap.get(v.id)
-        const status = determineVideoStatus(v, jobs?.download, jobs?.publish)
-
-        if (status.state === 'PUBLISHED') stats.published++
-        else if (status.state.includes('FAILED') || status.state === 'BROWSER_ERROR') stats.failed++
-        else if (status.state === 'QUEUED' || status.state === 'SCHEDULED') stats.queued++
-        else if (status.state.includes('UPLOADING') || status.state.includes('TIKTOK_PROCESSING') || status.state === 'FINALIZING') stats.uploading++
-        else if (status.state.includes('DOWNLOADING') || status.state.includes('PREPARING') || status.state === 'FORM_FILLING') stats.preparing++
-        else if (status.state === 'SKIPPED') stats.skipped++
-    })
-
     return (
         <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
-            <CampaignHeader campaign={campaign} onRunNow={handleRunNow} onRefresh={loadJobs} />
+            <CampaignHeader campaign={campaign} onRunNow={handleRunNow} onRefresh={loadData} />
 
             <div style={{ flex: 1, overflowY: 'auto', paddingTop: '24px' }}>
                 <CampaignStats stats={stats} />

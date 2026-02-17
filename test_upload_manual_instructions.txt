@@ -1,0 +1,21 @@
+const { app } = require('electron'); const { chromium } = require('playwright-core'); // Mimic BrowserService
+
+// MOCK: This script runs independently to test selectors.
+// USAGE: node test_upload_manual.js (Requires manual login or existing profile)
+
+(async () => {
+    // NOTE: This script is for concept/selector testing. 
+    // In real app, we use browserService which connects to Chrome.
+    // For this debug, we will try to launch a fresh chrome instance pointing to the same user data if possible,
+    // OR just print what we would do.
+
+    console.log("To verify the upload fix:");
+    console.log("1. Run the main app: 'npm run dev'");
+    console.log("2. Ensure you are logged into a TikTok account in the app.");
+    console.log("3. Trigger a manual publish job or create a campaign.");
+    console.log("4. Check the console logs for '[DEBUG] Visible buttons on page'.");
+    console.log("5. If it fails, check the 'debug_artifacts' folder in your AppData.");
+    
+    // We cannot easily attach to the running electron session from a standalone script without remote debugging port.
+    // So we rely on the app logs we just enhanced.
+})();

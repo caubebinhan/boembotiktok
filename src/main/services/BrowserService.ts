@@ -37,6 +37,7 @@ class BrowserService {
                     '--window-position=0,0',
                     '--ignore-certificate-errors',
                     '--ignore-certificate-errors-spki-list',
+                    '--lang=en-US,en', // Force English locale
                 ]
             }
 
@@ -66,11 +67,11 @@ class BrowserService {
             await fs.ensureDir(userDataDir)
 
             this.context = await this.browser.newContext({
-                viewport: { width: 1280, height: 800 },
+                viewport: { width: 1920, height: 1080 },
                 userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 recordVideo: {
                     dir: path.join(app.getPath('userData'), 'recordings'),
-                    size: { width: 1280, height: 800 }
+                    size: { width: 1920, height: 1080 }
                 }
             })
 

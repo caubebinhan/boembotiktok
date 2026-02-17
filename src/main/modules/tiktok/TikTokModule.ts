@@ -279,74 +279,54 @@ export class TikTokModule implements PlatformModule {
         const diff = 'tiktok_' + platformId + '.mp4'
         const filePath = path.join(downloadsDir, diff)
 
-        // Use Browser to get actual video stream
-        // We need 'headed' sometimes for some sites, but headless usually works for extraction if undetected.
-        // Using existing browserService.
-        if (!browserService.isConnected()) {
-            await browserService.init(true)
+        let videoStreamUrl = ''
+        let downloadHeaders: Record<string, string> = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://www.tiktok.com/',
         }
 
-        const page = await browserService.newPage()
-        if (!page) throw new Error('Failed to create page for download')
-
-        let videoStreamUrl = ''
-
-        // Timeout race: Network Intercept vs DOM Extraction
         try {
-            // 1. Setup Network Interception
-            page.on('response', async (response: Response) => {
-                const resourceType = response.request().resourceType()
-                const respUrl = response.url()
-                // TikTok video streams often come from *.tiktokcdn.com/... or similar
-                // They are usually type 'media'.
-                if (resourceType === 'media' || (respUrl.includes('.mp4') && !respUrl.includes('.html'))) {
-                    // Check content-length if possible to ignore small clips? 
-                    // For now, first media is usually the video.
-                    if (!videoStreamUrl && !respUrl.startsWith('blob:')) {
-                        console.log(`Found candidate video stream: ${respUrl}`)
-                        videoStreamUrl = respUrl
-                    }
+            console.log('Using @tobyg74/tiktok-api-dl to fetch video URL...')
+            // Dynamic import to handle CommonJS/ESM interop if needed, though we compiled to CommonJS in TS
+            // @ts-ignore
+            const { Downloader } = require('@tobyg74/tiktok-api-dl')
+
+            const result = await Downloader(url, { version: 'v1' })
+            console.log('Library Result Status:', result.status)
+
+            if (result.status === 'success' && result.result?.video) {
+                // Determine best video source (HD or normal)
+                const videoData = result.result.video
+                if (Array.isArray(videoData) && videoData.length > 0) {
+                    videoStreamUrl = videoData[0]
+                } else if (typeof videoData === 'string') {
+                    videoStreamUrl = videoData
                 }
-            })
-
-            console.log('Navigating to video page...')
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
-
-            // Wait a bit for media to load
-            await page.waitForTimeout(3000)
-
-            // 2. Fallback / DOM Extraction
-            if (!videoStreamUrl) {
-                console.log('Network intercept empty, trying DOM extraction...')
-                videoStreamUrl = await page.evaluate(() => {
-                    const video = document.querySelector('video')
-                    return video ? video.src : ''
-                })
             }
 
-            console.log(`Extracted Video URL: ${videoStreamUrl}`)
+            if (!videoStreamUrl) {
+                console.warn('Library failed to return video URL. Falling back to Puppeteer extraction.')
+                // FALLBACK to Puppeteer if library fails
+                return await this.downloadVideoFallback(url, filePath)
+            }
+
+            console.log(`Extracted Video URL from Library: ${videoStreamUrl}`)
 
         } catch (e) {
-            console.error('Extraction error:', e)
-        } finally {
-            await page.close()
-        }
-
-        if (!videoStreamUrl || videoStreamUrl.startsWith('blob:')) {
-            throw new Error(`Failed to extract valid video URL. Got: ${videoStreamUrl || 'nothing'}`)
+            console.error('Library extraction error:', e)
+            console.log('Falling back to Puppeteer extraction...')
+            return await this.downloadVideoFallback(url, filePath)
         }
 
         // 3. Download the Extracted URL
         try {
             const writer = fs.createWriteStream(filePath)
+
             const response = await axios({
                 url: videoStreamUrl,
                 method: 'GET',
                 responseType: 'stream',
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Referer': 'https://www.tiktok.com/'
-                }
+                headers: downloadHeaders
             })
 
             response.data.pipe(writer)
@@ -357,8 +337,14 @@ export class TikTokModule implements PlatformModule {
                     try {
                         const stats = await fs.stat(filePath)
                         if (stats.size < 50 * 1024) { // < 50KB
-                            // Don't delete, let user inspect.
-                            reject(new Error(`Downloaded file too small (${stats.size} bytes). Path: ${filePath}`))
+                            console.warn(`Downloaded file too small (${stats.size} bytes). Retrying with fallback...`)
+                            // If library gave a bad link (e.g. access denied HTML), try fallback
+                            try {
+                                const fallbackResult = await this.downloadVideoFallback(url, filePath)
+                                resolve(fallbackResult)
+                            } catch (err: any) {
+                                reject(new Error(`Downloaded file too small (${stats.size} bytes) and fallback failed: ${err.message}`))
+                            }
                         } else {
                             resolve(filePath)
                         }
@@ -372,6 +358,118 @@ export class TikTokModule implements PlatformModule {
             console.error('Download failed:', error)
             throw error
         }
+    }
+
+    // Original Puppeteer Logic moved to Fallback
+    async downloadVideoFallback(url: string, filePath: string): Promise<string> {
+        console.log('Starting Puppeteer Fallback Download...')
+        // Use Browser to get actual video stream
+        if (!browserService.isConnected()) {
+            await browserService.init(true)
+        }
+
+        const page = await browserService.newPage()
+        if (!page) throw new Error('Failed to create page for download')
+
+        let videoStreamUrl = ''
+        let largestVideoSize = 0
+        let videoHeaders: any = {}
+
+        // Timeout race: Network Intercept vs DOM Extraction
+        try {
+            // 1. Setup Network Interception
+            page.on('response', async (response: Response) => {
+                const url = response.url()
+                const headers = await response.allHeaders()
+                const contentType = headers['content-type'] || ''
+                const contentLength = parseInt(headers['content-length'] || '0')
+
+                // Check for video content type or large media files
+                const isVideo = contentType.includes('video/') || (url.includes('video/tos') && contentLength > 1024 * 1024)
+
+                if (isVideo && contentLength > 1 * 1024 * 1024) { // > 1MB
+                    console.log(`[Playback] Found candidate video stream: ${url} (${contentLength} bytes)`)
+
+                    if (contentLength > largestVideoSize) {
+                        largestVideoSize = contentLength
+                        videoStreamUrl = url
+                        // Capture request headers to replay the download
+                        videoHeaders = await response.request().allHeaders()
+                    }
+                }
+            })
+
+            console.log('Navigating to video page...')
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+
+            // Wait a bit for media to load
+            await page.waitForTimeout(5000)
+
+            // 2. Fallback / DOM Extraction (if no network intercept)
+            if (!videoStreamUrl) {
+                console.log('Network intercept empty, trying DOM extraction...')
+                videoStreamUrl = await page.evaluate(() => {
+                    const video = document.querySelector('video')
+                    return video ? video.src : ''
+                })
+            }
+
+            console.log(`Extracted Video URL: ${videoStreamUrl} (Size: ${largestVideoSize})`)
+
+        } catch (e) {
+            console.error('Extraction error:', e)
+        } finally {
+            await page.close()
+        }
+
+        if (!videoStreamUrl || videoStreamUrl.startsWith('blob:')) {
+            throw new Error(`Failed to extract valid video URL. Got: ${videoStreamUrl || 'nothing'}`)
+        }
+
+        // 3. Download the Extracted URL
+        const writer = fs.createWriteStream(filePath)
+
+        // Prepare headers: use captured or fallback
+        const downloadHeaders: Record<string, string> = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://www.tiktok.com/',
+        }
+
+        // Merge safe video headers
+        if (videoHeaders) {
+            for (const [key, value] of Object.entries(videoHeaders)) {
+                // Skip HTTP/2 pseudo-headers (start with :) and other unsafe headers
+                if (key.startsWith(':')) continue
+                if (['host', 'connection', 'content-length', 'accept-encoding'].includes(key.toLowerCase())) continue
+                downloadHeaders[key] = value as string
+            }
+        }
+
+        const response = await axios({
+            url: videoStreamUrl,
+            method: 'GET',
+            responseType: 'stream',
+            headers: downloadHeaders
+        })
+
+        response.data.pipe(writer)
+
+        return new Promise((resolve, reject) => {
+            writer.on('finish', async () => {
+                // Validate file size
+                try {
+                    const stats = await fs.stat(filePath)
+                    if (stats.size < 50 * 1024) { // < 50KB
+                        reject(new Error(`Downloaded file too small (${stats.size} bytes). Path: ${filePath}`))
+                    } else {
+                        resolve(filePath)
+                    }
+                } catch (e) {
+                    reject(e)
+                }
+            })
+            writer.on('error', reject)
+        })
     }
 
     async publishVideo(filePath: string, caption: string, cookies?: any[], onProgress?: (msg: string) => void): Promise<{ success: boolean, videoUrl?: string, error?: string }> {
@@ -412,13 +510,8 @@ export class TikTokModule implements PlatformModule {
                 const commonSelectors = [
                     'button[aria-label="Close"]', 'button[aria-label="close"]',
                     'svg[data-icon="close"]', 'div[role="dialog"] button[aria-label="Close"]',
-                    'button:has-text("Got it")', 'button:has-text("OK")',
-                    'button:has-text("Dismiss")', 'button:has-text("Not now")',
-                    'button:has-text("Skip")', 'div[class*="modal"] button',
-                    'button:has-text("Turn on")', 'button:has-text("Run check")', 'button:has-text("Try it now")',
                     '[data-e2e="modal-close-inner-button"]', '[data-e2e="modal-close-button"]',
-                    'button:has-text("Post")', // Careful not to close the post button if it looks like an overlay? No, usually valid closers.
-                    // Wait, removing "Post" from commonSelectors if it was there? It wasn't. Good.
+                    'div[role="dialog"] button:first-child', // Risky but often close button is first
                 ]
 
                 // Add debug dump if it gets stuck
@@ -485,7 +578,7 @@ export class TikTokModule implements PlatformModule {
             console.log('Navigating to TikTok Studio upload page...')
             if (onProgress) onProgress('Navigating to upload page...')
             try {
-                await page.goto('https://www.tiktok.com/tiktokstudio/upload?from=upload&lang=en', {
+                await page.goto('https://www.tiktok.com/tiktokstudio/upload?from=webapp', {
                     waitUntil: 'domcontentloaded',
                     timeout: 60000
                 })
@@ -515,45 +608,81 @@ export class TikTokModule implements PlatformModule {
                 if (onProgress) onProgress('Waiting for file input...')
 
                 // Attempt to find file input. If not found, try clicking "Select File" buttons.
+                // Attempt to find file input. If not found, try clicking "Select File" buttons.
                 let fileInput = await page.$('input[type="file"]')
 
                 if (!fileInput) {
                     console.log('  File input not found immediately. Looking for "Select File" buttons...')
+
+                    // DEBUG: Log all buttons to see what's available
+                    try {
+                        // FIX: innerText -> textContent for SVG/Element compat
+                        const buttons = await page.$$eval('button, div[role="button"]', els => els.map(e => e.textContent?.trim()).filter(Boolean));
+                        console.log('  [DEBUG] Visible buttons on page:', buttons.join(', '));
+                    } catch (e) { console.log('  [DEBUG] Failed to list buttons'); }
+
                     // Try to click "Select file" or similar to trigger input
                     const uploadBtns = [
-                        'button:has-text("Select file")',
-                        'button:has-text("Select video")',
-                        'button:has-text("Chọn tệp")',
-                        'button:has-text("Tải video lên")',
-                        'div[role="button"]:has-text("Select")',
-                        'div[role="button"]:has-text("Upload")'
+                        // Data-E2E attributes (Primary)
+                        '[data-e2e="upload-icon"]',
+                        '[data-e2e="file-upload-container"]',
+                        '[data-e2e="upload-video-button"]',
+
+                        // Structural/Class-based (Secondary - Language Agnostic)
+                        'div[class*="upload-btn"]',
+                        'div[class*="upload-container"]',
+                        '.upload-btn-input',
+
+                        // Semantic/Role-based
+                        'div[role="button"][class*="upload"]',
+                        'div[role="button"][class*="select"]',
                     ]
 
                     for (const btnSel of uploadBtns) {
                         try {
-                            const btn = await page.$(btnSel)
-                            if (btn && await btn.isVisible()) {
-                                console.log(`  Clicking upload button: ${btnSel}`)
-                                await btn.click()
-                                await page.waitForTimeout(1000)
+                            // Use a broader search
+                            const btn = await page.locator(btnSel).first();
+                            if (await btn.isVisible()) {
+                                console.log(`  Clicking upload button candidate: ${btnSel}`)
+                                await btn.click({ force: true })
+                                await page.waitForTimeout(1500)
                                 fileInput = await page.$('input[type="file"]')
-                                if (fileInput) break
+                                if (fileInput) {
+                                    console.log('  Files input appeared!');
+                                    break
+                                }
                             }
                         } catch (e) { }
                     }
                 }
 
                 if (!fileInput) {
+                    // Last ditch: Click the CENTER of the screen, as the upload box is usually central
+                    console.log('  Last resort: Clicking center of page to trigger upload...')
+                    try {
+                        const viewport = page.viewportSize();
+                        if (viewport) {
+                            await page.mouse.click(viewport.width / 2, viewport.height / 2);
+                            await page.waitForTimeout(1500);
+                            fileInput = await page.$('input[type="file"]')
+                        }
+                    } catch (e) { }
+                }
+
+                if (!fileInput) {
                     // One last wait
                     try {
-                        fileInput = await page.waitForSelector('input[type="file"]', { state: 'attached', timeout: 15000 })
+                        console.log('  Waiting explicitly for generic file input...')
+                        fileInput = await page.waitForSelector('input[type="file"]', { state: 'attached', timeout: 10000 })
                     } catch (e) {
                         console.error('  ❌ File input timeout. Dumping state...')
                         const ts = Date.now()
                         const debugDir = path.join(app.getPath('userData'), 'debug_artifacts')
                         await fs.ensureDir(debugDir)
                         await page.screenshot({ path: path.join(debugDir, `upload_fail_${ts}.png`) })
-                        await fs.writeFile(path.join(debugDir, `upload_fail_${ts}.html`), await page.content())
+                        const html = await page.content()
+                        await fs.writeFile(path.join(debugDir, `upload_fail_${ts}.html`), html)
+                        console.log(`  [DEBUG] Saved HTML to ${path.join(debugDir, `upload_fail_${ts}.html`)}`)
                         throw new Error('File input not found (Debug saved)')
                     }
                 }
@@ -583,19 +712,18 @@ export class TikTokModule implements PlatformModule {
                     await page.waitForTimeout(2000)
 
                     // Check for ERROR popups (English + Vietnamese)
-                    for (const errText of [
-                        "Couldn't upload", "Upload failed", "Something went wrong", "upload failed",
-                        "Không thể tải video lên", "Tải lên thất bại", "Đã xảy ra lỗi",
-                    ]) {
-                        try {
-                            const errEl = await page.$(`text="${errText}"`)
-                            if (errEl && await errEl.isVisible()) {
-                                console.log(`  ❌ Upload error: "${errText}"`)
-                                uploadError = true
-                                break
-                            }
-                        } catch { /* ignore */ }
-                    }
+                    // Check for ERROR popups (Toast/Alert classes)
+                    // tiktok-toast, data-e2e="toast-message"
+                    try {
+                        const errEl = await page.locator('[data-e2e="toast-message"], .tiktok-toast, [role="alert"]').first()
+                        if (await errEl.isVisible()) {
+                            const errText = await errEl.textContent()
+                            console.log(`  ❌ Upload error detected: "${errText}"`)
+                            uploadError = true
+                        }
+                    } catch { /* ignore */ }
+
+
 
                     if (uploadError) {
                         console.log('  Dismissing error popup...')
@@ -615,11 +743,12 @@ export class TikTokModule implements PlatformModule {
                     }
 
                     // Check for upload completion (English + Vietnamese)
+                    // Check for upload completion (Input fields appear)
                     for (const sel of [
-                        'text="When to post"', 'text="Thời điểm đăng"',
-                        'button:has-text("Post")', 'button:has-text("Đăng")',
-                        'text="Discard"', 'text="Hủy bỏ"',
-                        'text="Edit video"', 'text="Chỉnh sửa"',
+                        '[data-e2e="caption-input"]',
+                        '.public-DraftEditor-content',
+                        '[data-e2e="post-button"]',
+                        '[data-e2e="post-video-button"]'
                     ]) {
                         try {
                             const el = await page.$(sel)
@@ -698,30 +827,103 @@ export class TikTokModule implements PlatformModule {
             if (onProgress) onProgress('Clicking Post button...')
             let posted = false
             // FIX: Re-added "Đăng" and "POST"
-            const postSelectors = ['button:has-text("Post")', 'button:has-text("POST")', 'button:has-text("Đăng")', '[data-e2e="post-button"]']
+            const postSelectors = ['[data-e2e="post-video-button"]', '[data-e2e="post-button"]', 'div[class*="btn-post"]']
 
             // Ensure overlays are gone before clicking post
             await cleanOverlays()
 
             // ─── Verified Smart Scroll & Click Logic with Retry ───
             if (onProgress) onProgress('Locating Post button...')
+
+            // USER REQUEST: Zoom out to 33% to reveal the button
+            console.log('🔧 Zooming out to 33% (User Request)...')
+            await page.evaluate(() => { document.body.style.zoom = '0.33' })
+
+            console.log('⏳ Waiting 5s for UI to settle (User Request)...')
+            await page.waitForTimeout(5000)
+
             console.log('📜 Looking for scrollable container...')
 
             let bestBtn = null
             let maxY = -1
             let postButtonFound = false
 
-            // Dump HTML immediately for debug
-            const debugDir = path.join(app.getPath('userData'), 'debug_artifacts')
-            await fs.ensureDir(debugDir)
-
 
             // Retry loop for finding the button (30 seconds)
             for (let i = 0; i < 15; i++) {
                 if (onProgress) onProgress(`Searching for Post button (Attempt ${i + 1}/15)...`)
 
-                // ─── EXACT SYNC with research-upload.spec.ts ───
-                // Find the largest scrollable element OR documentElement
+                // Smart Selection: Find bottom-most visible Post button
+                const buttonSelector = await page.evaluate(() => {
+                    const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                    const candidates = buttons.filter(b => {
+                        const style = window.getComputedStyle(b);
+                        const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+                        const text = (b.textContent || '').trim();
+                        // Check for specific attributes or text
+                        const isPost = b.getAttribute('data-e2e') === 'post-video-button' ||
+                            text === 'Post' || text === 'Đăng' || text.includes('Post') ||
+                            b.className.includes('btn-post');
+                        return isVisible && isPost;
+                    });
+
+                    if (candidates.length === 0) return null;
+
+                    // Sort by Y coordinate descending (bottom-most first)
+                    candidates.sort((a, b) => {
+                        const rectA = a.getBoundingClientRect();
+                        const rectB = b.getBoundingClientRect();
+                        return rectB.top - rectA.top;
+                    });
+
+                    // Return a unique selector for the best candidate
+                    const best = candidates[0];
+                    // Add a temporary unique ID to target it easily
+                    if (!best.id) best.id = 'target-post-btn-' + Date.now();
+                    return '#' + best.id;
+                });
+
+                if (buttonSelector) {
+                    console.log(`  ✅ Found candidate button: ${buttonSelector}`)
+                    try {
+                        await cleanOverlays()
+                        await page.click(buttonSelector)
+                        console.log('🚀 Clicked Post button via Smart Selection')
+                        postButtonFound = true
+                        posted = true
+
+                        // ─── CRITIAL: Handle "Continue to post?" Dialog ───
+                        console.log('⏳ Checking for confirmation dialog (Post now/Vẫn đăng)...')
+                        await page.waitForTimeout(2000) // Wait for dialog animation
+
+                        const confirmSelectors = [
+                            'button:has-text("Post now")',
+                            'button:has-text("Vẫn đăng")',
+                            'button:has-text("Continue")',
+                            'button:has-text("Post anyway")',
+                            'div[role="dialog"] button:has-text("Post")', // Generic dialog button
+                            'div[role="dialog"] button:has-text("Đăng")'
+                        ]
+
+                        for (const sel of confirmSelectors) {
+                            const btn = await page.$(sel)
+                            if (btn && await btn.isVisible()) {
+                                console.log(`⚠️ Found confirmation button: ${sel}. Clicking...`)
+                                await btn.click()
+                                await page.waitForTimeout(2000)
+                                break
+                            }
+                        }
+
+                        break;
+                    } catch (e) {
+                        console.warn('  Click failed, retrying...', e)
+                    }
+                } else {
+                    console.log('  No Post button found yet...')
+                }
+
+                // Fallback scroll if smart selection failed
                 const scrollHandle = await page!.evaluateHandle(() => {
                     const potential = Array.from(document.querySelectorAll('*')).filter(el => {
                         const style = window.getComputedStyle(el)
@@ -733,141 +935,10 @@ export class TikTokModule implements PlatformModule {
 
                 if (scrollHandle) {
                     await scrollHandle.evaluate((el: Element) => {
-                        console.log(`Debug: Scrolling <${el.tagName.toLowerCase()} class="${el.className}"> to bottom...`)
-                        el.scrollTop = el.scrollHeight
-                    })
-                    // Report scroll action to UI
-                    const tagName = await scrollHandle.evaluate((el: Element) => el.tagName.toLowerCase())
-                    if (onProgress) onProgress(`Scrolled container <${tagName}> to bottom...`)
+                        el.scrollTop = el.scrollHeight;
+                    }).catch(() => { })
                 }
-
-                // Helper: also trigger a window scroll just in case (test does this in fallback, we can allow both safely)
-                // But primarily rely on the logic above
-                await page!.waitForTimeout(2000)
-
-                // DEBUG SNAPSHOT every 5 attempts
-                if (i % 5 === 0) {
-                    const ts = Date.now()
-                    await page!.screenshot({ path: path.join(debugDir, `scroll_attempt_${i}_${ts}.png`) }).catch(() => { })
-                }
-
-                // Find all candidates
-                // Use the updated selectors that include "Đăng"
-                const candidates = await page!.$$('button:has-text("Post"), button:has-text("Đăng"), [data-e2e="post-button"]')
-                console.log(`   Attempt ${i + 1}: Found ${candidates.length} candidate "Post" buttons.`)
-                if (onProgress) onProgress(`Found ${candidates.length} Post buttons...`)
-
-                bestBtn = null
-                maxY = -1
-
-                for (const btn of candidates) {
-                    const box = await btn.boundingBox()
-                    if (box && await btn.isVisible()) {
-                        const text = await btn.innerText()
-                        console.log(`   Candidate: "${text}" at y=${box.y}`)
-                        if (onProgress) onProgress(`Checking candidate: "${text.substring(0, 10)}..."`)
-
-                        if (box.y > maxY) {
-                            maxY = box.y
-                            bestBtn = btn
-                        }
-                    }
-                }
-
-                if (bestBtn) {
-                    console.log(`   🎯 Selected best Post button at y=${maxY}`)
-
-                    // Wait for button to become enabled (not disabled/aria-disabled)
-                    console.log('   ⏳ Waiting for Post button to become enabled...')
-                    if (onProgress) onProgress('Waiting for Post button to become enabled...')
-                    for (let waitEnable = 0; waitEnable < 30; waitEnable++) {
-                        const isDisabled = await bestBtn.evaluate((el: Element) => {
-                            const btn = el as HTMLButtonElement
-                            return btn.disabled || btn.getAttribute('aria-disabled') === 'true' || btn.classList.contains('Button__root--loading-true')
-                        })
-                        if (!isDisabled) {
-                            console.log(`   ✅ Post button is now enabled (after ${waitEnable * 2}s)`)
-                            break
-                        }
-                        if (waitEnable % 5 === 0) {
-                            console.log(`   Still disabled... (${waitEnable * 2}s)`)
-                            if (onProgress) onProgress(`Post button disabled, waiting... (${waitEnable * 2}s)`)
-                        }
-                        if (waitEnable === 29) {
-                            console.log('   ⚠️ Post button still disabled after 60s, will attempt click anyway')
-                        }
-                        await page!.waitForTimeout(2000)
-                    }
-
-                    postButtonFound = true
-                    break
-                }
-
-                console.log('   ⚠️ Post button not found yet, retrying...')
-            }
-
-            // Final pre-click debug dump
-            // path and fs are already imported at module level, but we used require inside function before.
-            // Since we removed the previous requires, we rely on top-level imports:
-            // import fs from 'fs-extra'
-            // import path from 'path'
-            // import { app } from 'electron'
-            // So we just use them.
-            if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true })
-            const tsPreClick = Date.now()
-            await page!.screenshot({ path: path.join(debugDir, `pre_click_state_${tsPreClick}.png`), fullPage: true }).catch(() => { })
-            // Capture full page HTML + all button states for debugging
-            let htmlContent = await page!.content()
-            try {
-                const allButtons = await page!.$$eval('button', (btns: Element[]) =>
-                    btns.map(b => ({ text: (b.textContent || '').trim().substring(0, 50), disabled: (b as HTMLButtonElement).disabled, ariaDisabled: b.getAttribute('aria-disabled') }))
-                )
-                htmlContent += `\n<!-- DEBUG: All buttons on page: ${JSON.stringify(allButtons)} -->`
-            } catch { /* ignore */ }
-            fs.writeFileSync(path.join(debugDir, `pre_click_state_${tsPreClick}.html`), htmlContent)
-
-            if (bestBtn) {
-                try {
-                    if (onProgress) onProgress('Clicking Post button...')
-                    await bestBtn.scrollIntoViewIfNeeded()
-                    await page!.waitForTimeout(500)
-                    await cleanOverlays()
-                    await bestBtn.click({ timeout: 5000 })
-                    console.log(`  ✅ Post clicked (Best candidate)`)
-                    posted = true
-                } catch (e) {
-                    console.log(`  Click failed on best candidate, trying force...`)
-                    await bestBtn.click({ force: true })
-                    posted = true
-                }
-            } else {
-                console.error('❌ CRITICAL: Could not find Post button after retries.')
-                if (onProgress) onProgress('Failed to find Post button. Saving debug info...')
-
-                // 📸 CAPTURE DEBUG ARTIFACTS ON FAILURE
-                const timestamp = Date.now()
-                try {
-                    await page!.screenshot({ path: path.join(debugDir, `post_fail_${timestamp}.png`), fullPage: true })
-                    const html = await page!.content()
-                    fs.writeFileSync(path.join(debugDir, `post_fail_${timestamp}.html`), html)
-                    console.log(`  📸 Debug artifacts saved to ${debugDir}`)
-                } catch (err) {
-                    console.error('  Failed to save debug artifacts:', err)
-                }
-
-                // Fallback to simple selector logic just in case
-                console.log('   ⚠️ Smart selection failed, trying fallback selectors...')
-                for (const sel of postSelectors) {
-                    try {
-                        const btn = await page!.$(sel)
-                        if (btn && await btn.isVisible()) {
-                            await btn.click({ timeout: 2000 })
-                            console.log(`  ✅ Post clicked (Fallback: ${sel})`)
-                            posted = true
-                            break
-                        }
-                    } catch { /* try next */ }
-                }
+                await page.waitForTimeout(2000)
             }
 
             if (!posted) throw new Error('Could not find or click Post button - Debug artifacts saved.')
@@ -878,122 +949,101 @@ export class TikTokModule implements PlatformModule {
             let videoUrl: string | undefined
             let isSuccess = false
 
-            for (let i = 0; i < 30; i++) {
+            // Define helper locally
+            const extractProfileVideo = async () => {
+                try {
+                    // 1. Try specific selector
+                    const videoEl = await page!.$('[data-e2e="user-post-item"] a');
+                    if (videoEl) {
+                        const href = await videoEl.getAttribute('href');
+                        if (href && (href.includes('/video/') || href.includes('/v/'))) return href;
+                    }
+
+                    // 2. Fallback: Scan all links on page
+                    const links = await page!.$$eval('a', els => els.map(e => e.href));
+                    const videoLink = links.find(l => (l.includes('/video/') || l.includes('/v/')) && l.includes('tiktok.com'));
+                    if (videoLink) return videoLink;
+                } catch { }
+                return undefined
+            }
+
+            for (let i = 0; i < 60; i++) { // Increase wait to 2 minutes max (60 * 2s)
                 try {
                     await page!.waitForTimeout(2000)
                 } catch { break }
 
-                // Dismiss any post-upload popups (e.g. "Manage your posts", "View Profile") — English + Vietnamese
+                // 1. Check for "Uploading..." state
                 try {
-                    const managePopup = await page!.locator('text="Manage your posts"').or(page!.locator('text="Quản lý bài đăng"'))
-                    if (await managePopup.isVisible()) {
-                        console.log('  ✅ Detected "Manage your posts" popup -> upload success!')
-                        isSuccess = true
-
-                        // Try to click "View Profile" BEFORE cleaning overlays
-                        try {
-                            const viewProfileBtn = await page!.locator('button:has-text("View Profile"), a:has-text("View Profile"), button:has-text("Xem hồ sơ"), a:has-text("Xem hồ sơ")').first()
-                            if (await viewProfileBtn.isVisible()) {
-                                console.log('  Found View Profile button inside popup, clicking...')
-                                await viewProfileBtn.click()
-                                await page!.waitForTimeout(2000)
-                            } else {
-                                // FALLBACK: Click the profile icon in the header
-                                console.log('  "View Profile" button not found. Attempting to click User Avatar...')
-                                const profileIcon = await page!.locator('[data-e2e="user-icon"], [data-e2e="profile-icon"]').first()
-                                if (await profileIcon.isVisible()) {
-                                    await profileIcon.click()
-                                    await page!.waitForURL(/tiktok\.com\/@/, { timeout: 10000 }).catch(() => { })
-                                }
-                            }
-                        } catch (e) {
-                            console.log('  Failed to click View Profile in popup:', e)
-                        }
-                    }
-
-                    if (page!.url().includes('upload')) {
-                        await cleanOverlays()
+                    const uploadingEl = await page!.$('text="Your video is being uploaded"') || await page!.$('text="Video của bạn đang được tải lên"')
+                    if (uploadingEl && await uploadingEl.isVisible()) {
+                        console.log('  ⏳ Upload in progress...')
+                        if (onProgress) onProgress('Uploading video...')
+                        continue; // Keep waiting
                     }
                 } catch { /* ignore */ }
 
-                for (const sel of [
-                    'text="Your video has been published"', 'text="Video của bạn đã được đăng"',
-                    'text="Manage your posts"', 'text="Quản lý bài đăng"',
-                    'text="Video published"',
-                    'text="Upload another video"', 'text="Tải video khác lên"',
-                ]) {
-                    try {
+                // 2. Check for Success indicators
+                try {
+                    const successSelectors = [
+                        'text="Manage your posts"', 'text="Quản lý bài đăng"',
+                        'text="Your video has been published"', 'text="Video của bạn đã được đăng"',
+                        'text="Video published"',
+                        'text="Upload another video"', 'text="Tải video khác lên"'
+                    ]
+
+                    for (const sel of successSelectors) {
                         const el = await page!.$(sel)
                         if (el && await el.isVisible()) {
                             console.log(`  ✅ Success confirmed: ${sel}`)
                             isSuccess = true
                             break
                         }
-                    } catch { /* ignore */ }
-                }
-
-                // Check for upload progress (not success)
-                try {
-                    const uploadingEl = await page!.$('text="Your video is being uploaded"') || await page!.$('text="Video của bạn đang được tải lên"')
-                    if (uploadingEl && await uploadingEl.isVisible()) {
-                        console.log('  ⏳ Upload in progress...')
-                        if (onProgress) onProgress('Uploading video...')
                     }
                 } catch { /* ignore */ }
 
+                // 3. If Success detected, try to get the link
                 if (isSuccess) {
-                    console.log('  🎉 Verify success logic triggering...')
-                    await page!.waitForTimeout(2000)
+                    if (onProgress) onProgress('Upload complete. fetching video link...')
 
-                    // Helper to extract first video link from profile
-                    const extractProfileVideo = async () => {
-                        try {
-                            await page!.waitForSelector('[data-e2e="user-post-item"] a', { timeout: 5000 })
-                            const firstVideoLink = await page!.$eval('[data-e2e="user-post-item"] a', (el: any) => el.href)
-                            if (firstVideoLink) return firstVideoLink
-                        } catch { }
-                        return undefined
-                    }
-
-                    // Strategy 1: Check for direct "View Profile" button
+                    // Try to click "View Profile" to go to profile
                     try {
                         const viewProfileBtn = await page!.locator('button:has-text("View Profile"), a:has-text("View Profile"), button:has-text("Xem hồ sơ"), a:has-text("Xem hồ sơ")').first()
                         if (await viewProfileBtn.isVisible()) {
-                            console.log('  Found View Profile button, clicking to find video...')
+                            console.log('  Found View Profile button, clicking...')
                             await viewProfileBtn.click()
                             await page!.waitForURL(/tiktok\.com\/@/, { timeout: 10000 }).catch(() => { })
-                            const link = await extractProfileVideo()
-                            if (link) videoUrl = link
+                        } else if (!page!.url().includes('/@')) {
+                            // Fallback: Click Avatar
+                            console.log('  "View Profile" not found, clicking Avatar...')
+                            const profileIcon = await page!.locator('[data-e2e="user-icon"], [data-e2e="profile-icon"]').first()
+                            if (await profileIcon.isVisible()) {
+                                await profileIcon.click()
+                                await page!.waitForURL(/tiktok\.com\/@/, { timeout: 10000 }).catch(() => { })
+                            }
                         }
-                    } catch (e) { console.log('  Verification via Profile button failed:', e) }
+                    } catch { }
 
-                    if (!videoUrl) {
-                        // Strategy 2: If we are already on profile page (due to avatar click above)
+                    // Now on profile page (hopefully), try to extract link
+                    // Retry extraction with reload if needed
+                    for (let attempt = 0; attempt < 5; attempt++) {
+                        console.log(`  Scanning for video link (Attempt ${attempt + 1}/5)...`)
+                        const link = await extractProfileVideo()
+                        if (link) {
+                            videoUrl = link
+                            break
+                        }
+
+                        // If not found, reload profile page after a short delay
                         if (page!.url().includes('/@')) {
-                            const link = await extractProfileVideo()
-                            if (link) videoUrl = link
+                            console.log('  Video not found on profile yet, reloading...')
+                            await page!.waitForTimeout(3000)
+                            await page!.reload({ waitUntil: 'domcontentloaded' })
+                        } else {
+                            await page!.waitForTimeout(2000)
                         }
                     }
 
-                    if (!videoUrl) {
-                        try {
-                            videoUrl = await page!.evaluate(() => {
-                                const links = Array.from(document.querySelectorAll('a'))
-                                for (const a of links) {
-                                    if ((a.href.includes('/video/') || a.href.includes('/v/')) && a.href.includes('tiktok.com')) return a.href
-                                }
-                                if (window.location.href.includes('/video/')) return window.location.href
-                                return undefined
-                            })
-                        } catch { /* ignore */ }
-                    }
-
-                    if (videoUrl) {
-                        console.log(`  🔗 Video URL: ${videoUrl}`)
-                        return { success: true, videoUrl }
-                    } else {
-                        console.log('  ⚠️ Success detected but videoUrl not found yet, retrying...')
-                    }
+                    if (videoUrl) break; // We found it!
                 }
 
                 // Check for post error
@@ -1010,9 +1060,10 @@ export class TikTokModule implements PlatformModule {
             }
 
             if (!videoUrl) {
-                throw new Error('Post clicked but could not verify success (no video URL found).')
+                throw new Error('Post success detected but could not retrieve video URL (Timeout).')
             }
 
+            console.log(`  🔗 Video URL Verified: ${videoUrl}`)
             return { success: true, videoUrl }
 
         } catch (error: any) {

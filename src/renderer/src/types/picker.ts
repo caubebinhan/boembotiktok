@@ -71,9 +71,14 @@ export interface Campaign {
     config_json: string
     created_at: string
     pending_count?: number
+    queued_count?: number
+    preparing_count?: number
+    uploading_count?: number
     scanned_count?: number
     published_count?: number
+    downloaded_count?: number
     failed_count?: number
+    skipped_count?: number
     total_recent?: number
 }
 

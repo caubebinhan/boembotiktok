@@ -24,10 +24,13 @@ class CampaignService {
     getAll() {
         return storageService.getAll(`
             SELECT c.*, 
-            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.status IN ('pending', 'running')) as pending_count,
-            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.type = 'SCAN' AND j.status = 'completed') as scanned_count,
+            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.status = 'pending') as queued_count,
+            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.type IN ('DOWNLOAD', 'SCAN') AND j.status = 'running') as preparing_count,
+            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.type = 'PUBLISH' AND j.status = 'running') as uploading_count,
             (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.type = 'PUBLISH' AND j.status = 'completed') as published_count,
-            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.status = 'failed') as failed_count,
+            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.type = 'DOWNLOAD' AND j.status = 'completed') as downloaded_count,
+            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.status LIKE 'Failed%') as failed_count,
+            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.status = 'skipped') as skipped_count,
             (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.created_at > datetime('now', '-1 day')) as total_recent
             FROM campaigns c 
             ORDER BY c.created_at DESC
@@ -83,22 +86,25 @@ class CampaignService {
     async getCampaignStats(id: number) {
         const jobStats = await storageService.get(`
             SELECT 
-                COUNT(CASE WHEN type = 'SCAN' AND status = 'completed' THEN 1 END) as scans_completed,
-                COUNT(CASE WHEN type = 'DOWNLOAD' AND status = 'completed' THEN 1 END) as downloads_completed,
-                COUNT(CASE WHEN type = 'DOWNLOAD' AND status = 'pending' THEN 1 END) as downloads_pending,
-                COUNT(CASE WHEN type = 'PUBLISH' AND status = 'completed' THEN 1 END) as publishes_completed,
-                COUNT(CASE WHEN type = 'PUBLISH' AND status = 'pending' THEN 1 END) as publishes_pending,
-                COUNT(CASE WHEN status = 'failed' THEN 1 END) as total_failed
+                COUNT(CASE WHEN status = 'pending' THEN 1 END) as total_queued,
+                COUNT(CASE WHEN type IN ('DOWNLOAD', 'SCAN') AND status = 'running' THEN 1 END) as total_preparing,
+                COUNT(CASE WHEN type = 'PUBLISH' AND status = 'running' THEN 1 END) as total_uploading,
+                COUNT(CASE WHEN type = 'PUBLISH' AND status = 'completed' THEN 1 END) as total_published,
+                COUNT(CASE WHEN status LIKE 'Failed%' THEN 1 END) as total_failed,
+                COUNT(CASE WHEN status = 'skipped' THEN 1 END) as total_skipped,
+                COUNT(CASE WHEN type = 'DOWNLOAD' AND status = 'completed' THEN 1 END) as total_downloaded
             FROM jobs 
             WHERE campaign_id = ?
         `, [id])
 
         return {
-            scanned: jobStats?.scans_completed || 0,
-            downloaded: jobStats?.downloads_completed || 0,
-            scheduled: jobStats?.downloads_pending || 0,
-            published: jobStats?.publishes_completed || 0,
-            failed: jobStats?.total_failed || 0
+            queued: jobStats?.total_queued || 0,
+            preparing: jobStats?.total_preparing || 0,
+            uploading: jobStats?.total_uploading || 0,
+            published: jobStats?.total_published || 0,
+            failed: jobStats?.total_failed || 0,
+            skipped: jobStats?.total_skipped || 0,
+            downloaded: jobStats?.total_downloaded || 0
         }
     }
 

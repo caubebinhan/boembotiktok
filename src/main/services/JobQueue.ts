@@ -4,14 +4,13 @@ import { TikTokModule } from '../modules/tiktok/TikTokModule'
 import { BrowserWindow } from 'electron'
 import { publishAccountService } from './PublishAccountService'
 import { campaignService } from './CampaignService'
+import { notificationService } from './NotificationService'
 
 class JobQueue {
     private intervalId: NodeJS.Timeout | null = null
     private isRunning = false
     private readonly POLL_INTERVAL = 5000
-    private readonly MAX_CONCURRENT = 1
-
-    start() {
+    async start() {
         if (this.intervalId) return
         console.log('JobQueue started')
         this.intervalId = setInterval(() => this.processQueue(), this.POLL_INTERVAL)
@@ -28,15 +27,20 @@ class JobQueue {
 
         try {
             // Check concurrency for running jobs
+            // Default to 100 as requested by user
+            const maxConcurrentStr = storageService.get("SELECT value FROM settings WHERE key = 'app.maxConcurrentJobs'")?.value
+            const maxConcurrent = parseInt(maxConcurrentStr || '100')
+
             const active = storageService.get("SELECT COUNT(*) as count FROM jobs WHERE status = 'running'").count
-            if (active >= this.MAX_CONCURRENT) return
+            if (active >= maxConcurrent) return
 
             // Get next pending job that is scheduled for now or earlier
+            // Prioritize by scheduled time (urgency) then creation (FIFO)
             const job = storageService.get(`
                 SELECT * FROM jobs 
                 WHERE status = 'pending' 
                 AND (scheduled_for IS NULL OR scheduled_for <= datetime('now'))
-                ORDER BY created_at ASC 
+                ORDER BY scheduled_for ASC, created_at ASC 
                 LIMIT 1
             `)
 
@@ -94,6 +98,11 @@ class JobQueue {
             }
 
             storageService.run("UPDATE jobs SET status = ?, error_message = ? WHERE id = ?", [`Failed: ${error.message.substring(0, 50)}`, error.message, job.id])
+
+            try {
+                const campaign = storageService.get('SELECT name FROM campaigns WHERE id = ?', [job.campaign_id])
+                notificationService.notifyJobFailed(campaign ? campaign.name : 'Unknown', error.message)
+            } catch (e) { /* ignore */ }
         } finally {
             // Check if Campaign is Completed (regardless of success/failure)
             this.checkCampaignCompletion(job.campaign_id)
@@ -198,7 +207,7 @@ class JobQueue {
                         thumbnail: v.thumbnail || v.cover || '',
                         videoStats: v.stats || { views: 0, likes: 0 },
                         editPipeline: data.editPipeline,
-                        status: `Waiting to download`
+                        status: `Queued: Download`
                     })
                 ]
             )
@@ -258,7 +267,7 @@ class JobQueue {
                             caption: data.description || '',
                             thumbnail: data.thumbnail || '',
                             videoStats: data.videoStats || {},
-                            status: 'Waiting to publish'
+                            status: 'Queued: Publish'
                         })
                     ]
                 )
@@ -328,27 +337,26 @@ class JobQueue {
                 const campaign = storageService.get('SELECT * FROM campaigns WHERE id = ?', [campaignId])
                 if (campaign) {
                     const config = JSON.parse(campaign.config_json || '{}')
-                    // If no recurring sources (channel/keyword scans), mark as completed
-                    // Scans create new jobs, so if no scan jobs are pending/running/scheduled, and no sources config...
-                    // Wait, SCAN jobs are "pending" until run. If a SCAN job exists, pendingJobs > 0.
-                    // The only case to NOT mark complete is if the schedule implies FUTURE scans that haven't been created yet.
-                    // But SchedulerService creates SCAN jobs based on schedule.
-                    // If SchedulerService sees 'completed', it stops.
-                    // So we must be careful.
-
-                    // Logic: 
-                    // If it was a "One-time" run (no interval schedule) -> Mark Complete
-                    // If it has "sources" (dynamic), it usually runs forever (interval).
-                    // If it has "videos" (static) only -> Mark Complete when all done.
 
                     const hasSources = (config.sources?.channels?.length > 0) || (config.sources?.keywords?.length > 0)
-                    const isRecurring = config.schedule?.interval || false
+                    const isRecurring = !!config.schedule?.interval
+
+                    console.log(`[CampaignCheck] ID: ${campaignId} Pending: ${pendingJobs} HasSources: ${hasSources} IsRecurring: ${isRecurring}`)
 
                     if (!hasSources || !isRecurring) {
                         storageService.run("UPDATE campaigns SET status = 'completed' WHERE id = ?", [campaignId])
                         console.log(`Campaign ${campaignId} completed (all jobs finished).`)
+
+                        try {
+                            const stats = campaignService.getCampaignStats(campaignId)
+                            notificationService.notifyCampaignComplete(campaign.name, stats)
+                        } catch (e) { /* ignore */ }
+                    } else {
+                        console.log(`Campaign ${campaignId} kept active (Recurring/Sources present)`)
                     }
                 }
+            } else {
+                console.log(`[CampaignCheck] ID: ${campaignId} has ${pendingJobs} pending jobs.`)
             }
         } catch (e) {
             console.error('Error checking campaign completion:', e)

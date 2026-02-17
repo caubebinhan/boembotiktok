@@ -25,7 +25,7 @@ export const CampaignsView: React.FC = () => {
 
         // Listen for updates from other windows (e.g. details window closed)
         // @ts-ignore
-        const removeListener = window.api.on('campaign-updated', () => {
+        const removeListener = window.api.on('campaigns-updated', () => {
             loadCampaigns()
         })
         return () => {
