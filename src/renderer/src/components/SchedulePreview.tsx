@@ -236,6 +236,7 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
         const newInterval = Math.max(1, val)
         setInterval(newInterval)
         recalculateTimes(items, startTime, newInterval)
+        onIntervalChange?.(newInterval)
     }
 
     // Drag & Drop
