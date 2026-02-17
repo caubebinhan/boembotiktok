@@ -225,7 +225,14 @@ class JobQueue {
         this.updateJobData(job.id, { ...data, status: 'Downloading video...' })
 
         // 1. Download video
-        const filePath = await tiktok.downloadVideo(data.url, data.platform_id)
+        const { filePath, cached } = await tiktok.downloadVideo(data.url, data.platform_id)
+
+        if (cached) {
+            this.updateJobData(job.id, { ...data, status: 'Video already cached. Skipping download.' })
+            // Small delay to let user see message
+            await new Promise(r => setTimeout(r, 1000))
+        }
+
         let finalPath = filePath
 
         // 2. Check campaign for edit pipeline

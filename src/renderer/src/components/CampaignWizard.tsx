@@ -410,80 +410,78 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 </label>
             </div>
 
-            {formData.type === 'one_time' ? (
-                <div className="card" style={{ padding: '20px', background: 'rgba(255, 255, 255, 0.05)', marginTop: '16px' }}>
-                    <h4 style={{ marginTop: 0 }}>⏰ When to Run</h4>
-                    <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
-                        <label style={{
-                            display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 16px',
-                            background: runNow ? 'rgba(74, 222, 128, 0.1)' : 'transparent',
-                            borderRadius: '8px', cursor: 'pointer',
-                            border: runNow ? '1px solid #4ade80' : '1px solid var(--border-primary)'
-                        }}>
-                            <input type="radio" checked={runNow} onChange={() => {
-                                setRunNow(true)
-                                // If Run Now is selected, push the scheduled First Run to (Now + Interval) to avoid duplicate
-                                if (formData.type === 'scheduled') {
-                                    const intervalMs = (formData.schedule.interval || 60) * 60000
-                                    const nextRun = new Date(Date.now() + intervalMs)
-                                    setFormData(prev => ({
-                                        ...prev,
-                                        schedule: { ...prev.schedule, runAt: nextRun.toISOString() }
-                                    }))
-                                }
-                            }} />
-                            <div>
-                                <strong>🚀 Run Now</strong>
-                                <div style={{ fontSize: '10px', color: 'gray' }}>Start immediately after saving</div>
-                            </div>
-                        </label>
-                        <label style={{
-                            display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 16px',
-                            background: !runNow ? 'rgba(124, 92, 252, 0.1)' : 'transparent',
-                            borderRadius: '8px', cursor: 'pointer',
-                            border: !runNow ? '1px solid var(--accent-primary)' : '1px solid var(--border-primary)'
-                        }}>
-                            <input type="radio" checked={!runNow} onChange={() => {
-                                setRunNow(false)
-                                // If current time is in the past, update to Now + 1m
-                                const currentRunAt = formData.schedule.runAt ? new Date(formData.schedule.runAt) : new Date()
-                                if (currentRunAt.getTime() <= Date.now()) {
-                                    setFormData(prev => ({
-                                        ...prev,
-                                        schedule: { ...prev.schedule, runAt: new Date(Date.now() + 60000).toISOString() }
-                                    }))
-                                }
-                            }} />
-                            <div>
-                                <strong>📅 Set Time</strong>
-                                <div style={{ fontSize: '10px', color: 'gray' }}>Schedule for a specific time</div>
-                            </div>
-                        </label>
-                    </div>
-                    {!runNow && (
-                        <div className="form-group">
-                            <label>Run At</label>
-                            <DatePicker
-                                selected={formData.schedule.runAt ? new Date(formData.schedule.runAt) : null}
-                                onChange={(date: Date | null) => {
-                                    setFormData({
-                                        ...formData,
-                                        schedule: { ...formData.schedule, runAt: date ? date.toISOString() : '' }
-                                    })
-                                }}
-                                showTimeSelect timeIntervals={15}
-                                dateFormat="yyyy-MM-dd HH:mm" timeFormat="HH:mm"
-                                minDate={new Date()}
-
-                                placeholderText="Select date and time (min 1m future)" className="form-control" wrapperClassName="datepicker-wrapper"
-                            />
+            {/* ─── Unified Start Time Configuration (For both One-Time and Recurring) ─── */}
+            <div className="card" style={{ padding: '20px', background: 'rgba(255, 255, 255, 0.05)', marginTop: '16px' }}>
+                <h4 style={{ marginTop: 0 }}>⏰ Start Time</h4>
+                <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+                    <label style={{
+                        display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 16px',
+                        background: runNow ? 'rgba(74, 222, 128, 0.1)' : 'transparent',
+                        borderRadius: '8px', cursor: 'pointer',
+                        border: runNow ? '1px solid #4ade80' : '1px solid var(--border-primary)'
+                    }}>
+                        <input type="radio" checked={runNow} onChange={() => {
+                            setRunNow(true)
+                            // If Run Now is selected, set runAt to Now
+                            setFormData(prev => ({
+                                ...prev,
+                                schedule: { ...prev.schedule, runAt: new Date().toISOString() }
+                            }))
+                        }} />
+                        <div>
+                            <strong>🚀 Run Immediately</strong>
+                            <div style={{ fontSize: '10px', color: 'gray' }}>Start processing right after saving</div>
                         </div>
-                    )}
+                    </label>
+                    <label style={{
+                        display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 16px',
+                        background: !runNow ? 'rgba(124, 92, 252, 0.1)' : 'transparent',
+                        borderRadius: '8px', cursor: 'pointer',
+                        border: !runNow ? '1px solid var(--accent-primary)' : '1px solid var(--border-primary)'
+                    }}>
+                        <input type="radio" checked={!runNow} onChange={() => {
+                            setRunNow(false)
+                            // If switching to scheduled, ensure we have a future time (default +5m)
+                            const currentRunAt = formData.schedule.runAt ? new Date(formData.schedule.runAt) : new Date()
+                            if (currentRunAt.getTime() <= Date.now()) {
+                                setFormData(prev => ({
+                                    ...prev,
+                                    schedule: { ...prev.schedule, runAt: new Date(Date.now() + 5 * 60000).toISOString() }
+                                }))
+                            }
+                        }} />
+                        <div>
+                            <strong>📅 Schedule Start</strong>
+                            <div style={{ fontSize: '10px', color: 'gray' }}>Pick a specific date & time</div>
+                        </div>
+                    </label>
                 </div>
-            ) : (
-                <div className="schedule-ui card" style={{ padding: '20px', marginTop: '16px' }}>
+
+                {!runNow && (
                     <div className="form-group">
-                        <label>Interval (Minutes)</label>
+                        <label>First Run Time</label>
+                        <DatePicker
+                            selected={formData.schedule.runAt ? new Date(formData.schedule.runAt) : null}
+                            onChange={(d: Date | null) => {
+                                const val = d ? d.toISOString() : ''
+                                setFormData({ ...formData, schedule: { ...formData.schedule, runAt: val } })
+                            }}
+                            showTimeSelect timeIntervals={15}
+                            dateFormat="yyyy-MM-dd HH:mm" timeFormat="HH:mm"
+                            minDate={new Date()} // Prevent past dates
+                            placeholderText="Select start time"
+                            className="form-control"
+                            wrapperClassName="datepicker-wrapper"
+                        />
+                    </div>
+                )}
+            </div>
+
+            {formData.type === 'scheduled' && (
+                <div className="schedule-ui card" style={{ padding: '20px', marginTop: '16px', borderTop: 'none' }}>
+                    <h4 style={{ marginTop: 0 }}>🔄 Recurring Interval</h4>
+                    <div className="form-group">
+                        <label>Repeat Every (Minutes)</label>
                         <input
                             type="number"
                             className="form-control"
@@ -510,32 +508,12 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                             style={{ width: '16px', height: '16px' }}
                         />
                     </div>
-                    <div className="form-group">
-                        <label>First Run (Start Date & Time)</label>
-                        <DatePicker
-                            selected={formData.schedule.runAt ? new Date(formData.schedule.runAt) : new Date()}
-                            onChange={(date: Date | null) => {
-                                setFormData({
-                                    ...formData,
-                                    schedule: { ...formData.schedule, runAt: date ? date.toISOString() : '' }
-                                })
-                            }}
-                            showTimeSelect
-                            dateFormat="yyyy-MM-dd HH:mm"
-                            minDate={new Date()}
-                            placeholderText="Select start date/time (min 1m future)"
-                            className="form-control"
-                            wrapperClassName="datepicker-wrapper"
-                        />
-                        {runNow && (
-                            <div style={{ fontSize: '11px', color: 'var(--accent-primary)', marginTop: '4px' }}>
-                                ℹ️ Since "Run Now" is active, this schedule will apply for the <b>next</b> run.
-                            </div>
-                        )}
-                    </div>
-                    <div className="form-row" style={{ display: 'flex', gap: '16px' }}>
+
+                    {/* Removed duplicate 'First Run' DatePicker here as it is now handled in the unified 'Start Time' section above */}
+
+                    <div className="form-row" style={{ display: 'flex', gap: '16px', marginTop: '12px' }}>
                         <div className="form-group" style={{ flex: 1 }}>
-                            <label>Daily Start Time</label>
+                            <label>Active Hours Start (Daily)</label>
                             <input
                                 type="time"
                                 className="form-control"
@@ -545,7 +523,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                             />
                         </div>
                         <div className="form-group" style={{ flex: 1 }}>
-                            <label>Daily End Time</label>
+                            <label>Active Hours End (Daily)</label>
                             <input
                                 type="time"
                                 className="form-control"

@@ -261,7 +261,7 @@ export class TikTokModule implements PlatformModule {
         }
     }
 
-    async downloadVideo(url: string, platformId: string): Promise<string> {
+    async downloadVideo(url: string, platformId: string): Promise<{ filePath: string, cached: boolean }> {
         console.log(`Downloading video: ${url}`)
 
         // MOCK FOR E2E TESTING
@@ -271,13 +271,25 @@ export class TikTokModule implements PlatformModule {
             if (!fs.existsSync(mockPath)) {
                 fs.writeFileSync(mockPath, 'fake video content')
             }
-            return mockPath
+            return { filePath: mockPath, cached: false }
         }
 
         const downloadsDir = path.join(app.getPath('userData'), 'downloads', 'tiktok')
         await fs.ensureDir(downloadsDir)
         const diff = 'tiktok_' + platformId + '.mp4'
         const filePath = path.join(downloadsDir, diff)
+
+        // 0. Check Cache (User Request: "quét cache nếu file đã đc download")
+        if (await fs.pathExists(filePath)) {
+            const stats = await fs.stat(filePath)
+            if (stats.size > 50 * 1024) { // > 50KB (valid video)
+                console.log(`[Cache] Video already exists (${(stats.size / 1024 / 1024).toFixed(2)} MB). Skipping download.`)
+                return { filePath, cached: true }
+            } else {
+                console.log(`[Cache] Found invalid/small file (${stats.size} bytes). Re-downloading...`)
+                await fs.remove(filePath)
+            }
+        }
 
         let videoStreamUrl = ''
         let downloadHeaders: Record<string, string> = {
@@ -295,8 +307,8 @@ export class TikTokModule implements PlatformModule {
             console.log('Library Result Status:', result.status)
 
             if (result.status === 'success' && result.result?.video) {
-                // Determine best video source (HD or normal)
                 const videoData = result.result.video
+                // Strict type checking based on test_lib_only.ts success
                 if (Array.isArray(videoData) && videoData.length > 0) {
                     videoStreamUrl = videoData[0]
                 } else if (typeof videoData === 'string') {
@@ -305,18 +317,19 @@ export class TikTokModule implements PlatformModule {
             }
 
             if (!videoStreamUrl) {
-                console.warn('Library failed to return video URL. Falling back to Puppeteer extraction.')
-                // FALLBACK to Puppeteer if library fails
-                return await this.downloadVideoFallback(url, filePath)
+                console.warn('Library returned success but no video URL found. Result:', JSON.stringify(result.result))
+                throw new Error('Library result empty')
             }
 
-            console.log(`Extracted Video URL from Library: ${videoStreamUrl}`)
+            console.log(`[Library] Extracted Video URL: ${videoStreamUrl}`)
 
-        } catch (e) {
-            console.error('Library extraction error:', e)
+        } catch (e: any) {
+            console.error('Library extraction error:', e.message)
             console.log('Falling back to Puppeteer extraction...')
             return await this.downloadVideoFallback(url, filePath)
         }
+
+
 
         // 3. Download the Extracted URL
         try {
@@ -346,7 +359,7 @@ export class TikTokModule implements PlatformModule {
                                 reject(new Error(`Downloaded file too small (${stats.size} bytes) and fallback failed: ${err.message}`))
                             }
                         } else {
-                            resolve(filePath)
+                            resolve({ filePath, cached: false })
                         }
                     } catch (e) {
                         reject(e)
@@ -361,7 +374,7 @@ export class TikTokModule implements PlatformModule {
     }
 
     // Original Puppeteer Logic moved to Fallback
-    async downloadVideoFallback(url: string, filePath: string): Promise<string> {
+    async downloadVideoFallback(url: string, filePath: string): Promise<{ filePath: string, cached: boolean }> {
         console.log('Starting Puppeteer Fallback Download...')
         // Use Browser to get actual video stream
         if (!browserService.isConnected()) {
@@ -423,6 +436,18 @@ export class TikTokModule implements PlatformModule {
         }
 
         if (!videoStreamUrl || videoStreamUrl.startsWith('blob:')) {
+            const ts = Date.now()
+            const debugDir = path.join(app.getPath('userData'), 'debug_artifacts')
+            await fs.ensureDir(debugDir)
+            try {
+                if (page && !page.isClosed()) {
+                    await page.screenshot({ path: path.join(debugDir, `download_fail_${ts}.png`) })
+                    const html = await page.content()
+                    await fs.writeFile(path.join(debugDir, `download_fail_${ts}.html`), html)
+                    console.log(`[Download Debug] Saved artifacts to ${debugDir}/download_fail_${ts}.*`)
+                }
+            } catch (e) { console.error('Failed to save debug artifacts:', e) }
+
             throw new Error(`Failed to extract valid video URL. Got: ${videoStreamUrl || 'nothing'}`)
         }
 
@@ -462,7 +487,7 @@ export class TikTokModule implements PlatformModule {
                     if (stats.size < 50 * 1024) { // < 50KB
                         reject(new Error(`Downloaded file too small (${stats.size} bytes). Path: ${filePath}`))
                     } else {
-                        resolve(filePath)
+                        resolve({ filePath, cached: false })
                     }
                 } catch (e) {
                     reject(e)
@@ -1000,7 +1025,8 @@ export class TikTokModule implements PlatformModule {
 
             // 1. Wait for Verification Success Message (UI)
             for (let i = 0; i < 120; i++) { // Increase wait to 2 minutes max
-                try { await page!.waitForTimeout(1000) } catch { break }
+                if (page.isClosed()) throw new Error('Browser page closed unexpectedly during verification')
+                try { await page.waitForTimeout(1000) } catch (e) { break }
 
                 // Check for "Uploading..."
                 try {
@@ -1056,16 +1082,29 @@ export class TikTokModule implements PlatformModule {
 
                 // Retry loop for JSON data availability (5 attempts, ~30s total)
                 for (let check = 1; check <= 5; check++) {
-                    console.log(`  🕵️♂️ Status Check Attempt ${check}/5...`)
-                    await page!.waitForTimeout(5000) // Wait for data load
+                    console.log(`  🕵️‍♂️ Status Check Attempt ${check}/5...`)
+                    if (page.isClosed()) throw new Error('Browser page closed unexpectedly during status check')
+                    try { await page.waitForTimeout(5000) } catch (e) { break } // Wait for data load
 
                     const videoStatus = await page!.evaluate(({ tag, useUniqueTag, startTime }) => {
                         try {
                             const script = document.getElementById('__Creator_Center_Context__');
-                            if (!script || !script.textContent) return null;
+                            if (!script || !script.textContent) return { error: 'No Context Script Found' };
+
                             const data = JSON.parse(script.textContent);
                             const itemList = data?.uploadUserProfile?.firstBatchQueryItems?.item_list || [];
                             const user = data?.uploadUserProfile?.user;
+
+                            // DEBUG: Log first 3 items for diagnosis
+                            const debugLog: any[] = [];
+                            itemList.slice(0, 3).forEach((v: any) => {
+                                debugLog.push({
+                                    id: v.item_id,
+                                    desc: v.desc ? v.desc.substring(0, 20) : 'No Desc',
+                                    create_time: v.create_time,
+                                    diff: v.create_time ? parseInt(v.create_time) - startTime : 'N/A'
+                                });
+                            });
 
                             const match = itemList.find((v: any) => {
                                 // 1. Unique Tag Match (Strongest)
@@ -1081,7 +1120,7 @@ export class TikTokModule implements PlatformModule {
                                 return false;
                             });
 
-                            if (!match) return null;
+                            if (!match) return { error: 'No Match Found', debugLog };
 
                             return {
                                 id: match.item_id,
@@ -1091,10 +1130,10 @@ export class TikTokModule implements PlatformModule {
                                 uniqueId: user?.unique_id,
                                 createTime: match.create_time
                             };
-                        } catch (e) { return null; }
+                        } catch (e: any) { return { error: e.message }; }
                     }, { tag: uniqueTag, useUniqueTag, startTime: uploadStartTime });
 
-                    if (videoStatus) {
+                    if (videoStatus && !videoStatus.error) {
                         console.log(`  ✅ Video Match Found: ${videoStatus.id}`)
                         console.log(`     Status: ${videoStatus.status}, Privacy: ${videoStatus.privacy_level}`)
 
@@ -1113,12 +1152,31 @@ export class TikTokModule implements PlatformModule {
                         }
                         break;
                     } else {
-                        console.log('  ⚠️ Video not found in list yet. Refreshing...')
+                        console.log(`  Other Status: ${JSON.stringify(videoStatus)}`)
+                        if (videoStatus && videoStatus.debugLog) {
+                            console.log('  🔍 Debug Log (Top 3 items):', JSON.stringify(videoStatus.debugLog, null, 2));
+                        }
+                        console.log('  🔄 Reloading page locally...')
                         await page!.reload({ waitUntil: 'domcontentloaded' })
                     }
                 }
-            } catch (e) {
-                console.warn('  ⚠️ Content Dashboard verification failed:', e)
+
+                // If loop finishes without return, dump HTML
+                console.log('  ❌ Verification failed after retries. Dumping HTML...');
+                const dumpPath = path.join(app.getPath('userData'), `debug_verification_fail_${Date.now()}.html`);
+                const content = await page!.content();
+                await fs.writeFile(dumpPath, content);
+                console.log(`  📄 HTML Dump saved to: ${dumpPath}`);
+
+            } catch (e: any) {
+                console.error('Error during Content Dashboard check:', e)
+                // Dump on error as well
+                try {
+                    const dumpPath = path.join(app.getPath('userData'), `debug_error_dump_${Date.now()}.html`);
+                    const content = await page!.content();
+                    await fs.writeFile(dumpPath, content);
+                    console.log(`  📄 Error Dump saved to: ${dumpPath}`);
+                } catch { }
             }
 
             // 3. Fallback: Profile Scan (only if Dashboard failed to find it)
