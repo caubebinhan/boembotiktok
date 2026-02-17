@@ -123,11 +123,13 @@ export const VideoCard: React.FC<VideoCardProps> = ({ video, onRemove, showStats
         )
     }
 
+    const [expanded, setExpanded] = useState(false)
+
     return (
-        <>
+        <div className={`video-card-container ${className}`} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             <div
                 ref={cardRef}
-                className={`video-card ${className}`}
+                className="video-card"
                 style={{
                     position: 'relative',
                     borderRadius: '8px',
@@ -201,8 +203,27 @@ export const VideoCard: React.FC<VideoCardProps> = ({ video, onRemove, showStats
                 {children}
             </div>
 
+            {/* Description Section */}
+            {!compact && (video.description || video.url) && (
+                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: '1.3', padding: '0 2px' }}>
+                    {expanded ? (
+                        <span>{video.description || video.url}</span>
+                    ) : (
+                        <span>{(video.description || video.url).substring(0, 40)}{(video.description || video.url).length > 40 ? '...' : ''}</span>
+                    )}
+                    {(video.description || video.url).length > 40 && (
+                        <span
+                            onClick={(e) => { e.stopPropagation(); setExpanded(!expanded) }}
+                            style={{ color: 'var(--accent-primary)', cursor: 'pointer', marginLeft: '4px' }}
+                        >
+                            {expanded ? '(less)' : '(more)'}
+                        </span>
+                    )}
+                </div>
+            )}
+
             {/* Floating popup portal */}
             {renderPopup()}
-        </>
+        </div>
     )
 }

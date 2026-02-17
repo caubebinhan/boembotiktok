@@ -47,6 +47,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
 
     const [step, setStep] = useState(1)
     const [runNow, setRunNow] = useState(false)
+    const [isSaving, setIsSaving] = useState(false)
     const [formData, setFormData] = useState(() => {
         if (initialData) {
             const config = typeof initialData.config_json === 'string' ? JSON.parse(initialData.config_json) : initialData.config_json || {}
@@ -140,6 +141,17 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         }
     }, [initialData])
 
+    const handleSave = async (data: any, runNowOverride: boolean) => {
+        if (isSaving) return;
+        setIsSaving(true)
+        try {
+            await onSave(data, runNowOverride)
+        } catch (e) {
+            console.error(e)
+            setIsSaving(false)
+        }
+    }
+
     // Source data for Step 2 — received from scanner window
     const [sources, setSources] = useState<SourceEntry[]>([])
     const [videoCount, setVideoCount] = useState(0)
@@ -218,7 +230,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                     const unique = newVids.filter((v: any) => !existingIds.has(v.id)).map((v: any) => ({
                         id: v.id,
                         url: v.url,
-                        description: v.description || '',
+                        description: v.description || v.desc || '', // Preserve original or fallback to empty string if none found
                         thumbnail: v.thumbnail || '',
                         stats: v.stats || { views: 0, likes: 0, comments: 0 },
                         channelName: results.value || ''
@@ -367,7 +379,11 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                         onChange={e => setFormData({ ...formData, name: e.target.value })}
                         placeholder="e.g. Morning Motivation"
                         data-testid="campaign-name-input"
-                        style={{ width: '100%', padding: '12px', background: 'var(--bg-secondary)', border: '1px solid var(--border-primary)', borderRadius: '8px', color: '#fff', fontSize: '14px', userSelect: 'text', cursor: 'text', pointerEvents: 'auto' } as any}
+                        style={{
+                            width: '100%', padding: '12px', background: 'var(--bg-secondary)',
+                            border: '1px solid var(--border-primary)', borderRadius: '8px',
+                            color: '#fff', fontSize: '14px'
+                        }}
                     />
                 </div>
             </div>
@@ -413,7 +429,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
             {/* ─── Unified Start Time Configuration (For both One-Time and Recurring) ─── */}
             <div className="card" style={{ padding: '20px', background: 'rgba(255, 255, 255, 0.05)', marginTop: '16px' }}>
                 <h4 style={{ marginTop: 0 }}>⏰ Start Time</h4>
-                <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+                <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', position: 'relative', zIndex: 10 }}>
                     <label style={{
                         display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 16px',
                         background: runNow ? 'rgba(74, 222, 128, 0.1)' : 'transparent',
@@ -460,19 +476,29 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 {!runNow && (
                     <div className="form-group">
                         <label>First Run Time</label>
-                        <DatePicker
-                            selected={formData.schedule.runAt ? new Date(formData.schedule.runAt) : null}
-                            onChange={(d: Date | null) => {
-                                const val = d ? d.toISOString() : ''
-                                setFormData({ ...formData, schedule: { ...formData.schedule, runAt: val } })
-                            }}
-                            showTimeSelect timeIntervals={15}
-                            dateFormat="yyyy-MM-dd HH:mm" timeFormat="HH:mm"
-                            minDate={new Date()} // Prevent past dates
-                            placeholderText="Select start time"
-                            className="form-control"
-                            wrapperClassName="datepicker-wrapper"
-                        />
+                        <div style={{ position: 'relative', zIndex: 100 }}>
+                            <DatePicker
+                                selected={formData.schedule.runAt ? new Date(formData.schedule.runAt) : null}
+                                onChange={(d: Date | null) => {
+                                    if (d) {
+                                        setFormData(prev => ({
+                                            ...prev,
+                                            schedule: { ...prev.schedule, runAt: d.toISOString() }
+                                        }))
+                                    }
+                                }}
+                                showTimeSelect timeIntervals={15}
+                                dateFormat="yyyy-MM-dd HH:mm" timeFormat="HH:mm"
+                                minDate={new Date()}
+                                placeholderText="Select start time"
+                                className="form-control"
+                                wrapperClassName="datepicker-wrapper"
+                                popperPlacement="bottom-start"
+                                // Ensure it doesn't block other inputs
+                                onCalendarOpen={() => { }}
+                                onCalendarClose={() => { }}
+                            />
+                        </div>
                     </div>
                 )}
             </div>
@@ -544,7 +570,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                                             ...prev,
                                             schedule: {
                                                 ...prev.schedule,
-                                                days: isActive ? prev.schedule.days.filter(d => d !== day) : [...prev.schedule.days, day]
+                                                days: isActive ? prev.schedule.days.filter((d: string) => d !== day) : [...prev.schedule.days, day]
                                             }
                                         }))}
                                         style={{
@@ -760,7 +786,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                                     </div>
                                     {/* Order badge */}
                                     <div style={{
-                                        position: 'absolute', bottom: '24px', right: '4px',
+                                        position: 'absolute', top: '32px', right: '4px',
                                         background: 'rgba(124, 92, 252, 0.9)', color: '#fff',
                                         borderRadius: '50%', width: '20px', height: '20px',
                                         fontSize: '10px', fontWeight: 700, display: 'flex',
@@ -801,7 +827,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         setFormData(prev => ({
             ...prev,
             targetAccounts: prev.targetAccounts.includes(accId)
-                ? prev.targetAccounts.filter(id => id !== accId)
+                ? prev.targetAccounts.filter((id: string) => id !== accId)
                 : [...prev.targetAccounts, accId]
         }))
     }
@@ -852,9 +878,17 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 <div style={{ flex: 1 }}>
                     <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Schedule</div>
                     <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--accent-teal)' }}>
-                        {formData.type === 'one_time'
-                            ? (runNow ? '🚀 Run Immediately' : `📅 ${formData.schedule.runAt ? new Date(formData.schedule.runAt).toLocaleString() : 'Not set'}`)
-                            : `📅 Recurring (Every ${formData.schedule.interval}m)`}
+                        <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--accent-teal)' }}>
+                            {formData.type === 'one_time'
+                                ? (runNow ? '🚀 Run Immediately' : (() => {
+                                    try {
+                                        return formData.schedule.runAt ? `📅 ${new Date(formData.schedule.runAt).toLocaleString()}` : 'Not set'
+                                    } catch (e) {
+                                        return 'Invalid Date'
+                                    }
+                                })())
+                                : `📅 Recurring (Every ${formData.schedule.interval}m)`}
+                        </div>
                     </div>
                 </div>
                 <div style={{ width: '1px', height: '30px', background: 'var(--border-primary)' }}></div>
@@ -869,7 +903,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
             </p>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '16px' }}>
-                {publishAccounts.map(acc => {
+                {Array.isArray(publishAccounts) && publishAccounts.map(acc => {
                     const isSelected = formData.targetAccounts.includes(String(acc.id))
                     const isValid = acc.session_valid === 1
                     return (
@@ -964,6 +998,12 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         executionOrder: formData.executionOrder
     })
 
+    // DEBUG: Trace description data
+    console.log('[DEBUG_DESC] buildSaveData:', {
+        videos: savedVideos.map(v => ({ id: v.id, desc: v.description })),
+        executionOrder: formData.executionOrder.map(i => ({ type: i.type, desc: i.video?.description }))
+    })
+
     return ReactDOM.createPortal(
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.8)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'auto' }} className="no-drag"
         >
@@ -984,6 +1024,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                             sources={sources}
                             savedVideos={savedVideos}
                             schedule={formData.schedule}
+                            initialItems={formData.executionOrder && formData.executionOrder.length > 0 ? formData.executionOrder : undefined}
                             onScheduleChange={(items) => setFormData(prev => ({
                                 ...prev,
                                 executionOrder: items.map(i => ({
@@ -1005,13 +1046,13 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                     </button>
                     <div style={{ display: 'flex', gap: '10px' }}>
                         {step === 5 && (
-                            <button className="btn btn-emerald" onClick={() => onSave(buildSaveData(), true)}>
-                                🚀 Save & Run Now
+                            <button className="btn btn-emerald" onClick={() => handleSave(buildSaveData(), true)} disabled={isSaving}>
+                                {isSaving ? '🚀 Starting...' : '🚀 Save & Run Now'}
                             </button>
                         )}
                         {step === 5 ? (
-                            <button className="btn btn-primary" onClick={() => onSave(buildSaveData(), false)} disabled={!canAdvance()}>
-                                💾 Save & Close
+                            <button className="btn btn-primary" onClick={() => handleSave(buildSaveData(), false)} disabled={!canAdvance() || isSaving}>
+                                {isSaving ? '💾 Saving...' : '💾 Save & Close'}
                             </button>
                         ) : (
                             <button className="btn btn-primary" onClick={handleNext} disabled={!canAdvance()}>

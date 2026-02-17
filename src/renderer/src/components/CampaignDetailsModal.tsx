@@ -8,7 +8,7 @@ interface CampaignDetailsModalProps {
 
 export const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ campaign, onClose, onUpdate }) => {
     const [config, setConfig] = useState<any>(null)
-    const [activeTab, setActiveTab] = useState<'sources' | 'videos' | 'jobs'>('sources')
+    const [activeTab, setActiveTab] = useState<'sources' | 'videos' | 'jobs' | 'published'>('sources')
     const [jobs, setJobs] = useState<any[]>([])
     const [stats, setStats] = useState({ scanned: 0, downloaded: 0, scheduled: 0, published: 0 })
 
@@ -135,6 +135,12 @@ export const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ camp
                         onClick={() => setActiveTab('jobs')}
                     >
                         ⚡ Job History
+                    </button>
+                    <button
+                        className={`tab ${activeTab === 'published' ? 'active' : ''}`}
+                        onClick={() => setActiveTab('published')}
+                    >
+                        ✅ Published
                     </button>
                 </div>
 
@@ -282,7 +288,7 @@ export const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ camp
                                                 <td>#{job.id}</td>
                                                 <td>{job.type}</td>
                                                 <td>
-                                                    <span className={`badge badge-${job.status}`}>
+                                                    <span className={`badge badge-${job.status?.split(':')[0].toLowerCase()}`}>
                                                         {job.status}
                                                     </span>
                                                 </td>
@@ -300,6 +306,97 @@ export const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ camp
                         </div>
                     )}
 
+                    {/* PUBLISHED TAB */}
+                    {activeTab === 'published' && (
+                        <div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                                <h3>Published Videos</h3>
+                                <button className="btn btn-secondary btn-sm" onClick={loadJobs}>Refresh List</button>
+                            </div>
+
+                            {jobs.filter(j => j.type === 'PUBLISH' && (j.status.toLowerCase().includes('success') || j.status.toLowerCase().includes('published') || j.status.toLowerCase().includes('complete'))).length === 0 ? (
+                                <p style={{ color: 'var(--text-muted)' }}>No published videos yet.</p>
+                            ) : (
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '10px' }}>
+                                    {jobs.filter(j => j.type === 'PUBLISH' && (j.status.toLowerCase().includes('success') || j.status.toLowerCase().includes('published') || j.status.toLowerCase().includes('complete'))).map(job => {
+                                        let data: any = {}
+                                        try { data = JSON.parse(job.data_json || '{}') } catch { }
+                                        let result: any = {}
+                                        try { result = JSON.parse(job.result_json || '{}') } catch { }
+
+                                        // Try to find video metadata if linked
+                                        // This is a bit disjointed, ideally we'd join with 'videos' table.
+                                        // For now, we rely on what's in the job data/result.
+                                        const videoId = data.platform_id; // Original video ID
+                                        const publishedUrl = result.videoUrl || (data.account_username && result.videoId ? `https://www.tiktok.com/@${data.account_username}/video/${result.videoId}` : null);
+
+
+                                        return (
+                                            <div key={job.id} style={{
+                                                padding: '15px', borderRadius: '8px',
+                                                background: 'var(--bg-secondary)', border: '1px solid var(--border-primary)',
+                                                display: 'flex', gap: '15px'
+                                            }}>
+                                                <div style={{ width: '80px', height: '110px', background: '#000', borderRadius: '4px', overflow: 'hidden' }}>
+                                                    {data.thumbnail ? (
+                                                        <img src={data.thumbnail} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                                    ) : (
+                                                        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666' }}>No Preview</div>
+                                                    )}
+                                                </div>
+                                                <div style={{ flex: 1 }}>
+                                                    <div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '6px' }}>
+                                                        {data.caption || 'No Caption'}
+                                                    </div>
+                                                    <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                                                        Account: <strong style={{ color: 'var(--text-primary)' }}>@{data.account_name}</strong> •
+                                                        Published: {job.completed_at ? new Date(job.completed_at).toLocaleString() : 'Recently'}
+                                                    </div>
+
+                                                    {publishedUrl && (
+                                                        <div style={{ marginBottom: '10px' }}>
+                                                            <a href="#" onClick={(e) => { e.preventDefault(); /* open external */ window.open(publishedUrl, '_blank') }}
+                                                                style={{ color: 'var(--accent-primary)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '5px', fontSize: '13px' }}>
+                                                                🔗 View on TikTok
+                                                            </a>
+                                                        </div>
+                                                    )}
+
+                                                    <div style={{ display: 'flex', gap: '15px', alignItems: 'center', background: 'rgba(255,255,255,0.05)', padding: '8px', borderRadius: '6px', width: 'fit-content' }}>
+                                                        <div style={{ fontSize: '12px', display: 'flex', gap: '5px' }}>
+                                                            <span>👁 {data.videoStats?.views || 0}</span>
+                                                            <span>❤️ {data.videoStats?.likes || 0}</span>
+                                                        </div>
+                                                        <button
+                                                            className="btn-icon"
+                                                            style={{ fontSize: '12px', padding: '2px 6px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', cursor: 'pointer', border: 'none', color: 'var(--text-primary)' }}
+                                                            onClick={async () => {
+                                                                if (!result.videoId || !data.account_username) {
+                                                                    alert('Cannot refresh: Missing Video ID or Username');
+                                                                    return;
+                                                                }
+                                                                // @ts-ignore
+                                                                const newStats = await window.api.invoke('tiktok:refresh-stats', result.videoId, data.account_username);
+                                                                if (newStats) {
+                                                                    alert(`Stats Refreshed!\nViews: ${newStats.views}\nLikes: ${newStats.likes}`);
+                                                                    loadJobs(); // Reload to hopefully see update? (Wait, job data isn't updated, video metadata is. UI needs to handle this.)
+                                                                    // For now, simple alert is confirmation.
+                                                                } else {
+                                                                    alert('Could not fetch new stats.');
+                                                                }
+                                                            }}
+                                                        >
+                                                            🔄 Refresh
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
         </div>

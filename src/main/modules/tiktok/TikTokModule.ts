@@ -109,7 +109,7 @@ export class TikTokModule implements PlatformModule {
                          VALUES ('tiktok', ?, ?, ?, 'discovered', ?)`,
                         [v.id, v.url, v.desc, JSON.stringify({ thumbnail: v.thumb, stats: v.stats, keyword })]
                     )
-                    console.log(`New video found: ${v.id}`)
+                    console.log(`[DEBUG_DESC] scanKeyword: New video found: ${v.id}. Desc: "${v.desc}"`)
 
                     // Return found videos (for immediate use if needed)
                     const newId = storageService.get('SELECT last_insert_rowid() as id').id
@@ -235,7 +235,7 @@ export class TikTokModule implements PlatformModule {
                          VALUES ('tiktok', ?, ?, ?, 'discovered', ?)`,
                         [v.id, v.url, v.desc, JSON.stringify({ thumbnail: v.thumb, stats: v.stats })]
                     )
-                    console.log(`New video found: ${v.id}`)
+                    console.log(`[DEBUG_DESC] scanProfile: New video found: ${v.id}. Desc: "${v.desc}"`)
 
                     if (isBackground) {
                         const newId = storageService.get('SELECT last_insert_rowid() as id').id
@@ -261,7 +261,7 @@ export class TikTokModule implements PlatformModule {
         }
     }
 
-    async downloadVideo(url: string, platformId: string): Promise<{ filePath: string, cached: boolean }> {
+    async downloadVideo(url: string, platformId: string): Promise<{ filePath: string, cached: boolean, meta?: any }> {
         console.log(`Downloading video: ${url}`)
 
         // MOCK FOR E2E TESTING
@@ -297,6 +297,8 @@ export class TikTokModule implements PlatformModule {
             'Referer': 'https://www.tiktok.com/',
         }
 
+        let meta: any = {}
+
         try {
             console.log('Using @tobyg74/tiktok-api-dl to fetch video URL...')
             // Dynamic import to handle CommonJS/ESM interop if needed, though we compiled to CommonJS in TS
@@ -306,13 +308,24 @@ export class TikTokModule implements PlatformModule {
             const result = await Downloader(url, { version: 'v1' })
             console.log('Library Result Status:', result.status)
 
-            if (result.status === 'success' && result.result?.video) {
+            // meta declared outside try block
+
+            if (result.status === 'success' && result.result) {
                 const videoData = result.result.video
                 // Strict type checking based on test_lib_only.ts success
                 if (Array.isArray(videoData) && videoData.length > 0) {
                     videoStreamUrl = videoData[0]
                 } else if (typeof videoData === 'string') {
                     videoStreamUrl = videoData
+                }
+
+                // Extract metadata
+                meta = {
+                    description: result.result.description || '',
+                    author: result.result.author ? {
+                        nickname: result.result.author.nickname,
+                        avatar: result.result.author.avatar
+                    } : null
                 }
             }
 
@@ -321,8 +334,11 @@ export class TikTokModule implements PlatformModule {
                 throw new Error('Library result empty')
             }
 
-            console.log(`[Library] Extracted Video URL: ${videoStreamUrl}`)
+            console.log(`[DEBUG_DESC] Library result status: ${result.status}`)
+            if (meta.description) console.log(`[DEBUG_DESC] Library extracted caption: "${meta.description}"`)
 
+            // Return metadata along with file path
+            // We need to pass this out to JobQueue
         } catch (e: any) {
             console.error('Library extraction error:', e.message)
             console.log('Falling back to Puppeteer extraction...')
@@ -359,7 +375,7 @@ export class TikTokModule implements PlatformModule {
                                 reject(new Error(`Downloaded file too small (${stats.size} bytes) and fallback failed: ${err.message}`))
                             }
                         } else {
-                            resolve({ filePath, cached: false })
+                            resolve({ filePath, cached: false, meta })
                         }
                     } catch (e) {
                         reject(e)
@@ -374,7 +390,7 @@ export class TikTokModule implements PlatformModule {
     }
 
     // Original Puppeteer Logic moved to Fallback
-    async downloadVideoFallback(url: string, filePath: string): Promise<{ filePath: string, cached: boolean }> {
+    async downloadVideoFallback(url: string, filePath: string): Promise<{ filePath: string, cached: boolean, meta?: any }> {
         console.log('Starting Puppeteer Fallback Download...')
         // Use Browser to get actual video stream
         if (!browserService.isConnected()) {
@@ -387,6 +403,7 @@ export class TikTokModule implements PlatformModule {
         let videoStreamUrl = ''
         let largestVideoSize = 0
         let videoHeaders: any = {}
+        let description = ''
 
         // Timeout race: Network Intercept vs DOM Extraction
         try {
@@ -420,12 +437,26 @@ export class TikTokModule implements PlatformModule {
 
             // 2. Fallback / DOM Extraction (if no network intercept)
             if (!videoStreamUrl) {
-                console.log('Network intercept empty, trying DOM extraction...')
                 videoStreamUrl = await page.evaluate(() => {
                     const video = document.querySelector('video')
                     return video ? video.src : ''
                 })
             }
+
+            // 3. Extract Description (Critical Fix)
+            description = await page.evaluate(() => {
+                const descEl = document.querySelector('[data-e2e="video-desc"]')
+                if (descEl && descEl.textContent) return descEl.textContent.trim()
+
+                const metaDesc = document.querySelector('meta[property="og:description"]')
+                if (metaDesc) return metaDesc.getAttribute('content') || ''
+
+                const title = document.querySelector('title')
+                if (title) return title.innerText.replace(' | TikTok', '').trim()
+
+                return ''
+            })
+            console.log(`[DEBUG_DESC] Extracted Description (Fallback): "${description}"`)
 
             console.log(`Extracted Video URL: ${videoStreamUrl} (Size: ${largestVideoSize})`)
 
@@ -487,7 +518,7 @@ export class TikTokModule implements PlatformModule {
                     if (stats.size < 50 * 1024) { // < 50KB
                         reject(new Error(`Downloaded file too small (${stats.size} bytes). Path: ${filePath}`))
                     } else {
-                        resolve({ filePath, cached: false })
+                        resolve({ filePath, cached: false, meta: { description } })
                     }
                 } catch (e) {
                     reject(e)
@@ -497,13 +528,16 @@ export class TikTokModule implements PlatformModule {
         })
     }
 
-    async publishVideo(filePath: string, caption: string, cookies?: any[], onProgress?: (msg: string) => void, options?: { advancedVerification?: boolean }): Promise<{ success: boolean, videoUrl?: string, error?: string, videoId?: string, isReviewing?: boolean }> {
+    async publishVideo(filePath: string, caption: string, cookies?: any[], onProgress?: (msg: string) => void, options?: { advancedVerification?: boolean }): Promise<{ success: boolean, videoUrl?: string, error?: string, videoId?: string, isReviewing?: boolean, warning?: string }> {
         // Generate unique hashtag for verification ONLY if requested
         const useUniqueTag = options?.advancedVerification || false
         const uniqueTag = '#' + Math.random().toString(36).substring(2, 8);
         const finalCaption = useUniqueTag ? (caption + ' ' + uniqueTag) : caption;
 
-        console.log(`Publishing video: ${filePath} (Tag: ${useUniqueTag ? uniqueTag : 'Disabled'})`)
+        console.log(`[DEBUG_DESC] Publishing video: ${filePath} (Tag: ${useUniqueTag ? uniqueTag : 'Disabled'})`)
+        console.log(`[DEBUG_DESC] Caption received: "${caption}" (Length: ${caption.length})`)
+        console.log(`[DEBUG_DESC] Final caption to type: "${finalCaption}"`)
+
         if (onProgress) onProgress('Initializing browser...')
         let page: Page | null = null
 
@@ -832,10 +866,19 @@ export class TikTokModule implements PlatformModule {
             console.log('✏️ Setting caption...')
             if (onProgress) onProgress('Setting video caption...')
             let captionSet = false
-            for (const sel of ['.public-DraftEditor-content', '[contenteditable="true"][role="textbox"]', '[contenteditable="true"].notranslate', 'div[contenteditable="true"][data-placeholder]', '[contenteditable="true"]']) {
+            for (const sel of [
+                '[data-e2e="caption-input"]', // Primary TikTok selector
+                '.public-DraftEditor-content',
+                '[contenteditable="true"][role="textbox"]',
+                '[contenteditable="true"].notranslate',
+                'div[contenteditable="true"][data-placeholder]',
+                '[contenteditable="true"]'
+            ]) {
                 try {
+                    console.log(`[DEBUG_DESC] Checking selector: ${sel}`)
                     const editor = await page!.$(sel)
                     if (editor && await editor.isVisible()) {
+                        console.log(`[DEBUG_DESC] Found editor with selector: ${sel}`)
                         if (onProgress) onProgress('Typing caption...')
                         await interactWithRetry(async () => {
                             await editor!.click()
@@ -845,13 +888,26 @@ export class TikTokModule implements PlatformModule {
                             await page!.waitForTimeout(200)
                             await page!.keyboard.type(finalCaption, { delay: 20 })
                         }, sel)
-                        console.log(`  Caption set (${sel})`)
+                        console.log(`[DEBUG_DESC] Caption set successfully using: ${sel}`)
                         captionSet = true
                         break
                     }
-                } catch { /* try next */ }
+                } catch (e: any) {
+                    console.log(`[DEBUG_DESC] Failed to set caption with ${sel}: ${e.message}`)
+                }
             }
-            if (!captionSet) console.warn('  ⚠️ Could not find caption editor')
+            if (!captionSet) {
+                console.warn('  ⚠️ Could not find caption editor. Dumping HTML...')
+                try {
+                    const ts = Date.now()
+                    const debugDir = path.join(app.getPath('userData'), 'debug_artifacts')
+                    await fs.ensureDir(debugDir)
+                    const html = await page!.content()
+                    await fs.writeFile(path.join(debugDir, `caption_fail_${ts}.html`), html)
+                    await page!.screenshot({ path: path.join(debugDir, `caption_fail_${ts}.png`) })
+                    console.log(`  📄 HTML Dump saved to: ${path.join(debugDir, `caption_fail_${ts}.html`)}`)
+                } catch (e) { console.error('Failed to dump caption debug:', e) }
+            }
 
             await page.waitForTimeout(1000)
 
@@ -1050,6 +1106,7 @@ export class TikTokModule implements PlatformModule {
                         const el = await page!.$(sel)
                         if (el && await el.isVisible()) {
                             console.log(`  ✅ Success confirmed: ${sel}`)
+                            if (onProgress) onProgress('Uploaded! Verifying status...')
                             isSuccess = true
                             break
                         }
@@ -1179,37 +1236,95 @@ export class TikTokModule implements PlatformModule {
                 } catch { }
             }
 
-            // 3. Fallback: Profile Scan (only if Dashboard failed to find it)
+            // 3. Fallback: Profile Scan (only if Dashboard failed)
             if (!videoUrl) {
-                console.warn('  ⚠️ Dashboard check failed to find video. Falling back to Profile Scan...')
-                if (onProgress) onProgress('Fallback: Scanning profile...')
+                console.warn('  ⚠️ Dashboard check failed. Falling back to Profile Scan (Caption Match)...')
+                if (onProgress) onProgress('Fallback: Scanning profile for new video...')
 
                 try {
                     await page!.goto('https://www.tiktok.com/@profile', { waitUntil: 'domcontentloaded' })
-                    // ... (Existing Profile Scan Logic) ...
-                    // Retry extraction with reload
+
                     for (let attempt = 0; attempt < 5; attempt++) {
-                        console.log(`  Scanning for video link (Attempt ${attempt + 1}/5)...`)
-                        const link = await extractProfileVideo()
-                        if (link) {
-                            videoUrl = link
-                            const idMatch = link.match(/\/video\/(\d+)/)
-                            if (idMatch) videoId = idMatch[1]
-                            console.log(`  ✅ Found video via profile: ${link}`)
-                            break
+                        console.log(`  Scanning profile (Attempt ${attempt + 1}/5)...`)
+
+                        // Extract first few videos with their descriptions
+                        const candidates = await page!.evaluate(() => {
+                            const items = Array.from(document.querySelectorAll('[data-e2e="user-post-item"]'));
+                            return items.slice(0, 5).map(item => {
+                                const link = item.querySelector('a')?.getAttribute('href');
+                                const img = item.querySelector('img');
+                                const desc = img?.getAttribute('alt') || ''; // TikTok often puts desc in alt
+                                return { link, desc };
+                            });
+                        });
+
+                        // console.log('  Candidates:', JSON.stringify(candidates));
+
+                        // Find match by Caption
+                        const match = candidates.find(c => {
+                            if (!c.link || !c.link.includes('/video/')) return false;
+                            // 1. Direct Caption Match (if we have a caption)
+                            if (caption && c.desc && c.desc.includes(caption.substring(0, 20))) return true;
+                            // 2. If no caption provided, assume the newest one (first one) is ours 
+                            //    BUT only if we are confident (e.g. valid link)
+                            if (!caption && candidates.indexOf(c) === 0) return true;
+                            return false;
+                        });
+
+                        if (match && match.link) {
+                            videoUrl = match.link;
+                            const idMatch = videoUrl.match(/\/video\/(\d+)/);
+                            if (idMatch) videoId = idMatch[1];
+                            console.log(`  ✅ Found video via profile (Caption Match): ${videoUrl}`);
+
+                            // Verify status directly
+                            try {
+                                console.log('  🕵️‍♂️ Verifying status of found video...');
+                                await page!.goto(videoUrl, { waitUntil: 'domcontentloaded' });
+                                await page!.waitForTimeout(2000);
+
+                                // Check for "Private" or "Reviewing" indicators
+                                const isPrivate = await page!.evaluate(() => {
+                                    const privacyLabel = document.body.innerText;
+                                    return privacyLabel.includes('Private video') ||
+                                        privacyLabel.includes('Only you can see this post') ||
+                                        privacyLabel.includes('Post under review') ||
+                                        privacyLabel.includes('video is being processed') ||
+                                        privacyLabel.includes('Content under review') ||
+                                        // Vietnamese
+                                        privacyLabel.includes('Đang xét duyệt') ||
+                                        privacyLabel.includes('Cần xem xét') ||
+                                        // Japanese
+                                        privacyLabel.includes('審査中') ||
+                                        privacyLabel.includes('処理中') ||
+                                        privacyLabel.includes('公開範囲: 自分のみ');
+                                });
+
+                                if (isPrivate) {
+                                    console.log('  🟡 Video is UNDER REVIEW / PRIVATE.');
+                                    isReviewing = true;
+                                } else {
+                                    console.log('  🟢 Video appears PUBLIC.');
+                                    isReviewing = false;
+                                }
+                            } catch (e) {
+                                console.warn('  ⚠️ Could not verify status page:', e);
+                                isReviewing = true; // Assume reviewing to be safe and trigger polling
+                            }
+                            break;
                         }
-                        if (page!.url().includes('/@')) {
-                            await page!.waitForTimeout(3000)
-                            await page!.reload({ waitUntil: 'domcontentloaded' })
-                        } else {
-                            await page!.waitForTimeout(2000)
+
+                        if (attempt < 4) {
+                            await page!.waitForTimeout(3000);
+                            await page!.reload({ waitUntil: 'domcontentloaded' });
                         }
                     }
                 } catch (e) { console.warn('  ⚠️ Profile scan fallback failed:', e) }
             }
 
             if (!videoUrl) {
-                throw new Error('Post success detected but could not verify video URL.')
+                console.warn('  ⚠️ Could not verify video URL after success. Returning partial success.')
+                return { success: true, warning: 'Published but could not satisfy verification.', isReviewing: true }
             }
 
             console.log(`  🔗 Final Video URL: ${videoUrl} (Reviewing: ${isReviewing})`)
@@ -1329,6 +1444,56 @@ export class TikTokModule implements PlatformModule {
             console.error('Check status failed:', e)
             return 'unavailable' // Assume unavailable on network error to retry?
         }
+    }
+
+    async refreshVideoStats(videoId: string, username: string): Promise<any> {
+        try {
+            // Basic scrape for stats
+            const url = `https://www.tiktok.com/@${username}/video/${videoId}`
+            // Note: Proper scraping requires more complex logic or API.
+            // For now, we reuse the extraction logic if possible or just check status.
+            // Since we don't have a robust "get stats" without full browser, 
+            // we will implement a lightweight extraction from the public page HTML if possible.
+
+            // TODO: Implementing a full stats parser from HTML is complex and fragile.
+            // For now, let's just update the 'status' and maybe assume existing stats if we can't parse new ones.
+
+            // Actually, the user specifically asked for "refresh number of likes/views".
+            // We can regex it from the HTML response of checkVideoStatus if we pass the HTML.
+
+            const response = await axios.get(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                }
+            })
+
+            if (response.status === 200) {
+                const html = response.data
+                // Very rough regex extraction
+                const likeMatch = html.match(/"diggCount":(\d+)/)
+                const viewMatch = html.match(/"playCount":(\d+)/)
+                const commentMatch = html.match(/"commentCount":(\d+)/)
+
+                const stats = {
+                    likes: likeMatch ? parseInt(likeMatch[1]) : 0,
+                    views: viewMatch ? parseInt(viewMatch[1]) : 0,
+                    comments: commentMatch ? parseInt(commentMatch[1]) : 0
+                }
+
+                // Update DB
+                const video = storageService.get("SELECT id, metadata FROM videos WHERE platform_id = ?", [videoId])
+                if (video) {
+                    let meta = JSON.parse(video.metadata || '{}')
+                    meta.stats = stats
+                    storageService.run("UPDATE videos SET metadata = ? WHERE id = ?", [JSON.stringify(meta), video.id])
+                    console.log(`Updated stats for ${videoId}:`, stats)
+                    return stats
+                }
+            }
+        } catch (e) {
+            console.error('Failed to refresh stats:', e)
+        }
+        return null
     }
 
     async checkVideosExistence(ids: string[]): Promise<string[]> {

@@ -186,6 +186,7 @@ class SchedulerService {
 
                 if (item.type === 'post' && item.video) {
                     const v = item.video
+                    console.log(`[DEBUG_DESC] Scheduler: Creating DOWNLOAD job for ${v.id}. Description in config: "${v.description}"`);
                     storageService.run(
                         `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'DOWNLOAD', 'pending', ?, ?)`,
                         [
@@ -243,7 +244,7 @@ class SchedulerService {
                     const video = item.video
                     if (video) {
                         const scheduledFor = itemTime.toISOString().replace('T', ' ').slice(0, 19) // SQLite format
-
+                        console.log(`[DEBUG_DESC] Scheduler: Creating job for ${video.id} (Type: ${item.type}). Description: "${video.description}"`);
                         const jobData = {
                             video,
                             postOrder: config.postOrder,

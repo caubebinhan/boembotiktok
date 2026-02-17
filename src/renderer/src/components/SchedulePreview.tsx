@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
+import DatePicker from 'react-datepicker'
+import "react-datepicker/dist/react-datepicker.css"
 import { VideoCard } from './VideoCard'
 
 interface SchedulePreviewProps {
@@ -9,6 +11,7 @@ interface SchedulePreviewProps {
         runAt?: string // ISO string or relevant start time
         days: string[]
     }
+    initialItems?: any[] // Added prop
     onScheduleChange?: (items: TimelineItem[]) => void
     onStartTimeChange?: (date: Date) => void
     onIntervalChange?: (interval: number) => void
@@ -23,13 +26,17 @@ export interface TimelineItem {
     icon: string
     video?: any
     sourceId?: string
+    isFixed?: boolean
 }
 
-export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, savedVideos, schedule, onScheduleChange, onStartTimeChange, onIntervalChange }) => {
+export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, savedVideos, schedule, initialItems, onScheduleChange, onStartTimeChange, onIntervalChange }) => {
     // Local state for the plan
     const [items, setItems] = useState<TimelineItem[]>([])
     const [startTime, setStartTime] = useState<Date>(new Date())
     const [interval, setInterval] = useState<number>(schedule.interval || 15)
+
+    // UI State for description toggles
+    const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({})
 
     // For Drag & Drop
     const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null)
@@ -60,18 +67,56 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
         setStartTime(start)
         setInterval(schedule.interval || 15)
 
-        // Build initial items list (order: Videos -> Scans)
+        // 1. PREFER EXISTING ITEMS (Persist State)
+        if (initialItems && initialItems.length > 0) {
+            // Restore dates from strings if necessary
+            const restored = initialItems.map(i => ({
+                ...i,
+                time: new Date(i.time)
+            }))
+
+            // Fix: If schedule.runAt is explicitly provided, we should align the start time 
+            // even if we have initial items, especially if the user just changed it in the wizard.
+            // Check if the restored first item matches the requested start time (roughly)
+            // If completely different, we assume a "Force Update" from the wizard.
+            const firstItemTime = restored[0]?.time?.getTime()
+            const requestedTime = start.getTime()
+
+            // If difference > 1 minute, assume user changed start time in Wizard
+            if (firstItemTime && Math.abs(firstItemTime - requestedTime) > 60000) {
+                // Unfix first item to allow it to move
+                if (restored[0]) (restored[0] as any).isFixed = false
+                setItems(restored) // Set state first
+                recalculateTimes(restored, start, schedule.interval || 15)
+            } else {
+                setItems(restored)
+            }
+            return
+        }
+
+        // 2. Build initial items list (order: Videos -> Scans)
+        // ... (rest is same)
+
         // Note: The logic in triggerCampaign is "Singles First". We replicate that here.
-        const initialItems: TimelineItem[] = []
+        const newItems: TimelineItem[] = []
+
+        // Helper to format large numbers
+        const formatCount = (n: number | string | undefined): string => {
+            const num = typeof n === 'string' ? parseInt(n) : (n || 0)
+            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M'
+            if (num >= 1000) return (num / 1000).toFixed(1) + 'K'
+            return String(num)
+        }
 
         // 1. Single Videos
         savedVideos.forEach((video, i) => {
-            initialItems.push({
+            const stats = video.stats || {}
+            newItems.push({
                 id: `post-${video.id}`,
                 time: new Date(), // placeholder, calculated below
                 type: 'post',
                 label: `Post Video`,
-                detail: video.description || 'Targeted Video',
+                detail: `👁️ ${formatCount(stats.views)} • ❤️ ${formatCount(stats.likes)}`,
                 icon: '🎬',
                 video: video
             })
@@ -80,7 +125,7 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
         // 2. Scans (Placeholder for visual preview)
         // We show one scan item per source to indicate when scanning starts
         sources.forEach((source, i) => {
-            initialItems.push({
+            newItems.push({
                 id: `scan-${source.name}-${i}`,
                 time: new Date(),
                 type: 'scan',
@@ -91,110 +136,103 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
             })
         })
 
-        recalculateTimes(initialItems, start, schedule.interval || 15)
+        recalculateTimes(newItems, start, schedule.interval || 15)
+
+        // DEBUG: Check descriptions in preview
+        console.log(`[DEBUG_DESC] SchedulePreview: Initialized with ${savedVideos.length} videos.`,
+            savedVideos.map(v => ({ id: v.id, desc: v.description?.substring(0, 20) + '...' }))
+        );
     }, [savedVideos, sources, schedule.runAt, schedule.interval]) // Re-init if external props change substantially
 
     // Recalculate times based on order + start + interval + jitter + daily constraints
     const recalculateTimes = (currentItems: TimelineItem[], start: Date, step: number) => {
-        let currentTime = new Date(start)
+        let cursorTime = new Date(start)
+
+        // Helper to parsing HH:mm
+        const getMinutes = (timeStr: string) => {
+            const [h, m] = timeStr.split(':').map(Number)
+            return (h || 0) * 60 + (m || 0)
+        }
+        const dailyStart = (schedule as any).startTime ? getMinutes((schedule as any).startTime) : 9 * 60
+        const dailyEnd = (schedule as any).endTime ? getMinutes((schedule as any).endTime) : 21 * 60
+
+        // Helper to ensure valid time
+        const ensureValidTime = (date: Date): Date => {
+            let d = new Date(date)
+            let currentMins = d.getHours() * 60 + d.getMinutes()
+            if (currentMins < dailyStart) {
+                d.setHours(Math.floor(dailyStart / 60), dailyStart % 60, 0, 0)
+            }
+            else if (currentMins >= dailyEnd) {
+                d.setDate(d.getDate() + 1)
+                d.setHours(Math.floor(dailyStart / 60), dailyStart % 60, 0, 0)
+            }
+            return d
+        }
+
         const updated = currentItems.map((item, index) => {
-            // If jitter is enabled in schedule prop
-            const hasJitter = (schedule as any).jitter
-            let offset = 0
-            if (hasJitter && index > 0) { // Keep first item fixed, jitter subsequent intervals
-                // Max jitter = 50% of interval
-                // Random between -50% and +50%? Or 0 to 50%?
-                // User said: "5 mins... possible 4 or 7". 
-                // 4 (-1), 7 (+2). This implies variance around the "expected" time?
-                // OR variance in the INTERVAL itself.
-                // Let's vary the interval added.
-                // Variation = (Math.random() - 0.5) * step * 60000. (Range -0.5 to 0.5 * interval)
-                // But user example 7 mins is +40%. 4 mins is -20%.
-                // Let's use simple randomization: interval * (0.5 + Math.random()) -> 0.5x to 1.5x interval.
-                // This gives 2.5m to 7.5m for 5m interval.
-                // 4 is inside. 7 is inside.
-                // This satisfies "max 50% of spanning unit" if interpreted as deviation from center?
-                // Let's use `step + (Math.random() - 0.5) * step` -> 0.5 to 1.5.
+            // 1. Determine base "Natural" time for this slot (where it SHOULD be)
+            // This is the anchor for the schedule flow.
+            const naturalTime = ensureValidTime(new Date(cursorTime))
+
+            let itemTime: Date
+
+            if (item.isFixed && item.time) {
+                // Respect Manual Override for the ITEM itself
+                itemTime = new Date(item.time)
+            } else {
+                // Otherwise use the natural flow
+                itemTime = new Date(naturalTime)
             }
 
-            // Correction: recalculateTimes loops items.
-            // We should maintain `currentTime` state, not calculate from index.
-            // Because jitter makes it non-linear.
-
-            // Logic:
-            // 1. Check if currentTime is within Active Hours (start/end).
-            //    If not, fast forward to next valid Start Time.
-            // 2. Assign currentTime to item.
-            // 3. Advance currentTime by Interval + Jitter.
-
-            // Ensure currentTime respects Daily Start/End
-            // Helper to parsing HH:mm
-            const getMinutes = (timeStr: string) => {
-                const [h, m] = timeStr.split(':').map(Number)
-                return (h || 0) * 60 + (m || 0)
-            }
-
-            // Default active hours if not set (or user removed them?)
-            // Schedule prop from CampaignWizard uses `startTime`/`endTime` strings (HH:mm).
-            // But `SchedulePreviewProps.schedule` definition in snippet 1704 is:
-            // interval, runAt, days.
-            // It misses startTime/endTime!
-            // I need to update interface too?
-            // The `schedule` prop passed from CampaignWizard is `formData.schedule`.
-            // `formData.schedule` HAS startTime/endTime.
-            // So `(schedule as any).startTime` is accessible.
-            const dailyStart = (schedule as any).startTime ? getMinutes((schedule as any).startTime) : 9 * 60
-            const dailyEnd = (schedule as any).endTime ? getMinutes((schedule as any).endTime) : 21 * 60
-
-            // Function to ensure time is valid
-            const ensureValidTime = (date: Date): Date => {
-                let d = new Date(date)
-                let currentMins = d.getHours() * 60 + d.getMinutes()
-
-                // If before dailyStart, move to dailyStart same day
-                if (currentMins < dailyStart) {
-                    d.setHours(Math.floor(dailyStart / 60), dailyStart % 60, 0, 0)
-                }
-                // If after dailyEnd, move to tomorrow dailyStart
-                else if (currentMins >= dailyEnd) {
-                    d.setDate(d.getDate() + 1)
-                    d.setHours(Math.floor(dailyStart / 60), dailyStart % 60, 0, 0)
-                    // Recurse to ensure tomorrow is a valid Day? (Active Days logic)
-                    // For simplicity, assumed daily.
-                }
-                return d
-            }
-
-            currentTime = ensureValidTime(currentTime)
-            const itemTime = new Date(currentTime)
-
-            // Calculate next time
+            // 2. Advance Cursor for NEXT item based on NATURAL time
+            // This ensures that moving Item A doesn't ripple and shift Item B, C, D...
             let duration = step * 60000
+            const hasJitter = (schedule as any).jitter
             if (hasJitter) {
-                // Random factor: 0.5 to 1.5
-                const factor = 0.5 + Math.random()
-                duration = duration * factor
+                const variation = (Math.random() * 0.4) - 0.2 // +/- 20%
+                duration = duration * (1 + variation)
             }
-            currentTime = new Date(currentTime.getTime() + duration)
+
+            // The cursor advances from the NATURAL time of this slot, 
+            // completely ignoring any manual override on this specific item.
+            cursorTime = new Date(naturalTime.getTime() + duration)
 
             return { ...item, time: itemTime }
         })
+
+        // Final Step: Sort by time to ensure visual timeline consistency
+        updated.sort((a, b) => a.time.getTime() - b.time.getTime())
+
         setItems(updated)
-        // Notify parent of the plan (simplified)
+        // Notify parent 
         onScheduleChange?.(updated)
     }
 
     // Handlers
-    const handleStartTimeChange = (val: string) => {
-        // val is datetime-local string: YYYY-MM-DDTHH:mm
-        const newStart = new Date(val)
-        if (!isNaN(newStart.getTime())) {
-            setStartTime(newStart)
-            recalculateTimes(items, newStart, interval)
+    const handleStartTimeChange = (date: Date | null) => {
+        if (date && !isNaN(date.getTime())) {
+            setStartTime(date)
+            onStartTimeChange?.(date)
+
+            // Fix: Unfix first item so it accepts the new global start time
+            // Otherwise, if it was manually edited, it would stick to the old time/date.
+            const newItems = [...items]
+            if (newItems.length > 0) {
+                (newItems[0] as any).isFixed = false
+            }
+
+            recalculateTimes(newItems, date, interval)
         }
     }
 
-    const handleIntervalChange = (val: number) => {
+    const handleIntervalChange = (valInput: string | number) => {
+        if (valInput === '') {
+            // @ts-ignore
+            setInterval('')
+            return
+        }
+        const val = Number(valInput)
         const newInterval = Math.max(1, val)
         setInterval(newInterval)
         recalculateTimes(items, startTime, newInterval)
@@ -233,24 +271,31 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
     // Actually, simpler logic: manual edit updates that item. If we re-sort, it might snap back.
     // Let's stick to "Sequence Driven" for reliability. Manual edit of #1 shifts #1, and #2 shifts to #1 + interval?
     // Let's implement: Shift Start Time if #1 is changed.
-    const handleManualTimeChange = (index: number, timeStr: string) => {
-        // timeStr is HH:mm. We assume same day.
-        const [h, m] = timeStr.split(':').map(Number)
-        const newItemTime = new Date(items[index].time)
-        newItemTime.setHours(h, m)
+    // Manual Time Edit
+    const handleManualTimeChange = (index: number, date: Date | null) => {
+        if (!date || isNaN(date.getTime())) return
 
-        // If index is 0, we treat it as changing start time
-        if (index === 0) {
-            setStartTime(newItemTime)
-            recalculateTimes(items, newItemTime, interval)
-        } else {
-            // For other items, we just update purely locally? Or do we shift the "Base" for subsequent?
-            // Let's just update strictly.
-            const newItems = [...items]
-            newItems[index] = { ...newItems[index], time: newItemTime }
-            setItems(newItems)
-            onScheduleChange?.(newItems)
+        // Update items list
+        const newItems = [...items]
+        newItems[index] = {
+            ...newItems[index],
+            time: date,
+            isFixed: true // Mark as manually fixed
         }
+
+        // If index 0, we also update the global Start Time state for consistency
+        // Note: With sorting, index 0 might change, so this triggers a sort which might move this item.
+        if (index === 0) {
+            setStartTime(date)
+        }
+
+        // Trigger recalculation with the fixed item
+        recalculateTimes(newItems, startTime, interval)
+    }
+
+    // Toggle description
+    const toggleExpand = (id: string) => {
+        setExpandedItems(prev => ({ ...prev, [id]: !prev[id] }))
     }
 
     // Group items by Date label
@@ -274,6 +319,7 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
 
     // Format local date for input
     const toLocalISO = (d: Date) => {
+        if (!d || isNaN(d.getTime())) return ''
         const pad = (n: number) => n < 10 ? '0' + n : n
         return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
     }
@@ -283,12 +329,14 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'end', marginBottom: '20px', background: 'var(--bg-secondary)', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-primary)' }}>
                 <div>
                     <label style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Campaign Start Time</label>
-                    <input
-                        type="datetime-local"
-                        value={toLocalISO(startTime)}
-                        onChange={(e) => handleStartTimeChange(e.target.value)}
+                    <DatePicker
+                        selected={startTime}
+                        onChange={handleStartTimeChange}
+                        showTimeSelect timeIntervals={15}
+                        dateFormat="yyyy-MM-dd HH:mm" timeFormat="HH:mm"
+                        minDate={new Date()}
                         className="form-control"
-                        style={{ fontSize: '13px', padding: '6px 10px', width: '200px' }}
+                        wrapperClassName="datepicker-wrapper"
                     />
                 </div>
                 <div>
@@ -298,7 +346,7 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                             type="number"
                             min="1"
                             value={interval}
-                            onChange={(e) => handleIntervalChange(Number(e.target.value))}
+                            onChange={(e) => handleIntervalChange(e.target.value)}
                             className="form-control"
                             style={{ width: '80px', padding: '6px' }}
                         />
@@ -335,24 +383,31 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                                     }}
                                 >
                                     {/* Drag Handle & Time */}
-                                    <div style={{ minWidth: '80px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', paddingTop: '4px' }}>
+                                    <div style={{ minWidth: '140px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', paddingTop: '4px' }}>
                                         <div style={{ color: 'var(--text-muted)', fontSize: '20px', lineHeight: '10px' }}>⋮⋮</div>
-                                        <input
-                                            type="time"
-                                            value={item.time.toTimeString().slice(0, 5)}
-                                            onChange={(e) => handleManualTimeChange(index, e.target.value)}
-                                            className="no-drag"
-                                            style={{
-                                                background: 'var(--bg-input)', border: '1px solid var(--border-primary)',
-                                                color: 'var(--text-primary)', borderRadius: '4px', padding: '2px 4px',
-                                                fontSize: '12px', width: '70px', textAlign: 'center'
-                                            }}
-                                            onClick={(e) => e.stopPropagation()} // Prevent drag start on input
+                                        <DatePicker
+                                            selected={item.time}
+                                            onChange={(date: Date | null) => handleManualTimeChange(index, date)}
+                                            showTimeSelect timeIntervals={15}
+                                            dateFormat="MM/dd HH:mm" timeFormat="HH:mm"
+                                            className="form-control"
+                                            // @ts-ignore
+                                            onKeyDown={(e) => e.stopPropagation()} // Allow typing without triggering drag
+                                            onClickOutside={(e) => { }}
+                                            popperPlacement="right"
+                                            customInput={
+                                                <input style={{
+                                                    background: 'var(--bg-input)', border: '1px solid var(--border-primary)',
+                                                    color: 'var(--text-primary)', borderRadius: '4px', padding: '4px 8px',
+                                                    fontSize: '12px', width: '120px', textAlign: 'center', cursor: 'pointer'
+                                                }} />
+                                            }
                                         />
+                                        {item.isFixed && <span style={{ fontSize: '10px', color: 'var(--accent-primary)' }}>Fixed</span>}
                                     </div>
 
                                     {/* Content */}
-                                    <div style={{ flex: 1 }}>
+                                    <div style={{ flex: 1, minWidth: 0 }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
                                             <span style={{ fontSize: '16px' }}>{item.icon}</span>
                                             <span style={{ fontWeight: 600, fontSize: '14px' }}>{item.label}</span>
@@ -361,19 +416,71 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                                             </span>
                                         </div>
 
-                                        <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                                            {item.detail}
-                                        </div>
-
-                                        {/* Video Preview (Mini) */}
+                                        {/* Video Info Display (Unified Style) */}
                                         {item.video && (
-                                            <div style={{ marginTop: '8px', display: 'flex', gap: '10px', alignItems: 'center', background: 'rgba(0,0,0,0.2)', padding: '6px', borderRadius: '6px' }}>
-                                                {item.video.thumbnail && (
-                                                    <img src={item.video.thumbnail} style={{ width: '40px', height: '40px', objectFit: 'cover', borderRadius: '4px' }} />
-                                                )}
-                                                <div style={{ fontSize: '11px', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '300px' }}>
-                                                    {item.video.url}
+                                            <div style={{
+                                                marginTop: '4px',
+                                                display: 'flex',
+                                                gap: '12px',
+                                                background: 'var(--bg-secondary)',
+                                                border: '1px solid var(--border-primary)',
+                                                borderRadius: '6px',
+                                                padding: '8px'
+                                            }}>
+                                                {/* Mini Thumbnail with Stats Overlay */}
+                                                <div style={{ position: 'relative', width: '60px', height: '80px', flexShrink: 0, borderRadius: '4px', overflow: 'hidden' }}>
+                                                    {item.video.thumbnail ? (
+                                                        <img src={item.video.thumbnail} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                                    ) : (
+                                                        <div style={{ width: '100%', height: '100%', background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🎬</div>
+                                                    )}
+                                                    {/* Stats Overlay */}
+                                                    <div style={{
+                                                        position: 'absolute', bottom: 0, left: 0, width: '100%',
+                                                        background: 'linear-gradient(to top, rgba(0,0,0,0.9), transparent)',
+                                                        padding: '4px 2px', display: 'flex', justifyContent: 'center', gap: '4px'
+                                                    }}>
+                                                        <span style={{ fontSize: '9px', color: '#fff' }}>👁️ {item.video.stats?.views ? (typeof item.video.stats.views === 'number' ? (item.video.stats.views > 1000 ? (item.video.stats.views / 1000).toFixed(1) + 'K' : item.video.stats.views) : item.video.stats.views) : '0'}</span>
+                                                    </div>
                                                 </div>
+
+                                                {/* Right: Description & Details */}
+                                                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                                    {/* Description */}
+                                                    {(item.video.description || item.detail) && (
+                                                        <div style={{ fontSize: '12px', color: 'var(--text-primary)', lineHeight: '1.3' }}>
+                                                            {expandedItems[item.id] ? (
+                                                                <span>{item.video.description || item.detail}</span>
+                                                            ) : (
+                                                                <span>{(item.video.description || item.detail).substring(0, 80)}{(item.video.description || item.detail).length > 80 ? '...' : ''}</span>
+                                                            )}
+                                                            {(item.video.description || item.detail).length > 80 && (
+                                                                <span
+                                                                    onClick={(e) => { e.stopPropagation(); toggleExpand(item.id) }}
+                                                                    style={{ color: 'var(--accent-primary)', cursor: 'pointer', marginLeft: '6px', fontSize: '11px' }}
+                                                                >
+                                                                    {expandedItems[item.id] ? '(less)' : '(more)'}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    )}
+
+                                                    {/* Stats 2 (Likes) & URL */}
+                                                    <div style={{ marginTop: 'auto', display: 'flex', alignItems: 'center', gap: '10px', fontSize: '11px', color: 'var(--text-muted)' }}>
+                                                        <span style={{ color: '#ff2c55', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                                                            ❤️ {item.video.stats?.likes ? (typeof item.video.stats.likes === 'number' ? (item.video.stats.likes > 1000 ? (item.video.stats.likes / 1000).toFixed(1) + 'K' : item.video.stats.likes) : item.video.stats.likes) : '0'}
+                                                        </span>
+                                                        <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                            {item.video.url}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {!item.video && (
+                                            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                                {item.detail}
                                             </div>
                                         )}
                                     </div>

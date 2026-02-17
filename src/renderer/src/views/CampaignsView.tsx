@@ -53,7 +53,8 @@ export const CampaignsView: React.FC = () => {
                 postOrder: data.postOrder || 'newest',
                 editPipeline: data.editPipeline,
                 targetAccounts: data.targetAccounts,
-                schedule: data.schedule
+                schedule: data.schedule,
+                executionOrder: data.executionOrder // Pass manual schedule to backend
             }
 
             // @ts-ignore

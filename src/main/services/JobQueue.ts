@@ -13,6 +13,30 @@ class JobQueue {
     async start() {
         if (this.intervalId) return
         console.log('JobQueue started')
+
+        // Resume/Reschedule Logic for Missed Jobs
+        try {
+            console.log('Checking for missed scheduled jobs...')
+            const missedJobs = storageService.getAll(`
+                SELECT id, scheduled_for FROM jobs 
+                WHERE status = 'pending' 
+                AND scheduled_for < datetime('now', '-5 minutes')
+            `)
+
+            if (missedJobs.length > 0) {
+                console.log(`Found ${missedJobs.length} missed jobs. Rescheduling to now...`)
+                const now = new Date()
+                // Stagger them slightly if needed, but for now just set to Now
+                // The processQueue loop will pick them up in order
+                for (const job of missedJobs) {
+                    // Update to current time so they get picked up immediately
+                    storageService.run("UPDATE jobs SET scheduled_for = ? WHERE id = ?", [now.toISOString(), job.id])
+                }
+            }
+        } catch (e) {
+            console.error('Failed to resume missed jobs:', e)
+        }
+
         this.intervalId = setInterval(() => this.processQueue(), this.POLL_INTERVAL)
     }
 
@@ -36,13 +60,16 @@ class JobQueue {
 
             // Get next pending job that is scheduled for now or earlier
             // Prioritize by scheduled time (urgency) then creation (FIFO)
+            // Fix: Use JS ISO string for comparison to match stored format 'YYYY-MM-DDTHH:mm:ss.sssZ'
+            // SQLite 'datetime("now")' returns 'YYYY-MM-DD HH:mm:ss' (space instead of T), causing comparison failure.
+            const nowIso = new Date().toISOString()
             const job = storageService.get(`
                 SELECT * FROM jobs 
                 WHERE status = 'pending' 
-                AND (scheduled_for IS NULL OR scheduled_for <= datetime('now'))
+                AND (scheduled_for IS NULL OR scheduled_for <= ?)
                 ORDER BY scheduled_for ASC, created_at ASC 
                 LIMIT 1
-            `)
+            `, [nowIso])
 
             if (job) {
                 console.log(`JobQueue: Processing ${job.type} job #${job.id}`)
@@ -193,6 +220,7 @@ class JobQueue {
                 continue
             }
 
+            console.log(`[DEBUG_DESC] handleScan: Creating DOWNLOAD job for ${v.id}. Desc: "${v.desc || v.description}"`);
             storageService.run(
                 `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'DOWNLOAD', 'pending', ?, ?)`,
                 [
@@ -207,6 +235,7 @@ class JobQueue {
                         thumbnail: v.thumbnail || v.cover || '',
                         videoStats: v.stats || { views: 0, likes: 0 },
                         editPipeline: data.editPipeline,
+                        advancedVerification: data.advancedVerification,
                         status: `Queued: Download`
                     })
                 ]
@@ -225,7 +254,7 @@ class JobQueue {
         this.updateJobData(job.id, { ...data, status: 'Downloading video...' })
 
         // 1. Download video
-        const { filePath, cached } = await tiktok.downloadVideo(data.url, data.platform_id)
+        const { filePath, cached, meta } = await tiktok.downloadVideo(data.url, data.platform_id)
 
         if (cached) {
             this.updateJobData(job.id, { ...data, status: 'Video already cached. Skipping download.' })
@@ -250,15 +279,41 @@ class JobQueue {
             }
         }
 
-        // 3. Update video record
-        const video = storageService.get("SELECT id FROM videos WHERE platform_id = ?", [data.platform_id])
+        // 3. Update video record (including valid caption from library)
+        const video = storageService.get("SELECT id, metadata, description FROM videos WHERE platform_id = ?", [data.platform_id])
         if (video) {
+            let dbMeta = {}
+            try { dbMeta = JSON.parse(video.metadata || '{}') } catch (e) { }
+
+            // Merge new metadata if available
+            if (meta) {
+                if (meta.description) {
+                    const oldDesc = video.description || ''
+                    const newDesc = meta.description
+                    // Update if different, OR if old description was likely a placeholder
+                    const isPlaceholder = oldDesc === 'No description' || oldDesc === ''
+
+                    console.log(`[DEBUG_DESC] Metadata update check for video ${video.id}:`, { old: oldDesc, new: newDesc, isPlaceholder })
+
+                    if (newDesc && (newDesc !== oldDesc || isPlaceholder)) {
+                        console.log(`[DEBUG_DESC] Updating video caption in DB.`)
+                        storageService.run("UPDATE videos SET description = ? WHERE id = ?", [newDesc, video.id])
+                        data.description = newDesc
+                    }
+                }
+                if (meta.author) {
+                    dbMeta = { ...dbMeta, author: meta.author }
+                    storageService.run("UPDATE videos SET metadata = ? WHERE id = ?", [JSON.stringify(dbMeta), video.id])
+                }
+            }
+
             storageService.run("UPDATE videos SET local_path = ?, status = 'downloaded' WHERE id = ?", [finalPath, video.id])
         }
 
         // 4. Create PUBLISH job with video info
         if (data.targetAccounts && data.targetAccounts.length > 0) {
             this.updateJobData(job.id, { ...data, status: 'Scheduling publication...' })
+            console.log(`[DEBUG_DESC] Creating PUBLISH jobs with caption: "${data.description}"`)
             for (const accId of data.targetAccounts) {
                 // Get account info for display
                 const acc = storageService.get('SELECT username, display_name FROM publish_accounts WHERE id = ?', [accId])
@@ -275,6 +330,7 @@ class JobQueue {
                             caption: data.description || '',
                             thumbnail: data.thumbnail || '',
                             videoStats: data.videoStats || {},
+                            advancedVerification: data.advancedVerification,
                             status: 'Queued: Publish'
                         })
                     ]
@@ -287,7 +343,7 @@ class JobQueue {
     }
 
     private async handlePublish(job: any, data: any, tiktok: TikTokModule) {
-        const { video_path, account_id, caption, account_name } = data
+        let { video_path, account_id, caption, account_name } = data
 
         this.updateJobData(job.id, { ...data, status: `Publishing to @${account_name || 'account'}...` })
 
@@ -306,6 +362,17 @@ class JobQueue {
         // 3. Publish using TikTok module with Progress Callback
         this.updateJobData(job.id, { ...data, status: `Initializing upload...` })
 
+        // Final Fallback for empty caption
+        if (!caption || caption === 'No description') {
+            const videoRec = storageService.get("SELECT description FROM videos WHERE platform_id = ?", [data.video_id || data.platform_id])
+            if (videoRec && videoRec.description && videoRec.description !== 'No description') {
+                console.log(`[DEBUG_DESC] Publish job caption was empty, using fallback from DB: "${videoRec.description}"`)
+                caption = videoRec.description
+            }
+        }
+
+        console.log(`[DEBUG_DESC] calling tiktok.publishVideo with caption: "${caption}"`)
+
         const result = await tiktok.publishVideo(
             video_path,
             caption || '',
@@ -318,6 +385,29 @@ class JobQueue {
 
         if (!result.success) {
             throw new Error(result.error || 'Upload failed (unknown error)')
+        }
+
+        // Handle Partial Success (Uploaded but Verification Failed)
+        if (!result.videoId) {
+            console.warn(`[JobQueue] Published but unverified (No ID).`)
+            this.updateJobData(job.id, { ...data, status: `Published (Unverified - Check manually)` })
+
+            // Mark as published anyway since we confirmed the "Post" success message
+            if (data.platform_id) {
+                storageService.run("UPDATE videos SET status = 'published' WHERE platform_id = ?", [data.platform_id])
+            }
+
+            // Store result without ID
+            storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [
+                JSON.stringify({
+                    account: account_name,
+                    video_path,
+                    published_at: new Date().toISOString(),
+                    warning: 'Verification failed'
+                }),
+                job.id
+            ])
+            return;
         }
 
         if (result.isReviewing && result.videoId) {

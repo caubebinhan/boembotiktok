@@ -119,6 +119,12 @@ app.whenReady().then(async () => {
             if (tiktok) return tiktok.removeAllVideos()
         })
 
+        ipcMain.handle('tiktok:refresh-stats', async (_event: any, videoId: string, username: string) => {
+            const tiktok = moduleManager.getModule('tiktok') as TikTokModule
+            if (tiktok) return tiktok.refreshVideoStats(videoId, username)
+            return null
+        })
+
         // Campaigns & Jobs IPC
         ipcMain.handle('create-campaign', async (_event: any, name: string, type: string, cron: string, config: any) => {
             return campaignService.create(name, type, cron, config)

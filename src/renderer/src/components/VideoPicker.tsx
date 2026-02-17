@@ -165,10 +165,16 @@ export const VideoPicker: React.FC<VideoPickerProps> = ({ mode = 'standalone', o
                             if (videoEl) thumbSrc = videoEl.poster;
                         }
 
+                        // Description: Prioritize img alt text, then title. 
+                        // Avoid link.innerText because it contains stats (e.g. "2516 視聴済み")
+                        const description = (img && img.alt) ? img.alt : (link.title || '');
+                        // Log inside webview (will show in webview devtools if open)
+                        console.log('[DEBUG_DESC] Scanned ' + idMatch[1] + ' - Desc: ' + description.substring(0, 30));
+
                         results.push({
                             id: idMatch[1],
                             url: link.href,
-                            description: link.title || link.innerText?.slice(0, 80).replace(/\\n/g, ' ') || 'No description',
+                            description: description || 'No description',
                             thumbnail: thumbSrc || '', 
                             stats: {
                                 views: viewsText || '0',
@@ -192,11 +198,14 @@ export const VideoPicker: React.FC<VideoPickerProps> = ({ mode = 'standalone', o
             const existingIds: string[] = await window.api.invoke('check-videos', ids)
             const existingSet = new Set(existingIds)
 
-            const mapped = results.map((v: any) => ({
-                ...v,
-                exists: existingSet.has(v.id),
-                selected: !existingSet.has(v.id)
-            }))
+            const mapped = results.map((v: any) => {
+                console.log(`[DEBUG_DESC] Scanned video ${v.id}. Desc: "${v.description.substring(0, 50)}..."`);
+                return {
+                    ...v,
+                    exists: existingSet.has(v.id),
+                    selected: !existingSet.has(v.id)
+                }
+            })
 
             // Highlight in webview
             await webview.executeJavaScript(`
