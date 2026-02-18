@@ -5,9 +5,10 @@ interface Props {
     campaign: any
     onRunNow: () => void
     onRefresh: () => void
+    isRunning?: boolean
 }
 
-export const CampaignHeader: React.FC<Props> = ({ campaign, onRunNow, onRefresh }) => {
+export const CampaignHeader: React.FC<Props> = ({ campaign, onRunNow, onRefresh, isRunning }) => {
     if (!campaign) return null
 
     return (
@@ -56,11 +57,28 @@ export const CampaignHeader: React.FC<Props> = ({ campaign, onRunNow, onRefresh 
                 <button className="btn btn-secondary">
                     ⚙️ Settings
                 </button>
-                <button className="btn btn-primary" onClick={onRunNow} style={{
-                    background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
-                    boxShadow: '0 4px 12px rgba(37, 99, 235, 0.3)'
-                }}>
-                    ▶ Run Now
+                <button
+                    className="btn btn-primary"
+                    onClick={onRunNow}
+                    disabled={isRunning}
+                    style={{
+                        background: isRunning ? 'var(--bg-tertiary)' : 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                        boxShadow: isRunning ? 'none' : '0 4px 12px rgba(37, 99, 235, 0.3)',
+                        opacity: isRunning ? 0.7 : 1,
+                        cursor: isRunning ? 'not-allowed' : 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                    }}
+                >
+                    {isRunning ? (
+                        <>
+                            <div className="spinner" style={{ width: '14px', height: '14px', borderWidth: '2px' }} />
+                            Running...
+                        </>
+                    ) : (
+                        <>▶ Run Now</>
+                    )}
                 </button>
             </div>
         </header>

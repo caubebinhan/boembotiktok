@@ -656,7 +656,7 @@ export class TikTokModule implements PlatformModule {
         return { description }
     }
 
-    async publishVideo(filePath: string, caption: string, cookies?: any[], onProgress?: (msg: string) => void, options?: { advancedVerification?: boolean }): Promise<{ success: boolean, videoUrl?: string, error?: string, videoId?: string, isReviewing?: boolean, warning?: string, debugArtifacts?: { screenshot?: string, html?: string } }> {
+    async publishVideo(filePath: string, caption: string, cookies?: any[], onProgress?: (msg: string) => void, options?: { advancedVerification?: boolean; username?: string }): Promise<{ success: boolean, videoUrl?: string, error?: string, videoId?: string, isReviewing?: boolean, warning?: string, debugArtifacts?: { screenshot?: string, html?: string, logs?: string[] } }> {
         // Generate unique hashtag for verification ONLY if requested
         const useUniqueTag = options?.advancedVerification || false
         const uniqueTag = '#' + Math.random().toString(36).substring(2, 8);
@@ -706,6 +706,12 @@ export class TikTokModule implements PlatformModule {
                     'svg[data-icon="close"]', 'div[role="dialog"] button[aria-label="Close"]',
                     '[data-e2e="modal-close-inner-button"]', '[data-e2e="modal-close-button"]',
                     'div[role="dialog"] button:first-child', // Risky but often close button is first
+                    // Cookie Banner Specifics
+                    '.tiktok-cookie-setting-modal-close',
+                    'button:has-text("Decline all")', 'button:has-text("Accept all")',
+                    'button:has-text("Từ chối tất cả")', 'button:has-text("Chấp nhận tất cả")',
+                    'button:has-text("Allow all cookies")', 'button:has-text("Decline")',
+                    'div[classList*="cookie"] button'
                 ]
 
                 // Add debug dump if it gets stuck
@@ -1226,6 +1232,8 @@ export class TikTokModule implements PlatformModule {
             let videoId: string | undefined
             let isReviewing = false
             let isSuccess = false
+            let isPublished = false
+            let debugArtifacts: { screenshot?: string, html?: string, logs?: string[] } | undefined
 
             // Define helper locally for Fallback Profile Scan
             const extractProfileVideo = async () => {
@@ -1242,7 +1250,22 @@ export class TikTokModule implements PlatformModule {
                 return undefined
             }
 
-            // 1. Wait for Verification Success Message (UI)
+            // 5. Wait for "View Profile" or "Manage your posts" or Timeout
+            const successSelectors = [
+                'div:has-text("Manage your posts")',
+                'div:has-text("View Profile")',
+                'div:has-text("Upload complete")',
+                'div:has-text("Video uploaded")',
+                'span:has-text("Posts (Created on)")', // Dashboard table header
+                'div[data-tt="components_PostTable_Container"]', // Dashboard table container
+                // Vietnamese
+                'div:has-text("Quản lý bài đăng")',
+                'div:has-text("Xem hồ sơ")',
+                'div:has-text("Đã tải lên video")',
+                'div:has-text("Tải lên hoàn tất")'
+            ]
+
+
             for (let i = 0; i < 120; i++) { // Increase wait to 2 minutes max
                 if (page.isClosed()) throw new Error('Browser page closed unexpectedly during verification')
                 try { await page.waitForTimeout(1000) } catch (e) { break }
@@ -1257,232 +1280,227 @@ export class TikTokModule implements PlatformModule {
                     }
                 } catch { }
 
-                // Check for Success
+                // Check for Success (Text or Dashboard)
+                for (const selector of successSelectors) {
+                    if (await page.$(selector).catch(() => null)) {
+                        console.log(`✅ Publication verified found: ${selector}`)
+                        isPublished = true
+                        break
+                    }
+                }
+
+                // ─── Structural Modal Check (Exclusion Logic) ───
+                // Principle: Any visible modal that is NOT a success message is a Violation/Error.
+                // Action: Fail Immediately.
                 try {
-                    const successSelectors = [
-                        'text="Manage your posts"', 'text="Quản lý bài đăng"',
-                        'text="Your video has been published"', 'text="Video của bạn đã được đăng"',
-                        'text="Video published"',
-                        'text="Upload another video"', 'text="Tải video khác lên"'
-                    ]
-                    for (const sel of successSelectors) {
-                        const el = await page!.$(sel)
-                        if (el && await el.isVisible()) {
-                            console.log(`  ✅ Success confirmed: ${sel}`)
-                            if (onProgress) onProgress('Uploaded! Verifying status...')
-                            isSuccess = true
-                            break
+                    const dialogs = page.locator('div[role="dialog"], div[class*="modal"], div[class*="dialog-content"], div[class*="TUXModal"]');
+                    const count = await dialogs.count();
+
+                    for (let d = 0; d < count; d++) {
+                        const dialog = dialogs.nth(d);
+                        if (await dialog.isVisible()) {
+                            const text = (await dialog.innerText()) || '';
+                            const cleanText = text.replace(/\n+/g, ' ').trim();
+
+                            // 1. Is this a SUCCESS modal?
+                            const isSuccessModal = successSelectors.some(s => {
+                                // Extract simple text from selector for matching
+                                const keyMatch = s.match(/"([^"]+)"/);
+                                const key = keyMatch ? keyMatch[1] : '';
+                                return key && cleanText.includes(key);
+                            });
+
+                            if (isSuccessModal) {
+                                console.log(`✅ Success detected via Generic Modal: ${cleanText.substring(0, 50)}...`)
+                                isPublished = true
+                                break;
+                            }
+
+                            // 2. FAIL FAST: Valid text + Not Success = Violation
+                            if (!isPublished && cleanText.length > 5) {
+                                console.log(`❌ Structural Error Detected (Blocking via Modal): ${cleanText.substring(0, 100)}...`);
+
+                                // Dump artifacts
+                                const errorTime = Date.now()
+                                const debugDir = path.join(app.getPath('userData'), 'debug_artifacts')
+                                await fs.ensureDir(debugDir)
+                                const screenshotPath = path.join(debugDir, `violation_modal_${errorTime}.png`)
+                                const htmlPath = path.join(debugDir, `violation_modal_${errorTime}.html`)
+
+                                await page.screenshot({ path: screenshotPath, fullPage: true }).catch(e => console.error('Screenshot failed:', e))
+                                await fs.writeFile(htmlPath, await page.content()).catch(e => console.error('HTML dump failed:', e))
+
+                                debugArtifacts = {
+                                    screenshot: screenshotPath,
+                                    html: htmlPath,
+                                    logs: [`Violation Text: ${cleanText}`]
+                                }
+
+                                // Throw immediately to fail the job (No retry loop)
+                                return {
+                                    success: false,
+                                    error: `TikTok Violation Caught: ${cleanText.substring(0, 200)}`,
+                                    debugArtifacts
+                                }
+                            }
                         }
                     }
-                } catch { }
+                } catch (e) { /* Ignore locator errors */ }
 
-                if (isSuccess) break
+                if (isPublished) break
 
-                // Check errors
-                try {
-                    for (const errSel of ['text="Failed to post"', 'text="failed to post"', 'text="Đăng không thành công"', 'text="Không thể đăng"']) {
-                        const errEl = await page!.$(errSel)
-                        if (errEl && await errEl.isVisible()) throw new Error('TikTok reported: Failed to post video')
-                    }
-                } catch (e: any) {
-                    if (e.message?.includes('TikTok reported')) throw e
-                }
             }
+            // End of polling loop
 
-            if (!isSuccess) {
+            if (!isPublished) {
+                // DUMP ON TIMEOUT
+                const ts = Date.now()
+                const debugDir = path.join(app.getPath('userData'), 'debug_artifacts')
+                await fs.ensureDir(debugDir)
+                const screenshotPath = path.join(debugDir, `timeout_error_${ts}.png`)
+                const htmlPath = path.join(debugDir, `timeout_error_${ts}.html`)
+
+                await page.screenshot({ path: screenshotPath })
+                await fs.writeFile(htmlPath, await page.content())
+
+                console.error(`❌ Upload timed out. Artifacts saved: ${screenshotPath}`)
+
                 throw new Error('Upload timed out or success message not found.')
             }
 
-            // 2. Strict Verification via Content Dashboard (JSON)
+            // 2. Strict Verification via Content Dashboard (JSON + UI)
             console.log('  🎉 UI Success detected. Navigating to Content Dashboard for Status Check...')
             if (onProgress) onProgress('Checking video status...')
 
             try {
-                await page!.goto('https://www.tiktok.com/tiktokstudio/content', { waitUntil: 'domcontentloaded' })
+                // 2. Strict Verification via Content Dashboard (Network + UI)
+                console.log('  🎉 UI Success detected. Navigating to Content Dashboard for Status Check...')
+                if (onProgress) onProgress('Checking video status...')
 
-                // Retry loop for JSON data availability (5 attempts, ~30s total)
-                for (let check = 1; check <= 5; check++) {
-                    console.log(`  🕵️‍♂️ Status Check Attempt ${check}/5...`)
-                    if (page.isClosed()) throw new Error('Browser page closed unexpectedly during status check')
-                    try { await page.waitForTimeout(5000) } catch (e) { break } // Wait for data load
+                try {
+                    const dashboardUrl = 'https://www.tiktok.com/tiktokstudio/content';
 
-                    const videoStatus = await page!.evaluate(({ tag, useUniqueTag, startTime }) => {
+                    // Setup Network Listener
+                    let apiResponseData: any = null;
+                    const responseHandler = async (response: Response) => {
                         try {
-                            const script = document.getElementById('__Creator_Center_Context__');
-                            if (!script || !script.textContent) return { error: 'No Context Script Found' };
+                            if (response.url().includes('tiktokstudio/content/list')) {
+                                console.log('  📡 Intercepted content list API:', response.url());
+                                try {
+                                    const json = await response.json();
+                                    if (json?.data?.post_list) {
+                                        apiResponseData = json.data.post_list;
+                                    }
+                                } catch (e) { console.warn('  ⚠️ Failed to parse API JSON', e) }
+                            }
+                        } catch { }
+                    };
+                    page.on('response', responseHandler);
 
-                            const data = JSON.parse(script.textContent);
-                            const itemList = data?.uploadUserProfile?.firstBatchQueryItems?.item_list || [];
-                            const user = data?.uploadUserProfile?.user;
+                    await page!.goto(dashboardUrl, { waitUntil: 'domcontentloaded' })
 
-                            // DEBUG: Log first 3 items for diagnosis
-                            const debugLog: any[] = [];
-                            itemList.slice(0, 3).forEach((v: any) => {
-                                debugLog.push({
-                                    id: v.item_id,
-                                    desc: v.desc ? v.desc.substring(0, 20) : 'No Desc',
-                                    create_time: v.create_time,
-                                    diff: v.create_time ? parseInt(v.create_time) - startTime : 'N/A'
-                                });
-                            });
+                    // Retry loop for Data availability (5 attempts, ~30s total)
+                    for (let check = 1; check <= 5; check++) {
+                        console.log(`  🕵️‍♂️ Status Check Attempt ${check}/5...`)
+                        if (page.isClosed()) throw new Error('Browser page closed unexpectedly during status check')
 
-                            const match = itemList.find((v: any) => {
-                                // 1. Unique Tag Match (Strongest)
-                                if (useUniqueTag && tag && v.desc && v.desc.includes(tag)) return true;
+                        // Wait for either API response or DOM load
+                        try { await page.waitForTimeout(5000) } catch (e) { break }
 
-                                // 2. Time Match (Fallback)
-                                if (!useUniqueTag && v.create_time) {
-                                    const createTime = parseInt(v.create_time);
-                                    // Check if video created after upload started (minus 60s buffer)
-                                    // And not too far in future (plus 15 mins)
-                                    if (createTime >= (startTime - 60) && createTime <= (startTime + 900)) return true;
-                                }
+                        // 2a. Check Intercepted API Data (Primary)
+                        if (apiResponseData && apiResponseData.length > 0) {
+                            const match = apiResponseData.find((v: any) => {
+                                // Match logic
+                                if (useUniqueTag && uniqueTag && v.desc && v.desc.includes(uniqueTag)) return true;
+                                // Match by creation time (within last 15 mins)
+                                // v.create_time is usually seconds
+                                const createTime = parseInt(v.create_time);
+                                const nowSeconds = Math.floor(Date.now() / 1000);
+                                if (createTime >= (nowSeconds - 900)) return true; // Last 15 mins
+
                                 return false;
-                            });
+                            }) || apiResponseData[0]; // Default to first if valid
 
-                            if (!match) return { error: 'No Match Found', debugLog };
+                            if (match) {
+                                const vId = match.item_id;
+                                const vDesc = match.desc;
+                                const vPrivacy = match.privacy_level; // 1=public
+                                const vStatus = match.status; // 10=reviewing?
 
+                                // Construct URL
+                                // We need uniqueId for URL, usually in dashboard we are logged in so maybe we can get it from storage or page
+                                // For now, construct partial or try to get username
+                                let finalUrl = undefined;
+                                try {
+                                    // Try to get username from page if not known
+                                    const u = await page.evaluate(() => (window as any)._tiktok_user_unique_id || document.querySelector('header a')?.getAttribute('href')?.replace('/', '')?.replace('@', ''));
+                                    const uname = u || options?.username || 'user';
+                                    finalUrl = `https://www.tiktok.com/@${uname}/video/${vId}`;
+                                } catch { }
+
+                                const isReview = (vPrivacy !== 1) || (vStatus !== 1); // Logic may vary
+                                console.log(`  ✅ Match via API: ${vId} | Review: ${isReview}`);
+
+                                page.off('response', responseHandler); // Cleanup
+
+                                return {
+                                    success: true,
+                                    videoId: vId,
+                                    videoUrl: finalUrl,
+                                    isReviewing: isReview
+                                };
+                            }
+                        }
+
+                        // 2b. Attempt UI Table Extraction (Fallback)
+                        const uiStatus = await page!.evaluate(() => {
+                            const rows = Array.from(document.querySelectorAll('div[data-e2e="recent-post-item"], div[class*="PostItem-"], tr'));
+                            if (rows.length > 0) {
+                                const topRow = rows[0] as HTMLElement;
+                                const text = topRow.innerText;
+                                const linkEl = topRow.querySelector('a[href*="/video/"]');
+                                const href = linkEl ? linkEl.getAttribute('href') : null;
+                                const idMatch = href ? href.match(/\/video\/(\d+)/) : null;
+                                const isReviewing = text.includes('Under review') || text.includes('Processing') || text.includes('Đang xét duyệt');
+                                return {
+                                    id: idMatch ? idMatch[1] : null,
+                                    url: href || undefined,
+                                    isReviewing
+                                };
+                            }
+                            return null;
+                        });
+
+                        if (uiStatus && uiStatus.id) {
+                            console.log(`  ✅ Match via UI: ${uiStatus.id}`);
+                            page.off('response', responseHandler);
                             return {
-                                id: match.item_id,
-                                desc: match.desc,
-                                privacy_level: match.privacy_level, // 1=Public
-                                status: match.status, // 102=Public? 
-                                uniqueId: user?.unique_id,
-                                createTime: match.create_time
+                                success: true,
+                                videoId: uiStatus.id,
+                                videoUrl: uiStatus.url,
+                                isReviewing: uiStatus.isReviewing
                             };
-                        } catch (e: any) { return { error: e.message }; }
-                    }, { tag: uniqueTag, useUniqueTag, startTime: uploadStartTime });
-
-                    if (videoStatus && !videoStatus.error) {
-                        console.log(`  ✅ Video Match Found: ${videoStatus.id}`)
-                        console.log(`     Status: ${videoStatus.status}, Privacy: ${videoStatus.privacy_level}`)
-
-                        videoId = videoStatus.id
-                        videoUrl = `https://www.tiktok.com/@${videoStatus.uniqueId}/video/${videoStatus.id}`
-
-                        // Determine if Reviewing
-                        // privacy_level: 1 = Public, 2 = Friends, 4 = Private/OnlyMe
-                        // If it's NOT Public (1), treat as Reviewing (or Private)
-                        if (videoStatus.privacy_level === 1) {
-                            console.log('  🟢 Video is PUBLIC.')
-                            isReviewing = false
-                        } else {
-                            console.log('  🟡 Video is UNDER REVIEW / PRIVATE.')
-                            isReviewing = true
                         }
-                        break;
-                    } else {
-                        console.log(`  Other Status: ${JSON.stringify(videoStatus)}`)
-                        if (videoStatus && videoStatus.debugLog) {
-                            console.log('  🔍 Debug Log (Top 3 items):', JSON.stringify(videoStatus.debugLog, null, 2));
-                        }
-                        console.log('  🔄 Reloading page locally...')
-                        await page!.reload({ waitUntil: 'domcontentloaded' })
+
+                        console.log('  Status check not ready, expecting data...');
                     }
+                    page.off('response', responseHandler);
+                } catch (e: any) {
+                    console.error('Error during Content Dashboard check:', e)
+                    // Dump HTML for debugging
+                    try {
+                        const ts = Date.now();
+                        const debugDir = path.join(app.getPath('userData'), 'debug_artifacts');
+                        await fs.ensureDir(debugDir);
+                        await fs.writeFile(path.join(debugDir, `dashboard_fail_${ts}.html`), await page.content());
+                        console.log(`  📸 Dumped dashboard HTML to dashboard_fail_${ts}.html`);
+                    } catch { }
                 }
 
-                // If loop finishes without return, dump HTML
-                console.log('  ❌ Verification failed after retries. Dumping HTML...');
-                const dumpPath = path.join(app.getPath('userData'), `debug_verification_fail_${Date.now()}.html`);
-                const content = await page!.content();
-                await fs.writeFile(dumpPath, content);
-                console.log(`  📄 HTML Dump saved to: ${dumpPath}`);
-
+                // Return failure/partial if we reached here
+                return { success: true, warning: 'Verification failed - Check Dashboard manually', isReviewing: true };
             } catch (e: any) {
                 console.error('Error during Content Dashboard check:', e)
-                // Dump on error as well
-                try {
-                    const dumpPath = path.join(app.getPath('userData'), `debug_error_dump_${Date.now()}.html`);
-                    const content = await page!.content();
-                    await fs.writeFile(dumpPath, content);
-                    console.log(`  📄 Error Dump saved to: ${dumpPath}`);
-                } catch { }
-            }
-
-            // 3. Fallback: Profile Scan (only if Dashboard failed)
-            if (!videoUrl) {
-                console.warn('  ⚠️ Dashboard check failed. Falling back to Profile Scan (Caption Match)...')
-                if (onProgress) onProgress('Fallback: Scanning profile for new video...')
-
-                try {
-                    await page!.goto('https://www.tiktok.com/@profile', { waitUntil: 'domcontentloaded' })
-
-                    for (let attempt = 0; attempt < 5; attempt++) {
-                        console.log(`  Scanning profile (Attempt ${attempt + 1}/5)...`)
-
-                        // Extract first few videos with their descriptions
-                        const candidates = await page!.evaluate(() => {
-                            const items = Array.from(document.querySelectorAll('[data-e2e="user-post-item"]'));
-                            return items.slice(0, 5).map(item => {
-                                const link = item.querySelector('a')?.getAttribute('href');
-                                const img = item.querySelector('img');
-                                const desc = img?.getAttribute('alt') || ''; // TikTok often puts desc in alt
-                                return { link, desc };
-                            });
-                        });
-
-                        // console.log('  Candidates:', JSON.stringify(candidates));
-
-                        // Find match by Caption
-                        const match = candidates.find(c => {
-                            if (!c.link || !c.link.includes('/video/')) return false;
-                            // 1. Direct Caption Match (if we have a caption)
-                            if (caption && c.desc && c.desc.includes(caption.substring(0, 20))) return true;
-                            // 2. If no caption provided, assume the newest one (first one) is ours 
-                            //    BUT only if we are confident (e.g. valid link)
-                            if (!caption && candidates.indexOf(c) === 0) return true;
-                            return false;
-                        });
-
-                        if (match && match.link) {
-                            videoUrl = match.link;
-                            const idMatch = videoUrl.match(/\/video\/(\d+)/);
-                            if (idMatch) videoId = idMatch[1];
-                            console.log(`  ✅ Found video via profile (Caption Match): ${videoUrl}`);
-
-                            // Verify status directly
-                            try {
-                                console.log('  🕵️‍♂️ Verifying status of found video...');
-                                await page!.goto(videoUrl, { waitUntil: 'domcontentloaded' });
-                                await page!.waitForTimeout(2000);
-
-                                // Check for "Private" or "Reviewing" indicators
-                                const isPrivate = await page!.evaluate(() => {
-                                    const privacyLabel = document.body.innerText;
-                                    return privacyLabel.includes('Private video') ||
-                                        privacyLabel.includes('Only you can see this post') ||
-                                        privacyLabel.includes('Post under review') ||
-                                        privacyLabel.includes('video is being processed') ||
-                                        privacyLabel.includes('Content under review') ||
-                                        // Vietnamese
-                                        privacyLabel.includes('Đang xét duyệt') ||
-                                        privacyLabel.includes('Cần xem xét') ||
-                                        // Japanese
-                                        privacyLabel.includes('審査中') ||
-                                        privacyLabel.includes('処理中') ||
-                                        privacyLabel.includes('公開範囲: 自分のみ');
-                                });
-
-                                if (isPrivate) {
-                                    console.log('  🟡 Video is UNDER REVIEW / PRIVATE.');
-                                    isReviewing = true;
-                                } else {
-                                    console.log('  🟢 Video appears PUBLIC.');
-                                    isReviewing = false;
-                                }
-                            } catch (e) {
-                                console.warn('  ⚠️ Could not verify status page:', e);
-                                isReviewing = true; // Assume reviewing to be safe and trigger polling
-                            }
-                            break;
-                        }
-
-                        if (attempt < 4) {
-                            await page!.waitForTimeout(3000);
-                            await page!.reload({ waitUntil: 'domcontentloaded' });
-                        }
-                    }
-                } catch (e) { console.warn('  ⚠️ Profile scan fallback failed:', e) }
             }
 
             if (!videoUrl) {

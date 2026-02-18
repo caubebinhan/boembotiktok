@@ -18,6 +18,7 @@ export interface CampaignConfig {
     targetAccounts: string[]
     schedule: any
     advancedVerification?: boolean
+    autoSchedule?: boolean
 }
 
 class CampaignService {
@@ -32,6 +33,8 @@ class CampaignService {
             (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.type = 'DOWNLOAD' AND j.status = 'completed') as downloaded_count,
             (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.status LIKE 'Failed%') as failed_count,
             (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.status = 'skipped') as skipped_count,
+            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.status = 'paused') as paused_count,
+            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.status = 'missed') as missed_count,
             (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.created_at > datetime('now', '-1 day')) as total_recent
             FROM campaigns c 
             ORDER BY c.created_at DESC

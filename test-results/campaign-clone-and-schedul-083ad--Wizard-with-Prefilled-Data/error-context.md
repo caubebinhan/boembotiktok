@@ -1,0 +1,82 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]: B
+    - generic "Campaigns" [ref=e6] [cursor=pointer]:
+      - generic [ref=e8]: 📢
+      - generic [ref=e9]: Campaigns
+    - generic "Accounts" [ref=e10] [cursor=pointer]:
+      - generic [ref=e11]: 👤
+      - generic [ref=e12]: Accounts
+    - generic "Resources" [ref=e13] [cursor=pointer]:
+      - generic [ref=e14]: 📦
+      - generic [ref=e15]: Resources
+    - generic "Schedule" [ref=e16] [cursor=pointer]:
+      - generic [ref=e17]: 📅
+      - generic [ref=e18]: Schedule
+    - generic "Statistics" [ref=e19] [cursor=pointer]:
+      - generic [ref=e20]: 📊
+      - generic [ref=e21]: Statistics
+    - generic "Settings" [ref=e22] [cursor=pointer]:
+      - generic [ref=e23]: ⚙️
+      - generic [ref=e24]: Settings
+  - generic [ref=e26]:
+    - generic [ref=e27]:
+      - generic [ref=e28]:
+        - heading "Campaigns" [level=1] [ref=e29]
+        - paragraph [ref=e30]: Manage your automated content pipelines
+      - generic [ref=e31]:
+        - button "🛠️ Simulate & Verify" [ref=e32] [cursor=pointer]
+        - button "🔍 Scanner Tool" [ref=e33] [cursor=pointer]
+        - button "+ New Campaign" [ref=e34] [cursor=pointer]
+    - generic [ref=e35]:
+      - button "📁 All Campaigns" [ref=e36]
+      - button "📅 Today's Schedule" [ref=e37]
+    - generic [ref=e39]:
+      - generic [ref=e40]:
+        - generic [ref=e41]:
+          - text: All Campaigns
+          - generic [ref=e42]: (2)
+        - button "+ New" [ref=e43] [cursor=pointer]
+      - generic [ref=e44]:
+        - generic [ref=e45] [cursor=pointer]:
+          - generic [ref=e46]:
+            - generic [ref=e47]: To Be Cloned
+            - generic [ref=e48]: ● Active
+          - generic [ref=e49]:
+            - generic [ref=e50]: 📋 New Items
+            - generic [ref=e51]: 📅 Every 30m
+          - generic [ref=e52]:
+            - generic "Queued Videos" [ref=e53]: "Queued: 0"
+            - generic [ref=e54]: "|"
+            - generic "Downloaded Videos" [ref=e55]: "Downloaded: 0"
+            - generic [ref=e56]: "|"
+            - generic "Published Videos" [ref=e57]: "Published: 0"
+          - generic [ref=e59]:
+            - button "View Details →" [ref=e60]
+            - button "▶ Run" [ref=e61]
+            - button "👯" [ref=e62]
+            - button "🗑️" [ref=e63]
+        - generic [ref=e64] [cursor=pointer]:
+          - generic [ref=e65]:
+            - generic [ref=e66]: ff (Copy) (Copy) (Copy) (Copy) (Copy) (Copy) (Copy) (Copy) (Copy)
+            - generic [ref=e67]: ○ Paused
+          - generic [ref=e68]:
+            - generic [ref=e69]: 📋 New Items
+            - generic [ref=e70]: 📅 Every 60m
+          - generic [ref=e71]:
+            - generic "Queued Videos" [ref=e72]: "Queued: 0"
+            - generic [ref=e73]: "|"
+            - generic "Downloaded Videos" [ref=e74]: "Downloaded: 1"
+            - generic [ref=e75]: "|"
+            - generic "Published Videos" [ref=e76]: "Published: 0"
+            - generic [ref=e77]: "|"
+            - generic "Failed Jobs" [ref=e78]: "Failed: 1"
+          - generic [ref=e80]:
+            - button "View Details →" [ref=e81]
+            - button "▶ Run" [ref=e82]
+            - button "👯" [ref=e83]
+            - button "🗑️" [ref=e84]
+```

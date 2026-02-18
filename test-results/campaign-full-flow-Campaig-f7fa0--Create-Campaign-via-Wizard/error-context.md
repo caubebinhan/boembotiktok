@@ -1,0 +1,119 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: B
+      - generic "Campaigns" [ref=e6] [cursor=pointer]:
+        - generic [ref=e8]: 📢
+        - generic [ref=e9]: Campaigns
+      - generic "Accounts" [ref=e10] [cursor=pointer]:
+        - generic [ref=e11]: 👤
+        - generic [ref=e12]: Accounts
+      - generic "Resources" [ref=e13] [cursor=pointer]:
+        - generic [ref=e14]: 📦
+        - generic [ref=e15]: Resources
+      - generic "Schedule" [ref=e16] [cursor=pointer]:
+        - generic [ref=e17]: 📅
+        - generic [ref=e18]: Schedule
+      - generic "Statistics" [ref=e19] [cursor=pointer]:
+        - generic [ref=e20]: 📊
+        - generic [ref=e21]: Statistics
+      - generic "Settings" [ref=e22] [cursor=pointer]:
+        - generic [ref=e23]: ⚙️
+        - generic [ref=e24]: Settings
+    - generic [ref=e26]:
+      - generic [ref=e27]:
+        - generic [ref=e28]:
+          - heading "Campaigns" [level=1] [ref=e29]
+          - paragraph [ref=e30]: Manage your automated content pipelines
+        - generic [ref=e31]:
+          - button "🛠️ Simulate & Verify" [ref=e32] [cursor=pointer]
+          - button "🔍 Scanner Tool" [ref=e33] [cursor=pointer]
+          - button "+ New Campaign" [ref=e34] [cursor=pointer]
+      - generic [ref=e35]:
+        - button "📁 All Campaigns" [ref=e36]
+        - button "📅 Today's Schedule" [ref=e37]
+      - generic [ref=e39]:
+        - generic [ref=e40]:
+          - generic [ref=e41]:
+            - text: All Campaigns
+            - generic [ref=e42]: (0)
+          - button "+ New" [ref=e43] [cursor=pointer]
+        - generic [ref=e45]:
+          - generic [ref=e46]: 📢
+          - generic [ref=e47]:
+            - text: No campaigns yet.
+            - text: Create your first campaign to start automating.
+          - button "+ Create Campaign" [ref=e48] [cursor=pointer]
+  - generic [ref=e50]:
+    - generic [ref=e51]:
+      - generic [ref=e52]:
+        - generic [ref=e53]: 📝
+        - generic [ref=e54]: Details
+      - generic [ref=e56]:
+        - generic [ref=e57]: 📡
+        - generic [ref=e58]: Source
+      - generic [ref=e60]:
+        - generic [ref=e61]: ✂️
+        - generic [ref=e62]: Editor
+      - generic [ref=e64]:
+        - generic [ref=e65]: 🎯
+        - generic [ref=e66]: Target
+    - generic [ref=e68]:
+      - 'heading "Step 1: Campaign Details & Schedule" [level=3] [ref=e69]'
+      - generic [ref=e71]:
+        - generic [ref=e72]: Campaign Name
+        - textbox "e.g. Morning Motivation" [ref=e73]: E2E Test Campaign 1771397231568
+      - generic [ref=e74]:
+        - text: Type
+        - generic [ref=e75]:
+          - generic [ref=e76] [cursor=pointer]:
+            - radio "One-Time Run Run once at a scheduled time" [checked] [active] [ref=e77]
+            - generic [ref=e78]:
+              - strong [ref=e79]: One-Time Run
+              - generic [ref=e80]: Run once at a scheduled time
+          - generic [ref=e81] [cursor=pointer]:
+            - radio "Scheduled (Recurring) Run automatically on schedule" [ref=e82]
+            - generic [ref=e83]:
+              - strong [ref=e84]: Scheduled (Recurring)
+              - generic [ref=e85]: Run automatically on schedule
+      - generic [ref=e87] [cursor=pointer]:
+        - 'checkbox "Advanced Verification (Unique Tag) Appends a unique 6-char tag to caption to 100% match the published video. Default: Off (Checks by recent upload time)" [ref=e88]'
+        - generic [ref=e89]:
+          - generic [ref=e90]: Advanced Verification (Unique Tag)
+          - generic [ref=e91]:
+            - text: Appends a unique 6-char tag to caption to 100% match the published video.
+            - text: "Default: Off (Checks by recent upload time)"
+      - generic [ref=e92]:
+        - heading "📝 Caption Template" [level=4] [ref=e93]
+        - paragraph [ref=e94]: Customize the caption for published videos. Leave empty to use the original description.
+        - generic [ref=e95]:
+          - button "Original Desc" [ref=e96] [cursor=pointer]
+          - button "No Hashtags" [ref=e97] [cursor=pointer]
+          - button "Time (HH:mm)" [ref=e98] [cursor=pointer]
+          - button "Date (YYYY-MM-DD)" [ref=e99] [cursor=pointer]
+          - button "Author" [ref=e100] [cursor=pointer]
+          - button "Tags" [ref=e101] [cursor=pointer]
+        - 'textbox "e.g. {original} - Reposted from {author} at {time} #fyp" [ref=e102]'
+      - generic [ref=e103]:
+        - heading "⏰ Start Time" [level=4] [ref=e104]
+        - generic [ref=e105]:
+          - generic [ref=e106] [cursor=pointer]:
+            - radio "🚀 Run Immediately Start processing right after saving" [ref=e107]
+            - generic [ref=e108]:
+              - strong [ref=e109]: 🚀 Run Immediately
+              - generic [ref=e110]: Start processing right after saving
+          - generic [ref=e111] [cursor=pointer]:
+            - radio "📅 Schedule Start Pick a specific date & time" [checked] [ref=e112]
+            - generic [ref=e113]:
+              - strong [ref=e114]: 📅 Schedule Start
+              - generic [ref=e115]: Pick a specific date & time
+        - generic [ref=e116]:
+          - text: First Run Time
+          - textbox "Select start time" [ref=e120]: 2026-02-18 15:48
+    - generic [ref=e121]:
+      - button "Cancel" [ref=e122] [cursor=pointer]
+      - button "Next →" [ref=e124] [cursor=pointer]
+```

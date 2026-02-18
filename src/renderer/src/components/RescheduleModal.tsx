@@ -1,89 +1,157 @@
-import React from 'react'
-import { X, Play, Trash2, AlertTriangle, RefreshCw } from 'lucide-react'
+import React, { useState, useEffect } from 'react'
+import { AlertTriangle, Play, Save, X } from 'lucide-react'
+import { SchedulePreview, TimelineItem } from './SchedulePreview'
 
 interface Job {
     id: number
     type: string
     scheduled_for: string
     data_json: string
+    campaign_id: number
 }
 
 interface RescheduleModalProps {
     missedJobs: Job[]
-    onResume: (rescheduleIds: number[]) => void
-    onDiscard: () => void // Just close, effectively discarding processing for now (or maybe clearing them?)
+    onResume: (rescheduleItems: { id: number, scheduled_for: string }[]) => void
+    onDiscard: () => void
 }
 
-// For now, "Resume" means "Reschedule to NOW and process"
-// "Discard" might need a backend handler to set them to 'failed' or 'cancelled'?
-// Actually, if we just Resume, the backend logic handles them.
-// If we want to skip them, we should probably have a way to cancel them.
-
 export const RescheduleModal: React.FC<RescheduleModalProps> = ({ missedJobs, onResume, onDiscard }) => {
-    if (missedJobs.length === 0) return null
+    const [jobs, setJobs] = useState<Job[]>([])
+    const [previewItems, setPreviewItems] = useState<TimelineItem[]>([])
+    const [scheduleConfig, setScheduleConfig] = useState<any>({
+        interval: 15,
+        startTime: new Date().toTimeString().slice(0, 5)
+    })
 
-    const handleResumeAll = () => {
-        onResume(missedJobs.map(j => j.id))
+    useEffect(() => {
+        if (missedJobs.length > 0) {
+            setJobs(missedJobs)
+            // Convert to TimelineItems
+            const items: TimelineItem[] = missedJobs.map(job => {
+                const data = JSON.parse(job.data_json || '{}')
+                return {
+                    id: String(job.id),
+                    time: new Date(), // Default to NOW for rescheduling
+                    type: job.type === 'PUBLISH' ? 'post' : 'scan',
+                    label: job.type === 'PUBLISH' ? `Post to @${data.account_name || '?'}` : `Scan ${data.source || 'Sources'}`,
+                    detail: data.caption || data.description || 'No description',
+                    icon: job.type === 'PUBLISH' ? '🎬' : '🔍',
+                    video: {
+                        id: data.platform_id,
+                        thumbnail: data.thumbnail,
+                        url: data.video_path,
+                        stats: data.videoStats
+                    },
+                    isFixed: false // Allow auto-layout initially
+                }
+            })
+            setPreviewItems(items)
+        }
+    }, [missedJobs])
+
+    const handleScheduleChange = (updatedItems: TimelineItem[]) => {
+        setPreviewItems(updatedItems)
     }
+
+    const handleConfirm = () => {
+        // Map back to { id, scheduled_for }
+        const updates = previewItems.map(item => ({
+            id: Number(item.id),
+            scheduled_for: item.time.toISOString()
+        }))
+        onResume(updates)
+    }
+
+    if (jobs.length === 0) return null
 
     return (
         <div style={{
             position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-            backgroundColor: 'rgba(0,0,0,0.8)', zIndex: 9999,
+            backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 9999,
             display: 'flex', alignItems: 'center', justifyContent: 'center'
         }}>
             <div style={{
-                background: '#1e1e1e', padding: '24px', borderRadius: '12px',
-                width: '500px', maxWidth: '90%', border: '1px solid #333',
-                boxShadow: '0 20px 50px rgba(0,0,0,0.5)'
+                background: '#1e1e1e', padding: '0', borderRadius: '12px',
+                width: '900px', maxWidth: '95vw', height: '85vh',
+                border: '1px solid #333', display: 'flex', flexDirection: 'column',
+                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)'
             }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px', color: '#f59e0b' }}>
-                    <AlertTriangle size={24} />
-                    <h2 style={{ margin: 0, fontSize: '1.2rem', color: '#fff' }}>Application Crash Detected</h2>
-                </div>
-
-                <p style={{ color: '#aaa', marginBottom: '20px', lineHeight: '1.5' }}>
-                    The application seems to have closed unexpectedly while <strong>{missedJobs.length} jobs</strong> were scheduled.
-                    Would you like to resume them now?
-                </p>
-
+                {/* Header */}
                 <div style={{
-                    maxHeight: '200px', overflowY: 'auto', background: '#111',
-                    borderRadius: '8px', padding: '10px', marginBottom: '20px',
-                    border: '1px solid #333'
+                    padding: '20px', borderBottom: '1px solid #333',
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    background: 'rgba(245, 158, 11, 0.1)'
                 }}>
-                    {missedJobs.map(job => (
-                        <div key={job.id} style={{
-                            display: 'flex', justifyContent: 'space-between',
-                            padding: '8px', borderBottom: '1px solid #222', fontSize: '0.9rem'
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <div style={{
+                            background: '#f59e0b', color: '#000', padding: '8px',
+                            borderRadius: '50%', display: 'flex'
                         }}>
-                            <span style={{ color: '#fff' }}>[{job.type}] Job #{job.id}</span>
-                            <span style={{ color: '#666' }}>{new Date(job.scheduled_for).toLocaleString()}</span>
+                            <AlertTriangle size={20} />
                         </div>
-                    ))}
+                        <div>
+                            <h2 style={{ margin: 0, fontSize: '1.2rem', color: '#fff' }}>Missed Jobs Detected</h2>
+                            <p style={{ margin: '4px 0 0', fontSize: '0.9rem', color: '#ccc' }}>
+                                The app closed unexpectedly with <strong>{jobs.length} pending jobs</strong>. Please reschedule them below.
+                            </p>
+                        </div>
+                    </div>
                 </div>
 
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+                {/* Body - Schedule Preview */}
+                <div style={{ flex: 1, overflow: 'hidden', padding: '20px', display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ marginBottom: '10px', color: '#888', fontSize: '0.9rem' }}>
+                        Adjust the timeline below. Jobs are set to resume from NOW by default.
+                    </div>
+
+                    <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #333', borderRadius: '8px', background: '#111' }}>
+                        <SchedulePreview
+                            sources={[]} // Not needed for pure rescheduling
+                            savedVideos={[]} // Not needed
+                            schedule={{
+                                interval: 15,
+                                days: [],
+                                runAt: new Date().toISOString()
+                            }}
+                            initialItems={previewItems}
+                            onScheduleChange={handleScheduleChange}
+                        />
+                    </div>
+                </div>
+
+                {/* Footer */}
+                <div style={{
+                    padding: '20px', borderTop: '1px solid #333',
+                    display: 'flex', justifyContent: 'flex-end', gap: '12px',
+                    background: '#252525'
+                }}>
                     <button
                         onClick={onDiscard}
                         style={{
-                            padding: '8px 16px', background: 'transparent', border: '1px solid #444',
-                            color: '#aaa', borderRadius: '6px', cursor: 'pointer'
+                            padding: '10px 20px', background: 'transparent',
+                            border: '1px solid #555', color: '#aaa',
+                            borderRadius: '6px', cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', gap: '8px'
                         }}
                     >
-                        Ignore (Keep Pending)
+                        <X size={16} />
+                        Discard All
                     </button>
 
                     <button
-                        onClick={handleResumeAll}
+                        onClick={handleConfirm}
                         style={{
-                            padding: '8px 20px', background: '#3b82f6', border: 'none',
-                            color: '#fff', borderRadius: '6px', cursor: 'pointer',
-                            display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 600
+                            padding: '10px 24px', background: '#3b82f6',
+                            border: 'none', color: '#fff',
+                            borderRadius: '6px', cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', gap: '8px',
+                            fontWeight: 600, fontSize: '1rem',
+                            boxShadow: '0 4px 6px rgba(59, 130, 246, 0.3)'
                         }}
                     >
-                        <Play size={16} />
-                        Resume Queue
+                        <Play size={18} />
+                        Reschedule & Run
                     </button>
                 </div>
             </div>

@@ -61,27 +61,64 @@ class JobQueue {
         if (this.interval) return
         console.log('[JobQueue] Starting...')
 
-        // Resume/Reschedule Logic for Missed Jobs
+        // 0. Reset stuck 'running' jobs to 'pending' (crash recovery)
+        try {
+            const resetResult = storageService.run("UPDATE jobs SET status = 'pending' WHERE status = 'running'")
+            if (resetResult.changes > 0) {
+                console.log(`[JobQueue] Reset ${resetResult.changes} stuck 'running' jobs to 'pending'`)
+            }
+        } catch (e) {
+            console.error('[JobQueue] Failed to reset stuck jobs:', e)
+        }
+
+        // 1. Check for missed scheduled jobs (pending and in the past)
         try {
             console.log('[JobQueue] Checking for missed scheduled jobs...')
-            // Check for jobs that are pending and scheduled in the past (more than 1 min ago to be safe)
+            const nowIso = new Date().toISOString()
             const missedJobs = storageService.getAll(`
-                SELECT id, scheduled_for, type FROM jobs 
-                WHERE status = 'pending' 
-                AND scheduled_for < datetime('now', '-1 minute')
-            `)
+                SELECT j.id, j.scheduled_for, j.campaign_id, c.config_json 
+                FROM jobs j
+                JOIN campaigns c ON j.campaign_id = c.id
+                WHERE j.status = 'pending' 
+                AND (j.scheduled_for IS NULL OR j.scheduled_for <= ?)
+                ORDER BY j.scheduled_for ASC
+            `, [nowIso])
+
+            console.log(`[JobQueue] Missed Jobs Check: Found ${missedJobs.length} jobs`)
 
             if (missedJobs.length > 0) {
-                console.log(`[JobQueue] Found ${missedJobs.length} missed jobs. Pausing queue for user action.`)
-                this.isPaused = true
-                // Note: Frontend will query 'job:check-missed' to handle this
+                // Group by Campaign
+                const campaignGroups: Record<number, any[]> = {}
+                missedJobs.forEach(job => {
+                    if (!campaignGroups[job.campaign_id]) campaignGroups[job.campaign_id] = []
+                    campaignGroups[job.campaign_id].push(job)
+                })
+
+                for (const [campId, jobs] of Object.entries(campaignGroups)) {
+                    const id = parseInt(campId)
+                    const config = jobs[0].config_json ? JSON.parse(jobs[0].config_json) : {}
+                    const autoSchedule = config.autoSchedule !== false // Default to true if undefined
+
+                    if (autoSchedule) {
+                        console.log(`[JobQueue] Auto-rescheduling ${jobs.length} jobs for campaign ${id} (Preserving gaps)`)
+                        await this.shiftCampaignSchedule(id)
+                    } else {
+                        console.log(`[JobQueue] Marking ${jobs.length} jobs as 'missed' for campaign ${id} (Manual action required)`)
+                        const ids = jobs.map(j => j.id)
+                        const placeholders = ids.map(() => '?').join(',')
+                        storageService.run(
+                            `UPDATE jobs SET status = 'missed' WHERE id IN (${placeholders})`,
+                            ids
+                        )
+                    }
+                }
             }
         } catch (e) {
             console.error('[JobQueue] Failed to check missed jobs:', e)
         }
 
         this.interval = setInterval(() => this.processQueue(), this.POLL_INTERVAL)
-        console.log('[JobQueue] Started')
+        console.log('[JobQueue] Started. Queue Active:', !this.isPaused)
     }
 
     stop() {
@@ -91,19 +128,110 @@ class JobQueue {
     }
 
     getMissedJobs() {
+        const nowIso = new Date().toISOString()
         return storageService.getAll(`
             SELECT * FROM jobs 
             WHERE status = 'pending' 
-            AND scheduled_for < datetime('now', '-1 minute')
+            AND (scheduled_for IS NULL OR scheduled_for <= ?)
             ORDER BY scheduled_for ASC
-        `)
+        `, [nowIso])
     }
 
-    resumeFromRecovery(rescheduleIds: number[] = []) {
-        console.log('[JobQueue] Resuming from recovery mode')
+    resumeFromRecovery(rescheduleItems: { id: number, scheduled_for: string }[] = []) {
+        console.log(`[JobQueue] Resuming from recovery mode with ${rescheduleItems.length} rescheduled items`)
+
+        // 1. Update rescheduled times
+        for (const item of rescheduleItems) {
+            try {
+                if (item.scheduled_for) {
+                    storageService.run("UPDATE jobs SET scheduled_for = ?, status = 'pending' WHERE id = ?", [item.scheduled_for, item.id])
+                } else {
+                    // If no time provided, just set to pending (run now)
+                    storageService.run("UPDATE jobs SET status = 'pending' WHERE id = ?", [item.id])
+                }
+            } catch (e) {
+                console.error(`[JobQueue] Failed to reschedule job ${item.id}`, e)
+            }
+        }
+
         this.isPaused = false
         // Trigger immediate check
         setImmediate(() => this.processQueue())
+    }
+
+    discardRecovery(jobIds: number[]) {
+        console.log(`[JobQueue] Discarding recovery for ${jobIds.length} jobs (setting to 'paused')`)
+        for (const id of jobIds) {
+            try {
+                storageService.run("UPDATE jobs SET status = 'paused' WHERE id = ?", [id])
+            } catch (e) {
+                console.error(`[JobQueue] Failed to pause job ${id}`, e)
+            }
+        }
+        this.isPaused = false
+        // Trigger immediate check to process other pending jobs
+        setImmediate(() => this.processQueue())
+    }
+
+    async shiftCampaignSchedule(campaignId: number) {
+        // 1. Get all pending/missed jobs ordered by time
+        const jobs = storageService.getAll(
+            `SELECT id, scheduled_for FROM jobs WHERE campaign_id = ? AND status IN ('pending', 'missed') ORDER BY scheduled_for ASC`,
+            [campaignId]
+        )
+
+        if (jobs.length === 0) return
+
+        // 2. Calculate time shift needed
+        // Find the earliest scheduled time
+        const firstJob = jobs[0]
+        const scheduledTime = new Date(firstJob.scheduled_for).getTime()
+        const now = Date.now()
+
+        // If scheduled in future, no shift needed naturally, but if this is called explicitly (e.g. reschedule), we might force it?
+        // Logic: Shift so first job starts NOW (plus small buffer)
+
+        let shiftMs = now - scheduledTime
+        if (shiftMs < 0) shiftMs = 0 // Don't shift backwards if already in future?
+
+        // Add 1 minute buffer if we are shifting
+        if (shiftMs > 0) {
+            shiftMs += 1000 * 60
+        }
+
+        console.log(`[JobQueue] Shifting schedule for Campaign ${campaignId} by ${(shiftMs / 1000 / 60).toFixed(2)} mins`)
+
+        if (shiftMs <= 0) return
+
+        // 3. Update all jobs
+        const updates = jobs.map(j => {
+            const oldTime = new Date(j.scheduled_for).getTime()
+            const newTime = new Date(oldTime + shiftMs).toISOString()
+            return { id: j.id, scheduled_for: newTime }
+        })
+
+        // Batch update
+        try {
+            // Use storageService.run in a loop since we don't have transaction exposed
+            updates.forEach(u => {
+                storageService.run("UPDATE jobs SET scheduled_for = ?, status = 'pending' WHERE id = ?", [u.scheduled_for, u.id])
+            })
+        } catch (e) {
+            console.error('[JobQueue] Failed to shift schedule:', e)
+        }
+    }
+
+    async rescheduleMissedJobs(campaignId: number) {
+        console.log(`[JobQueue] Rescheduling missed jobs for campaign ${campaignId}...`)
+        // Use the shift logic to preserve gaps
+        await this.shiftCampaignSchedule(campaignId)
+
+        // Ensure strictly all 'missed' are set to 'pending' (shiftCampaignSchedule does this for the ones it touches, but just in case)
+        const res = storageService.run(
+            `UPDATE jobs SET status = 'pending' WHERE campaign_id = ? AND status = 'missed'`,
+            [campaignId]
+        )
+        return res.changes
     }
 
     async processQueue() {
@@ -155,17 +283,26 @@ class JobQueue {
             // Initialize module if needed (e.g. browser context)
             if (!tiktok) throw new Error('TikTok module missing')
 
+            let publishResult: any = null
             if (job.type === 'SCAN') {
                 await this.handleScan(job, data, tiktok)
             } else if (job.type === 'DOWNLOAD') {
                 await this.handleDownload(job, data, tiktok)
             } else if (job.type === 'PUBLISH') {
-                await this.handlePublish(job, data, tiktok)
+                publishResult = await this.handlePublish(job, data, tiktok)
             }
 
-            // Mark completed
-            storageService.run("UPDATE jobs SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?", [job.id])
-            console.log(`Job #${job.id} completed`)
+            // Mark completed or uploaded based on result
+            let finalStatus = 'completed'
+            // If it was a publish job and it's reviewing/private, mark as 'uploaded' instead of 'completed'
+            if (job.type === 'PUBLISH' && publishResult && (publishResult.isReviewing || publishResult.warning)) {
+                finalStatus = 'uploaded'
+                console.log(`Job #${job.id} uploaded but under review/verification failed. Status: ${finalStatus}`)
+            } else {
+                console.log(`Job #${job.id} completed`)
+            }
+
+            storageService.run("UPDATE jobs SET status = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?", [finalStatus, job.id])
 
         } catch (error: any) {
             console.error(`Job #${job.id} failed:`, error)
@@ -532,7 +669,7 @@ class JobQueue {
                 log(`Progress: ${msg}`)
                 this.updateJobData(job.id, { ...data, status: msg })
             },
-            { advancedVerification: data.advancedVerification }
+            { advancedVerification: data.advancedVerification, username: data.account_username }
         )
 
         if (!result.success) {
@@ -548,6 +685,7 @@ class JobQueue {
                         account: account_name,
                         error: result.error,
                         debugArtifacts: res.debugArtifacts,
+                        logPath: jobLogPath, // Added log path
                         failed_at: new Date().toISOString()
                     }),
                     job.id
@@ -598,7 +736,8 @@ class JobQueue {
         }
 
         // Store result with video URL & ID
-        storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [
+        // Store result with video URL & ID
+        storageService.run("UPDATE jobs SET result_json = ?, metadata = ? WHERE id = ?", [
             JSON.stringify({
                 account: account_name,
                 video_path,
@@ -606,6 +745,10 @@ class JobQueue {
                 video_id: result.videoId,
                 published_at: new Date().toISOString(),
                 is_reviewing: result.isReviewing
+            }),
+            JSON.stringify({
+                publish_url: result.videoUrl,
+                publish_id: result.videoId
             }),
             job.id
         ])

@@ -104,6 +104,8 @@ export const CampaignsView: React.FC = () => {
         }
     }
 
+    const [processingIds, setProcessingIds] = useState<Set<number>>(new Set())
+
     const handleRun = async (id: number) => {
         const camp = campaigns.find(c => c.id === id)
         const name = camp ? camp.name : 'Campaign'
@@ -111,11 +113,38 @@ export const CampaignsView: React.FC = () => {
         try {
             if (!confirm(`Run "${name}" immediately?`)) return
 
+            // Optimistic UI: Disable button immediately
+            setProcessingIds(prev => new Set(prev).add(id))
+
             // @ts-ignore
-            await window.api.invoke('trigger-campaign', id)
-            loadCampaigns()
+            await window.api.invoke('trigger-campaign', id, true)
+            // Small delay to ensure DB updates are committed
+            await new Promise(resolve => setTimeout(resolve, 500))
+            await loadCampaigns()
         } catch (err) {
             console.error('Failed to run campaign:', err)
+        } finally {
+            setProcessingIds(prev => {
+                const next = new Set(prev)
+                next.delete(id)
+                return next
+            })
+        }
+    }
+
+    const handleReschedule = async (id: number) => {
+        const camp = campaigns.find(c => c.id === id)
+        const name = camp ? camp.name : 'Campaign'
+        if (!confirm(`Reschedule missed jobs for "${name}" to run NOW?`)) return
+
+        try {
+            // @ts-ignore
+            await window.api.invoke('job:reschedule-missed', id)
+            await loadCampaigns()
+            alert('Missed jobs rescheduled successfully!')
+        } catch (err) {
+            console.error('Failed to reschedule:', err)
+            alert('Failed to reschedule jobs.')
         }
     }
 
@@ -194,6 +223,7 @@ export const CampaignsView: React.FC = () => {
                         onDelete={handleDelete}
                         onRun={handleRun}
                         onClone={handleClone}
+                        processingIds={processingIds}
                     />
                 ) : (
                     <TodaySchedule />

@@ -99,6 +99,39 @@ class SchedulerService {
             return { success: false, error: 'No sources or videos configured' }
         }
 
+        // Prevent duplicate runs
+        // Prevent duplicate runs
+        // If it's a manual run (ignoreSchedule=true), we want to pull a pending job forward if one exists.
+        // If it's a scheduled check, we abort if anything is pending or running.
+
+        const runningJob = storageService.get(
+            "SELECT id FROM jobs WHERE campaign_id = ? AND status = 'running' LIMIT 1",
+            [id]
+        )
+        if (runningJob) {
+            console.log(`Scheduler: Campaign ${id} is already RUNNING (Job ${runningJob.id}). Skipping trigger.`)
+            return { success: false, error: 'Campaign is already running', jobId: runningJob.id }
+        }
+
+        const pendingJob = storageService.get(
+            "SELECT id, scheduled_for FROM jobs WHERE campaign_id = ? AND status = 'pending' ORDER BY scheduled_for ASC LIMIT 1",
+            [id]
+        )
+
+        if (pendingJob) {
+            if (ignoreSchedule) {
+                // Manual override: Update the existing pending job to run NOW
+                console.log(`Scheduler: Found pending job ${pendingJob.id} scheduled for ${pendingJob.scheduled_for}. Updating to run NOW due to manual trigger.`)
+                const nowIso = new Date().toISOString()
+                storageService.run("UPDATE jobs SET scheduled_for = ? WHERE id = ?", [nowIso, pendingJob.id])
+                return { success: true, jobId: pendingJob.id, message: 'Existing pending job updated to run now' }
+            } else {
+                // Scheduled check: Just respect the existing pending job
+                console.log(`Scheduler: Campaign ${id} already has a PENDING job (${pendingJob.id}). Skipping new trigger.`)
+                return { success: false, error: 'Campaign already has pending job', jobId: pendingJob.id }
+            }
+        }
+
         const schedule = config.schedule || {}
         const intervalMinutes = parseInt(schedule.interval) || 15
 

@@ -18,6 +18,7 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
     const [activeTab, setActiveTab] = useState<'timeline' | 'published' | 'accounts' | 'logs'>('timeline')
 
     const [stats, setStats] = useState({ queued: 0, preparing: 0, uploading: 0, published: 0, failed: 0, skipped: 0 })
+    const [isProcessing, setIsProcessing] = useState(false)
 
     // Edit Modal State
     const [editingJob, setEditingJob] = useState<any>(null)
@@ -35,12 +36,13 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
                 // Calculate stats
                 const newStats = { queued: 0, preparing: 0, uploading: 0, published: 0, failed: 0, skipped: 0 }
                 j?.forEach(job => {
-                    if (job.status === 'pending') newStats.queued++
-                    if (job.status === 'processing') newStats.preparing++ // Simplified mapping
-                    if (job.status === 'uploading') newStats.uploading++
-                    if (job.status === 'completed') newStats.published++
-                    if (job.status === 'failed') newStats.failed++
-                    if (job.status === 'skipped') newStats.skipped++
+                    const status = job.status?.toLowerCase() || ''
+                    if (status === 'pending') newStats.queued++
+                    if (status === 'processing' || status === 'running' || status === 'preparing') newStats.preparing++
+                    if (status === 'uploading') newStats.uploading++
+                    if (status === 'completed' || status === 'success') newStats.published++
+                    if (status.includes('failed')) newStats.failed++
+                    if (status === 'skipped') newStats.skipped++
                 })
                 setStats(newStats)
 
@@ -60,10 +62,15 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
     // Actions
     const handleRunNow = async () => {
         try {
+            setIsProcessing(true)
             // @ts-ignore
             await window.api.invoke('trigger-campaign', id)
-            loadData()
-        } catch (e) { console.error(e) }
+            // Brief delay to let the backend start create jobs
+            await new Promise(resolve => setTimeout(resolve, 1000))
+            await loadData()
+        } catch (e) { console.error(e) } finally {
+            setIsProcessing(false)
+        }
     }
 
     const handleAction = async (action: string, jobId: number) => {
@@ -124,9 +131,11 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
         return v.status === 'published'
     })
 
+    const isRunning = isProcessing || stats.queued > 0 || stats.preparing > 0 || stats.uploading > 0
+
     return (
         <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
-            <CampaignHeader campaign={campaign} onRunNow={handleRunNow} onRefresh={loadData} />
+            <CampaignHeader campaign={campaign} onRunNow={handleRunNow} onRefresh={loadData} isRunning={isRunning} />
 
             <div style={{ flex: 1, overflowY: 'auto', paddingTop: '24px' }}>
                 <CampaignStats stats={stats} />

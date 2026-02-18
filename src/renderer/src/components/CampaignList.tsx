@@ -10,9 +10,11 @@ interface Props {
     onDelete?: (id: number) => void
     onRun?: (id: number) => void
     onClone?: (id: number) => void
+    onReschedule?: (id: number) => void
+    processingIds?: Set<number>
 }
 
-export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleStatus, onSelect, onDelete, onRun, onClone }) => {
+export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleStatus, onSelect, onDelete, onRun, onClone, onReschedule, processingIds }) => {
     return (
         <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-primary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -40,7 +42,7 @@ export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleSta
                 ) : (
                     campaigns.map(c => {
                         // @ts-ignore
-                        const isRunning = c.pending_count > 0
+                        const isRunning = c.queued_count > 0
                         return (
                             <div key={c.id} style={{
                                 padding: '14px 16px',
@@ -74,6 +76,11 @@ export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleSta
                                     >
                                         {c.status === 'active' ? '● Active' : '○ Paused'}
                                     </span>
+                                    {(c.missed_count || 0) > 0 && (
+                                        <span className="badge badge-error" style={{ marginLeft: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                            ⚠️ Missed ({c.missed_count})
+                                        </span>
+                                    )}
                                 </div>
 
                                 <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: 'var(--text-secondary)' }}>
@@ -105,25 +112,59 @@ export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleSta
                                     )}
                                 </div>
 
+
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
                                     <div style={{ display: 'flex', gap: '8px' }}>
                                         <button className="btn btn-ghost btn-sm" style={{ fontSize: '12px', padding: '4px 8px' }}>
                                             View Details &rarr;
                                         </button>
-                                        {onRun && (
-                                            <button className="btn btn-ghost btn-sm"
-                                                onClick={(e) => { e.stopPropagation(); onRun(c.id) }}
-                                                title="Run Now"
-                                                style={{ padding: '4px 8px', color: 'var(--accent-green)' }}>
-                                                ▶ Run
-                                            </button>
-                                        )}
+
+                                        {(() => {
+                                            const isProcessing = processingIds?.has(c.id);
+                                            const isRunning = isProcessing || (c.queued_count || 0) > 0 || (c.preparing_count || 0) > 0 || (c.uploading_count || 0) > 0;
+
+                                            // DEBUG LOG
+                                            if (isProcessing) console.log(`[CampaignList] Campaign ${c.id} is PROCESSING (local state)`);
+                                            if (isRunning && !isProcessing) console.log(`[CampaignList] Campaign ${c.id} is RUNNING (DB state: queued=${c.queued_count})`);
+
+                                            const hasActivity = (c.published_count || 0) > 0 || (c.paused_count || 0) > 0 || (c.failed_count || 0) > 0;
+                                            const isFinished = !isRunning && hasActivity;
+                                            const hasMissed = (c.missed_count || 0) > 0;
+
+                                            if (hasMissed) {
+                                                return (
+                                                    <button
+                                                        className="btn btn-warning btn-sm"
+                                                        onClick={(e) => { e.stopPropagation(); onReschedule && onReschedule(c.id); }}
+                                                        style={{ padding: '4px 8px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                                                    >
+                                                        📅 Reschedule
+                                                    </button>
+                                                )
+                                            }
+
+                                            if (isRunning) {
+                                                return (
+                                                    <button className="btn btn-secondary btn-sm" disabled style={{ padding: '4px 8px', fontSize: '12px', opacity: 0.7, cursor: 'not-allowed', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                        <div className="spinner" style={{ width: '10px', height: '10px', borderWidth: '1.5px' }} />
+                                                        Running...
+                                                    </button>
+                                                )
+                                            }
+
+                                            return onRun && (
+                                                <button className="btn btn-ghost btn-sm"
+                                                    onClick={(e) => { e.stopPropagation(); onRun(c.id) }}
+                                                    title={isFinished ? "Run Again" : "Run Now"}
+                                                    style={{ padding: '4px 8px', color: isFinished ? 'var(--text-primary)' : 'var(--accent-green)' }}>
+                                                    {isFinished ? '↻ Run Again' : '▶ Run'}
+                                                </button>
+                                            )
+                                        })()}
+
                                         {onClone && (
                                             <button className="btn btn-ghost btn-sm"
-                                                onClick={(e) => {
-                                                    e.stopPropagation()
-                                                    onClone(c.id)
-                                                }}
+                                                onClick={(e) => { e.stopPropagation(); onClone(c.id) }}
                                                 title="Clone Campaign"
                                                 style={{ padding: '4px 8px', color: 'var(--text-secondary)' }}>
                                                 👯
@@ -143,12 +184,6 @@ export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleSta
                                             </button>
                                         )}
                                     </div>
-                                    {isRunning && (
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                            <div className="spinner" style={{ width: '10px', height: '10px', borderWidth: '1.5px' }} />
-                                            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Running...</span>
-                                        </div>
-                                    )}
                                 </div>
                             </div>
                         )

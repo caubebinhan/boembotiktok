@@ -23,32 +23,34 @@ interface SourceEntry {
     sortOrder?: string
 }
 
-interface SourceEntry {
+interface CampaignFormData {
+    id?: number
     name: string
-    type: 'channel' | 'keyword'
-    videoCount?: number
-    maxScanCount?: number
-    minViews?: number
-    minLikes?: number
-    sortOrder?: string
+    type: 'one_time' | 'scheduled'
+    editPipeline: any
+    targetAccounts: string[]
+    captionTemplate: string
+    postOrder: string
+    schedule: {
+        runAt: string
+        interval: number | string
+        startTime: string
+        endTime: string
+        days: string[]
+        jitter: boolean
+    }
+    advancedVerification: boolean
+    autoSchedule: boolean
+    executionOrder: any[]
 }
 
+
 export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave, initialData }) => {
-    // ... (state init code is already there from previous step) ...
-    // BUT I need to match the target content exactly to insert SourceEntry back.
-    // The previous edit replaced the SourceEntry block with just the component definition.
-    // So I need to find the component definition line and insert SourceEntry before it.
-    // Wait, the previous replace OUTPUT shows that I replaced lines 10-48. 
-    // The `SourceEntry` was at lines 15-23.
-    // So it IS GONE.
-    // I need to put it back before `export const CampaignWizard`.
-
-    // Let's use `export const CampaignWizard` as target.
-
+    // ─── State ───────────────────────────────────────────────────
     const [step, setStep] = useState(1)
     const [runNow, setRunNow] = useState(false)
     const [isSaving, setIsSaving] = useState(false)
-    const [formData, setFormData] = useState(() => {
+    const [formData, setFormData] = useState<CampaignFormData>(() => {
         if (initialData) {
             const config = typeof initialData.config_json === 'string' ? JSON.parse(initialData.config_json) : initialData.config_json || {}
             return {
@@ -67,6 +69,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                     jitter: false
                 },
                 advancedVerification: config.advancedVerification || false,
+                autoSchedule: config.autoSchedule !== false,
                 executionOrder: [] as any[]
             }
         }
@@ -86,6 +89,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 jitter: false
             },
             advancedVerification: false,
+            autoSchedule: true,
             executionOrder: [] as any[]
         }
     })
@@ -265,19 +269,22 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         })
     }
 
+    const [dateError, setDateError] = useState<string | null>(null)
+
     const handleNext = () => {
         // Validate Step 1 Schedule (Time check)
         if (step === 1 && !runNow) {
             const runAt = formData.schedule.runAt ? new Date(formData.schedule.runAt) : null
             if (!runAt || isNaN(runAt.getTime())) {
-                alert('Please select a valid start time.')
+                setDateError('Please select a valid start time.')
                 return
             }
             if (runAt.getTime() <= Date.now()) {
-                alert('Start time must be in the future (greater than now).')
+                setDateError('Start time must be in the future.')
                 return
             }
         }
+        setDateError(null)
 
         console.log(`[Wizard] handleNext called. Current step: ${step}, Type: ${formData.type}`);
         if (step === 2 && formData.type === 'one_time') {
@@ -522,19 +529,42 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                                             ...prev,
                                             schedule: { ...prev.schedule, runAt: d.toISOString() }
                                         }))
+                                        setDateError(null) // Clear error on change
                                     }
                                 }}
                                 showTimeSelect timeIntervals={15}
                                 dateFormat="yyyy-MM-dd HH:mm" timeFormat="HH:mm"
                                 minDate={new Date()}
                                 placeholderText="Select start time"
-                                className="form-control"
+                                className={`form-control ${dateError ? 'is-invalid' : ''}`}
                                 wrapperClassName="datepicker-wrapper"
                                 popperPlacement="bottom-start"
                                 // Ensure it doesn't block other inputs
                                 onCalendarOpen={() => { }}
                                 onCalendarClose={() => { }}
                             />
+                            {dateError && (
+                                <div style={{ color: '#ef4444', fontSize: '12px', marginTop: '4px' }}>
+                                    ⚠️ {dateError}
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="form-group" style={{ marginTop: '20px' }}>
+                            <label className="checkbox-container">
+                                <input
+                                    type="checkbox"
+                                    checked={formData.autoSchedule ?? true}
+                                    onChange={e => setFormData({ ...formData, autoSchedule: e.target.checked })}
+                                />
+                                <span className="checkmark"></span>
+                                <span className="label-text">
+                                    Tự động chạy và schedule
+                                    <span style={{ display: 'block', fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                                        (Bỏ check nếu máy bạn không phải VPS hoặc không mở liên tục)
+                                    </span>
+                                </span>
+                            </label>
                         </div>
                     </div>
                 )}
@@ -1060,7 +1090,10 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                         <SchedulePreview
                             sources={sources}
                             savedVideos={savedVideos}
-                            schedule={formData.schedule}
+                            schedule={{
+                                ...formData.schedule,
+                                interval: Number(formData.schedule.interval) || 60
+                            }}
                             initialItems={formData.executionOrder && formData.executionOrder.length > 0 ? formData.executionOrder : undefined}
                             captionTemplate={formData.captionTemplate}
                             onScheduleChange={(items) => setFormData(prev => ({

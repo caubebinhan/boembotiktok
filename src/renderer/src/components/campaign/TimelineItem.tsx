@@ -172,45 +172,81 @@ export const TimelineItem: React.FC<Props> = ({ video, status, downloadJob, publ
                         </div>
                     )}
                     {publishJob && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                            <span style={{ color: publishJob.status === 'completed' ? '#4ade80' : 'var(--text-muted)' }}>
-                                {publishJob.status === 'completed' ? '✓' : '🚀'}
-                            </span>
-                            Publish: {publishJob.status} - {formatDateTime(publishJob.created_at)}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                <span style={{ color: publishJob.status === 'completed' ? '#4ade80' : 'var(--text-muted)' }}>
+                                    {publishJob.status === 'completed' ? '✓' : (publishJob.status === 'failed' ? '❌' : '🚀')}
+                                </span>
+                                Publish: {publishJob.status} - {formatDateTime(publishJob.created_at)}
+                            </div>
 
-                            {/* Debug Artifacts Link */}
-                            {(() => {
-                                try {
-                                    const res = publishJob.result_json ? JSON.parse(publishJob.result_json) : {}
-                                    if (res.debugArtifacts && res.debugArtifacts.screenshot) {
-                                        return (
-                                            <span
-                                                style={{
-                                                    marginLeft: '8px',
-                                                    cursor: 'pointer',
-                                                    color: '#ef4444',
-                                                    textDecoration: 'underline',
-                                                    fontSize: '10px',
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    gap: '4px'
-                                                }}
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    // @ts-ignore
-                                                    if (window.api && window.api.invoke) {
-                                                        // @ts-ignore
-                                                        window.api.invoke('open-path', res.debugArtifacts.screenshot)
-                                                    }
-                                                }}
-                                                title="View Error Screenshot"
-                                            >
-                                                📸 View Error
-                                            </span>
-                                        )
-                                    }
-                                } catch (e) { return null }
-                            })()}
+                            {/* Detailed Error & Screenshot */}
+                            {publishJob.status === 'failed' && (
+                                <div style={{
+                                    background: 'rgba(239, 68, 68, 0.1)',
+                                    border: '1px solid rgba(239, 68, 68, 0.2)',
+                                    borderRadius: '6px',
+                                    padding: '12px',
+                                    marginTop: '4px',
+                                    fontSize: '12px',
+                                    color: '#fca5a5'
+                                }}>
+                                    <div style={{ marginBottom: '8px', fontWeight: 600 }}>Error Details:</div>
+                                    <div style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', maxHeight: '100px', overflowY: 'auto' }}>
+                                        {publishJob.error_message || 'Unknown error occurred'}
+                                    </div>
+
+                                    {/* Debug Artifacts */}
+                                    {(() => {
+                                        try {
+                                            const res = publishJob.result_json ? JSON.parse(publishJob.result_json) : {}
+                                            if (res.debugArtifacts && res.debugArtifacts.screenshot) {
+                                                return (
+                                                    <div style={{ marginTop: '12px' }}>
+                                                        <div style={{ marginBottom: '4px', fontSize: '11px', color: 'var(--text-muted)' }}>Debug Screenshot:</div>
+                                                        <div
+                                                            style={{
+                                                                width: '200px',
+                                                                height: '112px',
+                                                                borderRadius: '4px',
+                                                                border: '1px solid var(--border-primary)',
+                                                                overflow: 'hidden',
+                                                                cursor: 'pointer',
+                                                                position: 'relative',
+                                                                background: '#000'
+                                                            }}
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                // @ts-ignore
+                                                                if (window.api && window.api.invoke) {
+                                                                    // @ts-ignore
+                                                                    window.api.invoke('open-path', res.debugArtifacts.screenshot)
+                                                                }
+                                                            }}
+                                                            title="Click to open image"
+                                                        >
+                                                            {/* We can't easily load local file as src in renderer without protocol, 
+                                                                so for now just a placeholder or try to use `video` protocol if available. 
+                                                                actually, usually electron supports file:// in dev or specific setup. 
+                                                                Let's allow user to open it externally for now as per previous logic, 
+                                                                but maybe show a 'Click to View' box. 
+                                                            */}
+                                                            <div style={{
+                                                                width: '100%', height: '100%',
+                                                                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                                                                background: 'rgba(0,0,0,0.5)', color: '#fff'
+                                                            }}>
+                                                                <span style={{ fontSize: '24px' }}>📸</span>
+                                                                <span style={{ fontSize: '10px', marginTop: '4px' }}>Open Screenshot</span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                )
+                                            }
+                                        } catch (e) { return null }
+                                    })()}
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>

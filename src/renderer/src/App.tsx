@@ -49,9 +49,9 @@ function App(): JSX.Element {
         checkRecovery()
     }, [])
 
-    const handleResumeRecovery = async (ids: number[]) => {
+    const handleResumeRecovery = async (items: { id: number, scheduled_for: string }[]) => {
         try {
-            await (window as any).api.invoke('job:resume-recovery', ids)
+            await (window as any).api.invoke('job:resume-recovery', items)
             setShowRecoveryModal(false)
             // Optional: Show success toast
         } catch (e) {
@@ -86,7 +86,13 @@ function App(): JSX.Element {
                     <RescheduleModal
                         missedJobs={missedJobs}
                         onResume={handleResumeRecovery}
-                        onDiscard={() => setShowRecoveryModal(false)}
+                        onDiscard={async () => {
+                            try {
+                                const ids = missedJobs.map(j => j.id)
+                                await (window as any).api.invoke('job:discard-recovery', ids)
+                                setShowRecoveryModal(false)
+                            } catch (e) { console.error('Discard failed', e) }
+                        }}
                     />
                 )}
             </div>

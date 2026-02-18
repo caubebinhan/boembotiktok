@@ -170,9 +170,36 @@ export const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ camp
 
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
                                 <h3>Active Sources</h3>
-                                <button className="btn btn-primary" onClick={handleRunNow}>
-                                    ▶ Run Now (Scan & Schedule)
-                                </button>
+                                {(() => {
+                                    const activeJobs = jobs.filter(j => j.status === 'running' || j.status === 'pending');
+                                    const isRunning = activeJobs.length > 0;
+                                    // Finished if NONE are running/pending AND at least one is completed OR paused
+                                    // Actually, if we have ANY completed/paused jobs and NO running/pending, we can retry.
+                                    // User wants "Paused" = "Finished".
+                                    const hasFinished = !isRunning && jobs.some(j => j.status === 'completed' || j.status === 'paused');
+
+                                    return (
+                                        <button
+                                            className={`btn ${isRunning ? 'btn-secondary' : 'btn-primary'}`}
+                                            onClick={handleRunNow}
+                                            disabled={isRunning}
+                                            style={{
+                                                opacity: isRunning ? 0.7 : 1,
+                                                cursor: isRunning ? 'not-allowed' : 'pointer',
+                                                display: 'flex', alignItems: 'center', gap: '6px'
+                                            }}
+                                        >
+                                            {isRunning ? (
+                                                <>
+                                                    <div className="spinner" style={{ width: '12px', height: '12px', borderWidth: '2px' }} />
+                                                    Running...
+                                                </>
+                                            ) : (
+                                                hasFinished ? '↻ Run Again' : '▶ Run Now (Scan & Schedule)'
+                                            )}
+                                        </button>
+                                    );
+                                })()}
                             </div>
 
                             {channels.length === 0 && keywords.length === 0 && (
@@ -299,25 +326,40 @@ export const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ camp
                                                     {(() => {
                                                         try {
                                                             const res = JSON.parse(job.result_json || '{}');
+                                                            const metadata = (() => { try { return JSON.parse(job.metadata || '{}') } catch { return {} } })();
+                                                            const viewUrl = metadata.publish_url || res.video_url;
+
                                                             return (
                                                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                                                                     <div>{job.result_json && job.result_json.length > 50 && !res.screenshot_path ? job.result_json.substring(0, 50) + '...' : (job.result_json || '-')}</div>
 
-                                                                    {/* Debug Buttons for Failed Jobs */}
-                                                                    <div style={{ display: 'flex', gap: '5px' }}>
-                                                                        {res.screenshot_path && (
+                                                                    <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
+                                                                        {/* Success Link */}
+                                                                        {viewUrl && (
+                                                                            <button
+                                                                                className="btn-xs btn-emerald"
+                                                                                onClick={() => (window as any).api.invoke('open-external', viewUrl)}
+                                                                                title="View Published Video"
+                                                                                style={{ textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '3px' }}
+                                                                            >
+                                                                                🔗 View Link
+                                                                            </button>
+                                                                        )}
+
+                                                                        {/* Debug Buttons for Failed Jobs */}
+                                                                        {(res.screenshot_path || res?.debugArtifacts?.screenshot) && (
                                                                             <button
                                                                                 className="btn-xs btn-outline"
-                                                                                onClick={() => (window as any).api.invoke('open-path', res.screenshot_path)}
+                                                                                onClick={() => (window as any).api.invoke('open-path', res.screenshot_path || res.debugArtifacts.screenshot)}
                                                                                 title="View Error Screenshot"
                                                                             >
                                                                                 📸 Screenshot
                                                                             </button>
                                                                         )}
-                                                                        {res.html_path && (
+                                                                        {(res.html_path || res?.debugArtifacts?.html) && (
                                                                             <button
                                                                                 className="btn-xs btn-outline"
-                                                                                onClick={() => (window as any).api.invoke('open-path', res.html_path)}
+                                                                                onClick={() => (window as any).api.invoke('open-path', res.html_path || res.debugArtifacts.html)}
                                                                                 title="View HTML Dump"
                                                                             >
                                                                                 📄 Log

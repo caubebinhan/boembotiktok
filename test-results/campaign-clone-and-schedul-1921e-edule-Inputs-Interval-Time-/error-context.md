@@ -1,0 +1,180 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: B
+      - generic "Campaigns" [ref=e6] [cursor=pointer]:
+        - generic [ref=e8]: 📢
+        - generic [ref=e9]: Campaigns
+      - generic "Accounts" [ref=e10] [cursor=pointer]:
+        - generic [ref=e11]: 👤
+        - generic [ref=e12]: Accounts
+      - generic "Resources" [ref=e13] [cursor=pointer]:
+        - generic [ref=e14]: 📦
+        - generic [ref=e15]: Resources
+      - generic "Schedule" [ref=e16] [cursor=pointer]:
+        - generic [ref=e17]: 📅
+        - generic [ref=e18]: Schedule
+      - generic "Statistics" [ref=e19] [cursor=pointer]:
+        - generic [ref=e20]: 📊
+        - generic [ref=e21]: Statistics
+      - generic "Settings" [ref=e22] [cursor=pointer]:
+        - generic [ref=e23]: ⚙️
+        - generic [ref=e24]: Settings
+    - generic [ref=e26]:
+      - generic [ref=e27]:
+        - generic [ref=e28]:
+          - heading "Campaigns" [level=1] [ref=e29]
+          - paragraph [ref=e30]: Manage your automated content pipelines
+        - generic [ref=e31]:
+          - button "🛠️ Simulate & Verify" [ref=e32] [cursor=pointer]
+          - button "🔍 Scanner Tool" [ref=e33] [cursor=pointer]
+          - button "+ New Campaign" [ref=e34] [cursor=pointer]
+      - generic [ref=e35]:
+        - button "📁 All Campaigns" [ref=e36]
+        - button "📅 Today's Schedule" [ref=e37]
+      - generic [ref=e39]:
+        - generic [ref=e40]:
+          - generic [ref=e41]:
+            - text: All Campaigns
+            - generic [ref=e42]: (2)
+          - button "+ New" [ref=e43] [cursor=pointer]
+        - generic [ref=e44]:
+          - generic [ref=e45] [cursor=pointer]:
+            - generic [ref=e46]:
+              - generic [ref=e47]: To Be Cloned
+              - generic [ref=e48]: ● Active
+            - generic [ref=e49]:
+              - generic [ref=e50]: 📋 New Items
+              - generic [ref=e51]: 📅 Every 30m
+            - generic [ref=e52]:
+              - generic "Queued Videos" [ref=e53]: "Queued: 0"
+              - generic [ref=e54]: "|"
+              - generic "Downloaded Videos" [ref=e55]: "Downloaded: 0"
+              - generic [ref=e56]: "|"
+              - generic "Published Videos" [ref=e57]: "Published: 0"
+            - generic [ref=e59]:
+              - button "View Details →" [ref=e60]
+              - button "▶ Run" [ref=e61]
+              - button "👯" [ref=e62]
+              - button "🗑️" [ref=e63]
+          - generic [ref=e64] [cursor=pointer]:
+            - generic [ref=e65]:
+              - generic [ref=e66]: ff (Copy) (Copy) (Copy) (Copy) (Copy) (Copy) (Copy) (Copy) (Copy)
+              - generic [ref=e67]: ○ Paused
+            - generic [ref=e68]:
+              - generic [ref=e69]: 📋 New Items
+              - generic [ref=e70]: 📅 Every 60m
+            - generic [ref=e71]:
+              - generic "Queued Videos" [ref=e72]: "Queued: 0"
+              - generic [ref=e73]: "|"
+              - generic "Downloaded Videos" [ref=e74]: "Downloaded: 1"
+              - generic [ref=e75]: "|"
+              - generic "Published Videos" [ref=e76]: "Published: 0"
+              - generic [ref=e77]: "|"
+              - generic "Failed Jobs" [ref=e78]: "Failed: 1"
+            - generic [ref=e80]:
+              - button "View Details →" [ref=e81]
+              - button "▶ Run" [ref=e82]
+              - button "👯" [ref=e83]
+              - button "🗑️" [ref=e84]
+  - generic [ref=e86]:
+    - generic [ref=e87]:
+      - generic [ref=e88]:
+        - generic [ref=e89]: 📝
+        - generic [ref=e90]: Details
+      - generic [ref=e92]:
+        - generic [ref=e93]: 📡
+        - generic [ref=e94]: Source
+      - generic [ref=e96]:
+        - generic [ref=e97]: ✂️
+        - generic [ref=e98]: Editor
+      - generic [ref=e100]:
+        - generic [ref=e101]: 📅
+        - generic [ref=e102]: Schedule
+      - generic [ref=e104]:
+        - generic [ref=e105]: 🎯
+        - generic [ref=e106]: Target
+    - generic [ref=e108]:
+      - 'heading "Step 1: Campaign Details & Schedule" [level=3] [ref=e109]'
+      - generic [ref=e111]:
+        - generic [ref=e112]: Campaign Name
+        - textbox "e.g. Morning Motivation" [ref=e113]: Test Schedule Inputs
+      - generic [ref=e114]:
+        - text: Type
+        - generic [ref=e115]:
+          - generic [ref=e116] [cursor=pointer]:
+            - radio "One-Time Run Run once at a scheduled time" [ref=e117]
+            - generic [ref=e118]:
+              - strong [ref=e119]: One-Time Run
+              - generic [ref=e120]: Run once at a scheduled time
+          - generic [ref=e121] [cursor=pointer]:
+            - radio "Scheduled (Recurring) Run automatically on schedule" [checked] [ref=e122]
+            - generic [ref=e123]:
+              - strong [ref=e124]: Scheduled (Recurring)
+              - generic [ref=e125]: Run automatically on schedule
+      - generic [ref=e127] [cursor=pointer]:
+        - 'checkbox "Advanced Verification (Unique Tag) Appends a unique 6-char tag to caption to 100% match the published video. Default: Off (Checks by recent upload time)" [ref=e128]'
+        - generic [ref=e129]:
+          - generic [ref=e130]: Advanced Verification (Unique Tag)
+          - generic [ref=e131]:
+            - text: Appends a unique 6-char tag to caption to 100% match the published video.
+            - text: "Default: Off (Checks by recent upload time)"
+      - generic [ref=e132]:
+        - heading "📝 Caption Template" [level=4] [ref=e133]
+        - paragraph [ref=e134]: Customize the caption for published videos. Leave empty to use the original description.
+        - generic [ref=e135]:
+          - button "Original Desc" [ref=e136] [cursor=pointer]
+          - button "No Hashtags" [ref=e137] [cursor=pointer]
+          - button "Time (HH:mm)" [ref=e138] [cursor=pointer]
+          - button "Date (YYYY-MM-DD)" [ref=e139] [cursor=pointer]
+          - button "Author" [ref=e140] [cursor=pointer]
+          - button "Tags" [ref=e141] [cursor=pointer]
+        - 'textbox "e.g. {original} - Reposted from {author} at {time} #fyp" [ref=e142]'
+      - generic [ref=e143]:
+        - heading "⏰ Start Time" [level=4] [ref=e144]
+        - generic [ref=e145]:
+          - generic [ref=e146] [cursor=pointer]:
+            - radio "🚀 Run Immediately Start processing right after saving" [ref=e147]
+            - generic [ref=e148]:
+              - strong [ref=e149]: 🚀 Run Immediately
+              - generic [ref=e150]: Start processing right after saving
+          - generic [ref=e151] [cursor=pointer]:
+            - radio "📅 Schedule Start Pick a specific date & time" [checked] [ref=e152]
+            - generic [ref=e153]:
+              - strong [ref=e154]: 📅 Schedule Start
+              - generic [ref=e155]: Pick a specific date & time
+        - generic [ref=e156]:
+          - text: First Run Time
+          - textbox "Select start time" [ref=e160]: 2026-02-18 15:47
+      - generic [ref=e161]:
+        - heading "🔄 Recurring Interval" [level=4] [ref=e162]
+        - generic [ref=e163]:
+          - text: Repeat Every (Minutes)
+          - spinbutton [ref=e164]: "5"
+        - generic [ref=e165]:
+          - generic [ref=e166]: Enable Jitter (Random ±50%)
+          - checkbox [ref=e167]
+        - generic [ref=e168]:
+          - generic [ref=e169]:
+            - text: Active Hours Start (Daily)
+            - textbox [ref=e170]: 08:30
+          - generic [ref=e171]:
+            - text: Active Hours End (Daily)
+            - textbox [active] [ref=e172]: 22:45
+        - generic [ref=e173]:
+          - text: Active Days
+          - generic [ref=e174]:
+            - button "Mon" [ref=e175] [cursor=pointer]
+            - button "Tue" [ref=e176] [cursor=pointer]
+            - button "Wed" [ref=e177] [cursor=pointer]
+            - button "Thu" [ref=e178] [cursor=pointer]
+            - button "Fri" [ref=e179] [cursor=pointer]
+            - button "Sat" [ref=e180] [cursor=pointer]
+            - button "Sun" [ref=e181] [cursor=pointer]
+    - generic [ref=e182]:
+      - button "Cancel" [ref=e183] [cursor=pointer]
+      - button "Next →" [ref=e185] [cursor=pointer]
+```

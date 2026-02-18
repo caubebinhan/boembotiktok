@@ -70,7 +70,6 @@ export interface Campaign {
     schedule_cron: string
     config_json: string
     created_at: string
-    pending_count?: number
     queued_count?: number
     preparing_count?: number
     uploading_count?: number
@@ -79,6 +78,8 @@ export interface Campaign {
     downloaded_count?: number
     failed_count?: number
     skipped_count?: number
+    paused_count?: number
+    missed_count?: number
     total_recent?: number
 }
 
