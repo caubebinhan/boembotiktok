@@ -9,12 +9,13 @@ interface Props {
     onSelect: (campaign: Campaign) => void
     onDelete?: (id: number) => void
     onRun?: (id: number) => void
+    onPause?: (id: number) => void
     onClone?: (id: number) => void
     onReschedule?: (id: number) => void
     processingIds?: Set<number>
 }
 
-export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleStatus, onSelect, onDelete, onRun, onClone, onReschedule, processingIds }) => {
+export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleStatus, onSelect, onDelete, onRun, onPause, onClone, onReschedule, processingIds }) => {
     return (
         <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-primary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -129,25 +130,16 @@ export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleSta
 
                                             const hasActivity = (c.published_count || 0) > 0 || (c.paused_count || 0) > 0 || (c.failed_count || 0) > 0;
                                             const isFinished = !isRunning && hasActivity;
-                                            const hasMissed = (c.missed_count || 0) > 0;
-
-                                            if (hasMissed) {
-                                                return (
-                                                    <button
-                                                        className="btn btn-warning btn-sm"
-                                                        onClick={(e) => { e.stopPropagation(); onReschedule && onReschedule(c.id); }}
-                                                        style={{ padding: '4px 8px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                                                    >
-                                                        📅 Reschedule
-                                                    </button>
-                                                )
-                                            }
 
                                             if (isRunning) {
                                                 return (
-                                                    <button className="btn btn-secondary btn-sm" disabled style={{ padding: '4px 8px', fontSize: '12px', opacity: 0.7, cursor: 'not-allowed', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                    <button
+                                                        className="btn btn-secondary btn-sm"
+                                                        onClick={(e) => { e.stopPropagation(); onPause && onPause(c.id); }}
+                                                        style={{ padding: '4px 8px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                                                    >
                                                         <div className="spinner" style={{ width: '10px', height: '10px', borderWidth: '1.5px' }} />
-                                                        Running...
+                                                        ⏸ Pause
                                                     </button>
                                                 )
                                             }
@@ -167,7 +159,7 @@ export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleSta
                                                 onClick={(e) => { e.stopPropagation(); onClone(c.id) }}
                                                 title="Clone Campaign"
                                                 style={{ padding: '4px 8px', color: 'var(--text-secondary)' }}>
-                                                👯
+                                                Clone
                                             </button>
                                         )}
                                         {onDelete && (
@@ -180,7 +172,7 @@ export const CampaignList: React.FC<Props> = ({ campaigns, onCreate, onToggleSta
                                                 }}
                                                 title="Delete Campaign"
                                                 style={{ padding: '4px 8px', color: '#ef4444' }}>
-                                                🗑️
+                                                Delete
                                             </button>
                                         )}
                                     </div>

@@ -171,6 +171,10 @@ app.whenReady().then(async () => {
             return jobQueue.getMissedJobs()
         })
 
+        ipcMain.handle('job:get-campaign-missed', (_event, campaignId: number) => {
+            return jobQueue.getCampaignMissedJobs(campaignId)
+        })
+
         ipcMain.handle('job:reschedule-missed', (_event, campaignId: number) => {
             return jobQueue.rescheduleMissedJobs(campaignId)
         })
@@ -178,6 +182,14 @@ app.whenReady().then(async () => {
         ipcMain.handle('job:resume-recovery', (_event, rescheduleItems: { id: number, scheduled_for: string }[]) => {
             jobQueue.resumeFromRecovery(rescheduleItems)
             return true
+        })
+
+        ipcMain.handle('campaign:pause', (_event, campaignId: number) => {
+            return jobQueue.pauseCampaign(campaignId)
+        })
+
+        ipcMain.handle('campaign:resume', (_event, campaignId: number) => {
+            return jobQueue.resumeCampaign(campaignId)
         })
 
         ipcMain.handle('job:discard-recovery', (_event, jobIds: number[]) => {

@@ -137,6 +137,16 @@ class JobQueue {
         `, [nowIso])
     }
 
+    getCampaignMissedJobs(campaignId: number) {
+        const nowIso = new Date().toISOString()
+        return storageService.getAll(`
+            SELECT * FROM jobs 
+            WHERE campaign_id = ? 
+            AND (status = 'missed' OR (status = 'pending' AND scheduled_for <= ?))
+            ORDER BY scheduled_for ASC
+        `, [campaignId, nowIso])
+    }
+
     resumeFromRecovery(rescheduleItems: { id: number, scheduled_for: string }[] = []) {
         console.log(`[JobQueue] Resuming from recovery mode with ${rescheduleItems.length} rescheduled items`)
 
@@ -229,6 +239,24 @@ class JobQueue {
         // Ensure strictly all 'missed' are set to 'pending' (shiftCampaignSchedule does this for the ones it touches, but just in case)
         const res = storageService.run(
             `UPDATE jobs SET status = 'pending' WHERE campaign_id = ? AND status = 'missed'`,
+            [campaignId]
+        )
+        return res.changes
+    }
+
+    async pauseCampaign(campaignId: number) {
+        console.log(`[JobQueue] Pausing campaign ${campaignId}...`)
+        const res = storageService.run(
+            `UPDATE jobs SET status = 'paused' WHERE campaign_id = ? AND status IN ('pending', 'missed')`,
+            [campaignId]
+        )
+        return res.changes
+    }
+
+    async resumeCampaign(campaignId: number) {
+        console.log(`[JobQueue] Resuming campaign ${campaignId} (setting paused to pending)...`)
+        const res = storageService.run(
+            `UPDATE jobs SET status = 'pending' WHERE campaign_id = ? AND status = 'paused'`,
             [campaignId]
         )
         return res.changes

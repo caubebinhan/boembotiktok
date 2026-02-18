@@ -142,6 +142,8 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 targetAccounts: config.targetAccounts || [],
                 postOrder: config.postOrder || 'newest',
                 schedule: clonedSchedule,
+                autoSchedule: config.autoSchedule !== false,
+                advancedVerification: config.advancedVerification || false,
                 executionOrder: [] // Do not copy execution order, generate fresh
             }))
         }

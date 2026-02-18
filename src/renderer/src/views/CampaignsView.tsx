@@ -2,11 +2,13 @@ import React, { useState, useEffect } from 'react'
 import { CampaignList } from '../components/CampaignList'
 import { CampaignWizard } from '../components/CampaignWizard'
 import { TodaySchedule } from '../components/TodaySchedule'
+import { RescheduleModal } from '../components/RescheduleModal'
 
 export const CampaignsView: React.FC = () => {
     const [campaigns, setCampaigns] = useState<any[]>([])
     const [wizardState, setWizardState] = useState<{ isOpen: boolean, initialData?: any }>({ isOpen: false })
     const [activeTab, setActiveTab] = useState<'all' | 'today'>('all')
+    const [rescheduleTarget, setRescheduleTarget] = useState<{ campaign: any, missedJobs: any[] } | null>(null)
 
     // ... (loadCampaigns is same)
 
@@ -55,7 +57,9 @@ export const CampaignsView: React.FC = () => {
                 targetAccounts: data.targetAccounts,
                 schedule: data.schedule,
                 executionOrder: data.executionOrder, // Pass manual schedule to backend
-                captionTemplate: data.captionTemplate // Ensure caption template is saved
+                captionTemplate: data.captionTemplate, // Ensure caption template is saved
+                autoSchedule: data.autoSchedule,
+                advancedVerification: data.advancedVerification
             }
 
             // @ts-ignore
@@ -77,7 +81,24 @@ export const CampaignsView: React.FC = () => {
     // ... (handlers)
 
     const handleToggleStatus = async (id: number, currentStatus: string) => {
-        console.log('Toggle', id, currentStatus)
+        try {
+            const nextStatus = currentStatus === 'active' ? 'paused' : 'active'
+            // @ts-ignore
+            await window.api.invoke('update-campaign-status', id, nextStatus)
+            loadCampaigns()
+        } catch (err) {
+            console.error('Failed to toggle status:', err)
+        }
+    }
+
+    const handlePause = async (id: number) => {
+        try {
+            // @ts-ignore
+            await window.api.invoke('campaign:pause', id)
+            await loadCampaigns()
+        } catch (err) {
+            console.error('Failed to pause campaign:', err)
+        }
     }
 
     const handleOpenScanner = async () => {
@@ -111,6 +132,15 @@ export const CampaignsView: React.FC = () => {
         const name = camp ? camp.name : 'Campaign'
 
         try {
+            // Check for missed jobs first
+            // @ts-ignore
+            const missedJobs = await window.api.invoke('job:get-campaign-missed', id)
+
+            if (missedJobs && missedJobs.length > 0) {
+                setRescheduleTarget({ campaign: camp, missedJobs })
+                return
+            }
+
             if (!confirm(`Run "${name}" immediately?`)) return
 
             // Optimistic UI: Disable button immediately
@@ -129,22 +159,6 @@ export const CampaignsView: React.FC = () => {
                 next.delete(id)
                 return next
             })
-        }
-    }
-
-    const handleReschedule = async (id: number) => {
-        const camp = campaigns.find(c => c.id === id)
-        const name = camp ? camp.name : 'Campaign'
-        if (!confirm(`Reschedule missed jobs for "${name}" to run NOW?`)) return
-
-        try {
-            // @ts-ignore
-            await window.api.invoke('job:reschedule-missed', id)
-            await loadCampaigns()
-            alert('Missed jobs rescheduled successfully!')
-        } catch (err) {
-            console.error('Failed to reschedule:', err)
-            alert('Failed to reschedule jobs.')
         }
     }
 
@@ -222,6 +236,7 @@ export const CampaignsView: React.FC = () => {
                         onSelect={handleSelectCampaign}
                         onDelete={handleDelete}
                         onRun={handleRun}
+                        onPause={handlePause}
                         onClone={handleClone}
                         processingIds={processingIds}
                     />
@@ -235,6 +250,23 @@ export const CampaignsView: React.FC = () => {
                     onClose={() => setWizardState({ isOpen: false })}
                     onSave={handleCreateCampaign}
                     initialData={wizardState.initialData}
+                />
+            )}
+            {rescheduleTarget && (
+                <RescheduleModal
+                    missedJobs={rescheduleTarget.missedJobs}
+                    onResume={async (items) => {
+                        // @ts-ignore
+                        await window.api.invoke('job:resume-recovery', items)
+                        setRescheduleTarget(null)
+                        loadCampaigns()
+                    }}
+                    onDiscard={async () => {
+                        // @ts-ignore
+                        await window.api.invoke('job:discard-recovery', rescheduleTarget.missedJobs.map(j => j.id))
+                        setRescheduleTarget(null)
+                        loadCampaigns()
+                    }}
                 />
             )}
         </div>

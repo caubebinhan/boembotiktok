@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { CampaignHeader } from '../components/campaign/CampaignHeader'
 import { CampaignStats } from '../components/campaign/CampaignStats'
 import { VideoTimeline } from '../components/campaign/VideoTimeline'
+import { RescheduleModal } from '../components/RescheduleModal'
 import { AccountPanel } from '../components/campaign/AccountPanel'
 import { LogViewer } from '../components/campaign/LogViewer'
 import { determineVideoStatus } from '../utils/campaignStateManager'
@@ -22,6 +23,7 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
 
     // Edit Modal State
     const [editingJob, setEditingJob] = useState<any>(null)
+    const [rescheduleTarget, setRescheduleTarget] = useState<{ campaign: any, missedJobs: any[] } | null>(null)
 
     const loadData = useCallback(async () => {
         try {
@@ -62,6 +64,15 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
     // Actions
     const handleRunNow = async () => {
         try {
+            // Check for missed jobs first
+            // @ts-ignore
+            const missedJobs = await window.api.invoke('job:get-campaign-missed', id)
+
+            if (missedJobs && missedJobs.length > 0) {
+                setRescheduleTarget({ campaign, missedJobs })
+                return
+            }
+
             setIsProcessing(true)
             // @ts-ignore
             await window.api.invoke('trigger-campaign', id)
@@ -70,6 +81,16 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
             await loadData()
         } catch (e) { console.error(e) } finally {
             setIsProcessing(false)
+        }
+    }
+
+    const handlePause = async () => {
+        try {
+            // @ts-ignore
+            await window.api.invoke('campaign:pause', id)
+            await loadData()
+        } catch (e) {
+            console.error('Failed to pause campaign:', e)
         }
     }
 
@@ -135,7 +156,7 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
 
     return (
         <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
-            <CampaignHeader campaign={campaign} onRunNow={handleRunNow} onRefresh={loadData} isRunning={isRunning} />
+            <CampaignHeader campaign={campaign} onRunNow={handleRunNow} onPause={handlePause} onRefresh={loadData} isRunning={isRunning} />
 
             <div style={{ flex: 1, overflowY: 'auto', paddingTop: '24px' }}>
                 <CampaignStats stats={stats} />
@@ -191,6 +212,24 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
                     ))}
                 </div>
             </div>
+
+            {rescheduleTarget && (
+                <RescheduleModal
+                    missedJobs={rescheduleTarget.missedJobs}
+                    onResume={async (items) => {
+                        // @ts-ignore
+                        await window.api.invoke('job:resume-recovery', items)
+                        setRescheduleTarget(null)
+                        loadData()
+                    }}
+                    onDiscard={async () => {
+                        // @ts-ignore
+                        await window.api.invoke('job:discard-recovery', rescheduleTarget.missedJobs.map(j => j.id))
+                        setRescheduleTarget(null)
+                        loadData()
+                    }}
+                />
+            )}
 
             {editingJob && (
                 <EditCaptionModal

@@ -30,12 +30,14 @@ export const RescheduleModal: React.FC<RescheduleModalProps> = ({ missedJobs, on
             // Convert to TimelineItems
             const items: TimelineItem[] = missedJobs.map(job => {
                 const data = JSON.parse(job.data_json || '{}')
+                const oldTime = new Date(job.scheduled_for).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+
                 return {
                     id: String(job.id),
                     time: new Date(), // Default to NOW for rescheduling
                     type: job.type === 'PUBLISH' ? 'post' : 'scan',
-                    label: job.type === 'PUBLISH' ? `Post to @${data.account_name || '?'}` : `Scan ${data.source || 'Sources'}`,
-                    detail: data.caption || data.description || 'No description',
+                    label: (job.type === 'PUBLISH' ? `Post to @${data.account_name || '?'}` : `Scan ${data.source || 'Sources'}`) + ` [MISSED]`,
+                    detail: `Was scheduled for ${oldTime}. ` + (data.caption || data.description || 'No description'),
                     icon: job.type === 'PUBLISH' ? '🎬' : '🔍',
                     video: {
                         id: data.platform_id,
