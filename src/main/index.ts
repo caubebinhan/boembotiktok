@@ -11,6 +11,7 @@ import { campaignService } from './services/CampaignService'
 import { videoEditEngine } from './services/video-edit/VideoEditEngine'
 import { publishAccountService } from './services/PublishAccountService'
 import { selfTestService } from './services/SelfTestService'
+import { logger } from './services/LoggerService'
 
 function createWindow(): void {
     const isDev = !app.isPackaged
@@ -52,8 +53,11 @@ app.whenReady().then(async () => {
     // Set app user model id for windows
     app.setAppUserModelId('com.boembo')
 
+    // ...
+
     try {
         await storageService.init()
+        await logger.init() // Initialize Logger
         // Initialize browser service (headless by default for background tasks, user can toggle)
         await browserService.init(true)
 
@@ -162,6 +166,33 @@ app.whenReady().then(async () => {
             return campaignService.getCampaignJobs(id)
         })
 
+        // Crash Recovery IPC
+        ipcMain.handle('job:get-missed', () => {
+            return jobQueue.getMissedJobs()
+        })
+
+        ipcMain.handle('job:resume-recovery', (_event, rescheduleIds: number[]) => {
+            jobQueue.resumeFromRecovery(rescheduleIds)
+            return true
+        })
+
+        ipcMain.handle('job:update-data', (_event, jobId: number, data: any) => {
+            // We need a public method in JobQueue or access storage directly?
+            // JobQueue has updateJobData but it's private.
+            // Let's just update DB directly here for simplicity, or expose a method.
+            // Actually, best to update DB and then notify JobQueue if needed.
+            // But JobQueue reads from DB when processing.
+            // Converting to use a direct DB update for data_json.
+            const job = storageService.get('SELECT data_json FROM jobs WHERE id = ?', [jobId])
+            if (job) {
+                const currentData = JSON.parse(job.data_json || '{}')
+                const newData = { ...currentData, ...data }
+                storageService.run("UPDATE jobs SET data_json = ? WHERE id = ?", [JSON.stringify(newData), jobId])
+                return true
+            }
+            return false
+        })
+
         ipcMain.handle('get-campaign-details', async (_event: any, id: number) => {
             return campaignService.getCampaign(id)
         })
@@ -227,6 +258,11 @@ app.whenReady().then(async () => {
         // ─── Settings IPC ──────────────────────────────────────────
         ipcMain.handle('get-settings', async () => {
             return storageService.getAll('SELECT key, value FROM settings')
+        })
+
+        ipcMain.handle('get-setting', async (_event: any, key: string) => {
+            const row = storageService.get('SELECT value FROM settings WHERE key = ?', [key])
+            return row ? row.value : null
         })
 
         ipcMain.handle('save-setting', async (_event: any, key: string, value: string) => {

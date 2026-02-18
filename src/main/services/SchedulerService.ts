@@ -198,6 +198,7 @@ class SchedulerService {
                                 video_id: v.id,
                                 targetAccounts: config.targetAccounts || [],
                                 description: v.description || '',
+                                customCaption: item.customCaption, // Pass custom caption from execution item
                                 thumbnail: v.thumbnail || '',
                                 videoStats: v.stats || { views: 0, likes: 0 },
                                 editPipeline: config.editPipeline,

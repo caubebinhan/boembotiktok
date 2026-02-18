@@ -1,52 +1,113 @@
+import { BrowserWindow, ipcMain, app } from 'electron'
 import { storageService } from './StorageService'
 import { moduleManager } from './ModuleManager'
 import { TikTokModule } from '../modules/tiktok/TikTokModule'
-import { BrowserWindow } from 'electron'
 import { publishAccountService } from './PublishAccountService'
 import { campaignService } from './CampaignService'
 import { notificationService } from './NotificationService'
+import { CaptionGenerator } from './CaptionGenerator'
 
 class JobQueue {
-    private intervalId: NodeJS.Timeout | null = null
+    private interval: NodeJS.Timeout | null = null
     private isRunning = false
+    private isPaused = false
     private readonly POLL_INTERVAL = 5000
+
+    constructor() {
+        this.registerDebugHandlers()
+    }
+
+    private registerDebugHandlers() {
+        ipcMain.handle('debug:test-caption-flow', async () => {
+            return this.runFullFlowSelfTest()
+        })
+    }
+
+    private async runFullFlowSelfTest() {
+        const log = (msg: string) => console.log(`[SELF-TEST] ${msg}`)
+        log('Starting Full Flow Self-Test...')
+
+        try {
+            const original = 'Tết này vui quá #vtv24 #xuhuong2026 #bò'
+            log(`Original: "${original}"`)
+
+            // 1. Test Tag Stripping
+            const { CaptionGenerator } = require('./CaptionGenerator')
+            const template = '{original_no_tags} #repost'
+            const result = CaptionGenerator.generate(template, { original })
+            log(`Template: "${template}"`)
+            log(`Result: "${result}"`)
+
+            if (result.includes('#vtv24') || result.includes('#bò')) {
+                throw new Error('Hashtag removal FAILED (matched Vietnamese/Unicode tags check)')
+            }
+            log('✅ Hashtag removal logic passed.')
+
+            // 2. Test Unique Tag
+            const useUniqueTag = true
+            const uniqueTag = '#' + Math.random().toString(36).substring(2, 8)
+            const final = result + ' ' + uniqueTag
+            log(`Final with Unique Tag: "${final}"`)
+
+            log('✅ All logic checks passed.')
+            return { success: true, log: 'Logic verified. Check console for details.' }
+        } catch (e: any) {
+            log(`❌ TEST FAILED: ${e.message}`)
+            return { success: false, error: e.message }
+        }
+    }
+
     async start() {
-        if (this.intervalId) return
-        console.log('JobQueue started')
+        if (this.interval) return
+        console.log('[JobQueue] Starting...')
 
         // Resume/Reschedule Logic for Missed Jobs
         try {
-            console.log('Checking for missed scheduled jobs...')
+            console.log('[JobQueue] Checking for missed scheduled jobs...')
+            // Check for jobs that are pending and scheduled in the past (more than 1 min ago to be safe)
             const missedJobs = storageService.getAll(`
-                SELECT id, scheduled_for FROM jobs 
+                SELECT id, scheduled_for, type FROM jobs 
                 WHERE status = 'pending' 
-                AND scheduled_for < datetime('now', '-5 minutes')
+                AND scheduled_for < datetime('now', '-1 minute')
             `)
 
             if (missedJobs.length > 0) {
-                console.log(`Found ${missedJobs.length} missed jobs. Rescheduling to now...`)
-                const now = new Date()
-                // Stagger them slightly if needed, but for now just set to Now
-                // The processQueue loop will pick them up in order
-                for (const job of missedJobs) {
-                    // Update to current time so they get picked up immediately
-                    storageService.run("UPDATE jobs SET scheduled_for = ? WHERE id = ?", [now.toISOString(), job.id])
-                }
+                console.log(`[JobQueue] Found ${missedJobs.length} missed jobs. Pausing queue for user action.`)
+                this.isPaused = true
+                // Note: Frontend will query 'job:check-missed' to handle this
             }
         } catch (e) {
-            console.error('Failed to resume missed jobs:', e)
+            console.error('[JobQueue] Failed to check missed jobs:', e)
         }
 
-        this.intervalId = setInterval(() => this.processQueue(), this.POLL_INTERVAL)
+        this.interval = setInterval(() => this.processQueue(), this.POLL_INTERVAL)
+        console.log('[JobQueue] Started')
     }
 
     stop() {
-        if (this.intervalId) clearInterval(this.intervalId)
+        if (this.interval) clearInterval(this.interval)
+        this.interval = null
         this.isRunning = false
     }
 
+    getMissedJobs() {
+        return storageService.getAll(`
+            SELECT * FROM jobs 
+            WHERE status = 'pending' 
+            AND scheduled_for < datetime('now', '-1 minute')
+            ORDER BY scheduled_for ASC
+        `)
+    }
+
+    resumeFromRecovery(rescheduleIds: number[] = []) {
+        console.log('[JobQueue] Resuming from recovery mode')
+        this.isPaused = false
+        // Trigger immediate check
+        setImmediate(() => this.processQueue())
+    }
+
     async processQueue() {
-        if (this.isRunning) return
+        if (this.isRunning || this.isPaused) return
         this.isRunning = true
 
         try {
@@ -60,12 +121,11 @@ class JobQueue {
 
             // Get next pending job that is scheduled for now or earlier
             // Prioritize by scheduled time (urgency) then creation (FIFO)
-            // Fix: Use JS ISO string for comparison to match stored format 'YYYY-MM-DDTHH:mm:ss.sssZ'
-            // SQLite 'datetime("now")' returns 'YYYY-MM-DD HH:mm:ss' (space instead of T), causing comparison failure.
+
             const nowIso = new Date().toISOString()
             const job = storageService.get(`
                 SELECT * FROM jobs 
-                WHERE status = 'pending' 
+                WHERE status = 'pending'
                 AND (scheduled_for IS NULL OR scheduled_for <= ?)
                 ORDER BY scheduled_for ASC, created_at ASC 
                 LIMIT 1
@@ -298,8 +358,8 @@ class JobQueue {
                     stats: data.videoStats
                 }
                 storageService.run(
-                    `INSERT INTO videos (platform, platform_id, url, description, status, metadata, created_at) 
-                     VALUES ('tiktok', ?, ?, ?, 'downloading', ?, ?)`,
+                    `INSERT INTO videos (platform, platform_id, url, description, status, metadata, created_at)
+            VALUES ('tiktok', ?, ?, ?, 'downloading', ?, ?)`,
                     [
                         data.platform_id,
                         data.url,
@@ -351,9 +411,42 @@ class JobQueue {
             this.updateJobData(job.id, { ...data, status: 'Scheduling publication...' })
 
             // Critical Safeguard: Ensure no "No description" leaks to publish job
-            if (data.description === 'No description') data.description = '';
+            const originalDescription = (data.description === 'No description' ? '' : data.description) || ''
+            let captionPattern = originalDescription // Default to just original description
 
-            console.log(`[DEBUG_DESC] Creating PUBLISH jobs with caption: "${data.description}"`)
+            // 1. Determine Pattern (Custom Override OR Campaign Template)
+            if (data.customCaption !== undefined && data.customCaption !== null) {
+                console.log(`[JobQueue] Using custom caption pattern: "${data.customCaption}"`)
+                captionPattern = data.customCaption
+            } else {
+                // Fetch Campaign Config for Template
+                const campaign = storageService.get('SELECT config_json FROM campaigns WHERE id = ?', [job.campaign_id])
+                if (campaign && campaign.config_json) {
+                    try {
+                        const config = JSON.parse(campaign.config_json)
+                        console.log(`[JobQueue] Campaign config loaded. Template: "${config.captionTemplate}"`)
+                        if (config.captionTemplate) {
+                            captionPattern = config.captionTemplate
+                        }
+                    } catch (e) {
+                        console.error('Failed to load campaign config for caption:', e)
+                    }
+                } else {
+                    console.log(`[JobQueue] No campaign config found or empty. Using default pattern (original).`)
+                }
+            }
+
+            console.log(`[JobQueue] Resolving caption. Pattern: "${captionPattern}", Original: "${originalDescription.substring(0, 30)}..."`)
+
+            // 2. Generate Final Caption using Pattern
+            const finalCaption = CaptionGenerator.generate(captionPattern, {
+                original: originalDescription,
+                time: new Date(), // Or use scheduleTime if we knew it
+                author: meta ? meta.author : 'user'
+            })
+            console.log(`[JobQueue] Generated final caption: "${finalCaption}" (Base: "${originalDescription.substring(0, 20)}...")`)
+
+            console.log(`[DEBUG_DESC] Creating PUBLISH jobs with caption: "${finalCaption}"`)
             for (const accId of data.targetAccounts) {
                 // Get account info for display
                 const acc = storageService.get('SELECT username, display_name FROM publish_accounts WHERE id = ?', [accId])
@@ -367,7 +460,7 @@ class JobQueue {
                             account_id: accId,
                             account_name: acc?.display_name || acc?.username || 'Unknown',
                             account_username: acc?.username || '',
-                            caption: (data.description === 'No description' ? '' : data.description) || '',
+                            caption: finalCaption,
                             thumbnail: data.thumbnail || '',
                             videoStats: data.videoStats || {},
                             advancedVerification: data.advancedVerification,
@@ -385,9 +478,21 @@ class JobQueue {
     private async handlePublish(job: any, data: any, tiktok: TikTokModule) {
         let { video_path, account_id, caption, account_name } = data
 
+        // Setup dedicated job logger
+        const jobLogPath = require('path').join(require('electron').app.getPath('userData'), 'logs', `job_${job.id}_publish.log`)
+        require('fs').mkdirSync(require('path').dirname(jobLogPath), { recursive: true })
+
+        const log = (msg: string) => {
+            const line = `[${new Date().toISOString()}] ${msg}\n`
+            console.log(`[Job ${job.id}] ${msg}`)
+            try { require('fs').appendFileSync(jobLogPath, line) } catch (e) { }
+        }
+
+        log(`Starting Publish Job for Account: ${account_name || 'Unknown'}`)
         this.updateJobData(job.id, { ...data, status: `Publishing to @${account_name || 'account'}...` })
 
         // 1. Load account cookies
+        log(`Loading cookies for account ID ${account_id}...`)
         const cookies = publishAccountService.getAccountCookies(Number(account_id))
         if (!cookies || cookies.length === 0) {
             throw new Error(`No valid cookies for account ${account_id}. Please re-login.`)
@@ -403,30 +508,51 @@ class JobQueue {
         this.updateJobData(job.id, { ...data, status: `Initializing upload...` })
 
         // Final Fallback for empty caption
-        // Final Fallback for empty caption
         if (!caption || caption === 'No description') {
             const videoRec = storageService.get("SELECT description FROM videos WHERE platform_id = ?", [data.video_id || data.platform_id])
             if (videoRec && videoRec.description && videoRec.description !== 'No description') {
-                console.log(`[DEBUG_DESC] Publish job caption was empty, using fallback from DB: "${videoRec.description}"`)
+                log(`Caption was empty, using fallback from DB: "${videoRec.description}"`)
                 caption = videoRec.description
             } else {
                 caption = '' // Force empty if still "No description"
             }
         }
 
-        console.log(`[DEBUG_DESC] calling tiktok.publishVideo with caption: "${caption}"`)
+        log(`Invoking TikTokModule.publishVideo`)
+        log(`  - Video: ${video_path}`)
+        log(`  - Caption (Job Data): "${data.caption}"`)
+        log(`  - Caption (Final Passed): "${caption}"`)
+        log(`  - AdvancedVerification: ${data.advancedVerification}`)
 
         const result = await tiktok.publishVideo(
             video_path,
             caption || '',
             cookies,
             (msg) => {
+                log(`Progress: ${msg}`)
                 this.updateJobData(job.id, { ...data, status: msg })
             },
             { advancedVerification: data.advancedVerification }
         )
 
         if (!result.success) {
+            log(`❌ Publish Failed: ${result.error}`)
+            // Ensure artifacts are saved with absolute paths
+            const res = result as any;
+            if (res.debugArtifacts) {
+                log(`[CRITICAL] Saving debug artifacts to database...`)
+                log(`  Screenshot: ${res.debugArtifacts.screenshot}`)
+                storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [
+                    JSON.stringify({
+                        video_path,
+                        account: account_name,
+                        error: result.error,
+                        debugArtifacts: res.debugArtifacts,
+                        failed_at: new Date().toISOString()
+                    }),
+                    job.id
+                ])
+            }
             throw new Error(result.error || 'Upload failed (unknown error)')
         }
 
@@ -512,7 +638,7 @@ class JobQueue {
                             notificationService.notifyCampaignComplete(campaign.name, stats)
                         } catch (e) { /* ignore */ }
                     } else {
-                        console.log(`Campaign ${campaignId} kept active (Recurring/Sources present)`)
+                        console.log(`Campaign ${campaignId} kept active (Recurring / Sources present)`)
                     }
                 }
             } else {

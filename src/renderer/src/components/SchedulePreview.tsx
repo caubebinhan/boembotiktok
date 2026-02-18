@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import DatePicker from 'react-datepicker'
 import "react-datepicker/dist/react-datepicker.css"
+import { format } from 'date-fns'
 import { VideoCard } from './VideoCard'
 
 interface SchedulePreviewProps {
@@ -10,8 +11,12 @@ interface SchedulePreviewProps {
         interval: number // minutes
         runAt?: string // ISO string or relevant start time
         days: string[]
+        startTime?: string
+        endTime?: string
+        jitter?: boolean
     }
-    initialItems?: any[] // Added prop
+    initialItems?: any[]
+    captionTemplate?: string // NEW PROP
     onScheduleChange?: (items: TimelineItem[]) => void
     onStartTimeChange?: (date: Date) => void
     onIntervalChange?: (interval: number) => void
@@ -27,66 +32,78 @@ export interface TimelineItem {
     video?: any
     sourceId?: string
     isFixed?: boolean
+    customCaption?: string // NEW FIELD
 }
 
-export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, savedVideos, schedule, initialItems, onScheduleChange, onStartTimeChange, onIntervalChange }) => {
-    // Local state for the plan
+// Simple Caption Generator for Preview
+const generateCaption = (template: string, video: any, time: Date): string => {
+    if (!template) return video.description || ''
+
+    let caption = template
+
+    // Helper to strip tags from description - Robust Unicode version
+    const stripTags = (text: string) => text.replace(/#[\p{L}\p{N}_]+/gu, '').trim()
+
+    if (caption.includes('{original_no_tags}')) {
+        caption = caption.replace(/{original_no_tags}/g, stripTags(video.description || ''))
+    }
+    caption = caption.replace(/{original}/g, video.description || '')
+
+    if (caption.includes('{time}')) {
+        caption = caption.replace(/{time}/g, format(time, 'HH:mm'))
+    }
+    if (caption.includes('{date}')) {
+        caption = caption.replace(/{date}/g, format(time, 'yyyy-MM-dd'))
+    }
+    caption = caption.replace(/{author}/g, video.author || 'unknown')
+
+    if (caption.includes('{tags}')) {
+        // Mock tags or extract from desc
+        caption = caption.replace(/{tags}/g, '')
+    }
+
+    return caption
+}
+
+export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, savedVideos, schedule, initialItems, captionTemplate, onScheduleChange, onStartTimeChange, onIntervalChange }) => {
+    // ... (keep existing state setup) ...
     const [items, setItems] = useState<TimelineItem[]>([])
     const [startTime, setStartTime] = useState<Date>(new Date())
     const [interval, setInterval] = useState<number>(schedule.interval || 15)
-
-    // UI State for description toggles
     const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({})
-
-    // For Drag & Drop
     const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null)
+    const [editingCaptionId, setEditingCaptionId] = useState<string | null>(null) // Track which item is being edited
 
-    // Initialize logic
+    // ... (Keep useEffect for init, but ensure customCaption is preserved/generated) ...
     useEffect(() => {
-        // Determine initial start time
+        // ... (Time init logic matches original) ...
         let start = new Date()
         if (schedule.runAt) {
             const parsed = new Date(schedule.runAt)
             if (!isNaN(parsed.getTime())) {
                 start = parsed
-                // If past, maybe jump to tomorrow? strict adherence to user input is better
-                if (start < new Date()) {
-                    // Optional: auto-correct to now? Or leave as is?
-                    // Let's default to now if raw input is past, or just respect it
-                    if (parsed.getTime() < Date.now() - 3600000) { // older than 1 hour
-                        start = new Date()
-                    }
+                if (start < new Date() && parsed.getTime() < Date.now() - 3600000) {
+                    start = new Date()
                 }
             }
         }
-        // If start time is not set in prop, default to now + 5 mins
         if (!schedule.runAt) {
             start = new Date(Date.now() + 5 * 60000)
         }
-
         setStartTime(start)
         setInterval(schedule.interval || 15)
 
-        // 1. PREFER EXISTING ITEMS (Persist State)
         if (initialItems && initialItems.length > 0) {
-            // Restore dates from strings if necessary
             const restored = initialItems.map(i => ({
                 ...i,
                 time: new Date(i.time)
             }))
-
-            // Fix: If schedule.runAt is explicitly provided, we should align the start time 
-            // even if we have initial items, especially if the user just changed it in the wizard.
-            // Check if the restored first item matches the requested start time (roughly)
-            // If completely different, we assume a "Force Update" from the wizard.
+            // Logic to re-align start time if needed
             const firstItemTime = restored[0]?.time?.getTime()
             const requestedTime = start.getTime()
-
-            // If difference > 1 minute, assume user changed start time in Wizard
             if (firstItemTime && Math.abs(firstItemTime - requestedTime) > 60000) {
-                // Unfix first item to allow it to move
                 if (restored[0]) (restored[0] as any).isFixed = false
-                setItems(restored) // Set state first
+                setItems(restored)
                 recalculateTimes(restored, start, schedule.interval || 15)
             } else {
                 setItems(restored)
@@ -94,13 +111,8 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
             return
         }
 
-        // 2. Build initial items list (order: Videos -> Scans)
-        // ... (rest is same)
-
-        // Note: The logic in triggerCampaign is "Singles First". We replicate that here.
         const newItems: TimelineItem[] = []
-
-        // Helper to format large numbers
+        // Helper
         const formatCount = (n: number | string | undefined): string => {
             const num = typeof n === 'string' ? parseInt(n) : (n || 0)
             if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M'
@@ -108,22 +120,21 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
             return String(num)
         }
 
-        // 1. Single Videos
         savedVideos.forEach((video, i) => {
             const stats = video.stats || {}
             newItems.push({
                 id: `post-${video.id}`,
-                time: new Date(), // placeholder, calculated below
+                time: new Date(),
                 type: 'post',
                 label: `Post Video`,
                 detail: `👁️ ${formatCount(stats.views)} • ❤️ ${formatCount(stats.likes)}`,
                 icon: '🎬',
-                video: video
+                video: video,
+                customCaption: undefined // Use undefined to allow dynamic template fallback
             })
         })
 
-        // 2. Scans (Placeholder for visual preview)
-        // We show one scan item per source to indicate when scanning starts
+        // Scans ...
         sources.forEach((source, i) => {
             newItems.push({
                 id: `scan-${source.name}-${i}`,
@@ -137,18 +148,13 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
         })
 
         recalculateTimes(newItems, start, schedule.interval || 15)
+    }, [savedVideos, sources, schedule.runAt, schedule.interval, captionTemplate])
 
-        // DEBUG: Check descriptions in preview
-        console.log(`[DEBUG_DESC] SchedulePreview: Initialized with ${savedVideos.length} videos.`,
-            savedVideos.map(v => ({ id: v.id, desc: v.description?.substring(0, 20) + '...' }))
-        );
-    }, [savedVideos, sources, schedule.runAt, schedule.interval]) // Re-init if external props change substantially
-
+    // ... (Keep recalculateTimes, handlers, drag & drop) ...
     // Recalculate times based on order + start + interval + jitter + daily constraints
+    // ... (Keep exact implementation of recalculateTimes from lines 147-210 of original)
     const recalculateTimes = (currentItems: TimelineItem[], start: Date, step: number) => {
         let cursorTime = new Date(start)
-
-        // Helper to parsing HH:mm
         const getMinutes = (timeStr: string) => {
             const [h, m] = timeStr.split(':').map(Number)
             return (h || 0) * 60 + (m || 0)
@@ -156,7 +162,6 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
         const dailyStart = (schedule as any).startTime ? getMinutes((schedule as any).startTime) : 9 * 60
         const dailyEnd = (schedule as any).endTime ? getMinutes((schedule as any).endTime) : 21 * 60
 
-        // Helper to ensure valid time
         const ensureValidTime = (date: Date): Date => {
             let d = new Date(date)
             let currentMins = d.getHours() * 60 + d.getMinutes()
@@ -171,67 +176,40 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
         }
 
         const updated = currentItems.map((item, index) => {
-            // 1. Determine base "Natural" time for this slot (where it SHOULD be)
-            // This is the anchor for the schedule flow.
             const naturalTime = ensureValidTime(new Date(cursorTime))
-
             let itemTime: Date
-
             if (item.isFixed && item.time) {
-                // Respect Manual Override for the ITEM itself
                 itemTime = new Date(item.time)
             } else {
-                // Otherwise use the natural flow
                 itemTime = new Date(naturalTime)
             }
-
-            // 2. Advance Cursor for NEXT item based on NATURAL time
-            // This ensures that moving Item A doesn't ripple and shift Item B, C, D...
             let duration = step * 60000
             const hasJitter = (schedule as any).jitter
             if (hasJitter) {
-                const variation = (Math.random() * 0.4) - 0.2 // +/- 20%
+                const variation = (Math.random() * 0.4) - 0.2
                 duration = duration * (1 + variation)
             }
-
-            // The cursor advances from the NATURAL time of this slot, 
-            // completely ignoring any manual override on this specific item.
             cursorTime = new Date(naturalTime.getTime() + duration)
-
             return { ...item, time: itemTime }
         })
-
-        // Final Step: Sort by time to ensure visual timeline consistency
         updated.sort((a, b) => a.time.getTime() - b.time.getTime())
-
         setItems(updated)
-        // Notify parent 
         onScheduleChange?.(updated)
     }
 
-    // Handlers
+    // ... (Keep existing handlers with same logic) ...
     const handleStartTimeChange = (date: Date | null) => {
         if (date && !isNaN(date.getTime())) {
             setStartTime(date)
             onStartTimeChange?.(date)
-
-            // Fix: Unfix first item so it accepts the new global start time
-            // Otherwise, if it was manually edited, it would stick to the old time/date.
             const newItems = [...items]
-            if (newItems.length > 0) {
-                (newItems[0] as any).isFixed = false
-            }
-
+            if (newItems.length > 0) { (newItems[0] as any).isFixed = false }
             recalculateTimes(newItems, date, interval)
         }
     }
 
     const handleIntervalChange = (valInput: string | number) => {
-        if (valInput === '') {
-            // @ts-ignore
-            setInterval('')
-            return
-        }
+        if (valInput === '') { setInterval(0); return } // hack to avoid error but handle empty
         const val = Number(valInput)
         const newInterval = Math.max(1, val)
         setInterval(newInterval)
@@ -239,78 +217,58 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
         onIntervalChange?.(newInterval)
     }
 
-    // Drag & Drop
     const onDragStart = (e: React.DragEvent, index: number) => {
         setDraggedItemIndex(index)
         e.dataTransfer.effectAllowed = "move"
-        // Transparent drag image or default? Default is fine.
     }
 
     const onDragOver = (e: React.DragEvent, index: number) => {
         e.preventDefault()
         if (draggedItemIndex === null || draggedItemIndex === index) return
-
-        // Reorder immediately for visual feedback
         const newItems = [...items]
         const draggedItem = newItems[draggedItemIndex]
         newItems.splice(draggedItemIndex, 1)
         newItems.splice(index, 0, draggedItem)
-
         setItems(newItems)
         setDraggedItemIndex(index)
     }
 
     const onDragEnd = () => {
         setDraggedItemIndex(null)
-        // Recalculate times to enforce the sequence
         recalculateTimes(items, startTime, interval)
     }
 
-    // Manual Time Edit (Advanced: shift just this one or re-calc?)
-    // User asked "tùy ý". Let's allow explicit set, but note that subsequent reorders might overwrite it if we enforce interval.
-    // Compromise: Changing specific time shifts ONLY that item visually, but effectively we might just update start time if it's the first one.
-    // Actually, simpler logic: manual edit updates that item. If we re-sort, it might snap back.
-    // Let's stick to "Sequence Driven" for reliability. Manual edit of #1 shifts #1, and #2 shifts to #1 + interval?
-    // Let's implement: Shift Start Time if #1 is changed.
-    // Manual Time Edit
     const handleManualTimeChange = (index: number, date: Date | null) => {
         if (!date || isNaN(date.getTime())) return
-
-        // Update items list
         const newItems = [...items]
-        newItems[index] = {
-            ...newItems[index],
-            time: date,
-            isFixed: true // Mark as manually fixed
-        }
-
-        // If index 0, we also update the global Start Time state for consistency
-        // Note: With sorting, index 0 might change, so this triggers a sort which might move this item.
-        if (index === 0) {
-            setStartTime(date)
-        }
-
-        // Trigger recalculation with the fixed item
+        newItems[index] = { ...newItems[index], time: date, isFixed: true }
+        if (index === 0) { setStartTime(date) }
         recalculateTimes(newItems, startTime, interval)
     }
 
-    // Toggle description
     const toggleExpand = (id: string) => {
         setExpandedItems(prev => ({ ...prev, [id]: !prev[id] }))
     }
 
-    // Group items by Date label
+    // NEW: Handle Caption Change
+    const handleCaptionChange = (index: number, val: string) => {
+        const newItems = [...items]
+        newItems[index] = { ...newItems[index], customCaption: val }
+        setItems(newItems)
+        onScheduleChange?.(newItems)
+    }
+
+
+    // Group items by Date label (Same logic)
     const groupedItems: { label: string; items: { data: TimelineItem; index: number }[] }[] = []
     let lastDateLabel = ''
     items.forEach((item, index) => {
         const today = new Date().toDateString()
         const tomorrow = new Date(Date.now() + 86400000).toDateString()
         const itemDate = item.time.toDateString()
-
         let label = item.time.toLocaleDateString()
         if (itemDate === today) label = 'Today'
         else if (itemDate === tomorrow) label = 'Tomorrow'
-
         if (label !== lastDateLabel) {
             groupedItems.push({ label, items: [] })
             lastDateLabel = label
@@ -318,16 +276,10 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
         groupedItems[groupedItems.length - 1].items.push({ data: item, index })
     })
 
-    // Format local date for input
-    const toLocalISO = (d: Date) => {
-        if (!d || isNaN(d.getTime())) return ''
-        const pad = (n: number) => n < 10 ? '0' + n : n
-        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-    }
-
     return (
         <div className="wizard-step">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'end', marginBottom: '20px', background: 'var(--bg-secondary)', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-primary)' }}>
+                {/* ... (Keep existing Header UI) ... */}
                 <div>
                     <label style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Campaign Start Time</label>
                     <DatePicker
@@ -393,7 +345,8 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                                             dateFormat="MM/dd HH:mm" timeFormat="HH:mm"
                                             className="form-control"
                                             // @ts-ignore
-                                            onKeyDown={(e) => e.stopPropagation()} // Allow typing without triggering drag
+                                            onKeyDown={(e) => e.stopPropagation()}
+                                            // @ts-ignore
                                             onClickOutside={(e) => { }}
                                             popperPlacement="right"
                                             customInput={
@@ -417,7 +370,6 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                                             </span>
                                         </div>
 
-                                        {/* Video Info Display (Unified Style) */}
                                         {item.video && (
                                             <div style={{
                                                 marginTop: '4px',
@@ -428,14 +380,12 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                                                 borderRadius: '6px',
                                                 padding: '8px'
                                             }}>
-                                                {/* Mini Thumbnail with Stats Overlay */}
                                                 <div style={{ position: 'relative', width: '60px', height: '80px', flexShrink: 0, borderRadius: '4px', overflow: 'hidden' }}>
                                                     {item.video.thumbnail ? (
                                                         <img src={item.video.thumbnail} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                                                     ) : (
                                                         <div style={{ width: '100%', height: '100%', background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🎬</div>
                                                     )}
-                                                    {/* Stats Overlay */}
                                                     <div style={{
                                                         position: 'absolute', bottom: 0, left: 0, width: '100%',
                                                         background: 'linear-gradient(to top, rgba(0,0,0,0.9), transparent)',
@@ -445,28 +395,76 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                                                     </div>
                                                 </div>
 
-                                                {/* Right: Description & Details */}
                                                 <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                                    {/* Description */}
-                                                    {(item.video.description || item.detail) && (
-                                                        <div style={{ fontSize: '12px', color: 'var(--text-primary)', lineHeight: '1.3' }}>
-                                                            {expandedItems[item.id] ? (
-                                                                <span>{item.video.description || item.detail}</span>
-                                                            ) : (
-                                                                <span>{(item.video.description || item.detail).substring(0, 80)}{(item.video.description || item.detail).length > 80 ? '...' : ''}</span>
-                                                            )}
-                                                            {(item.video.description || item.detail).length > 80 && (
-                                                                <span
-                                                                    onClick={(e) => { e.stopPropagation(); toggleExpand(item.id) }}
-                                                                    style={{ color: 'var(--accent-primary)', cursor: 'pointer', marginLeft: '6px', fontSize: '11px' }}
+                                                    {/* Editable Caption Preview */}
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '2px' }}>
+                                                        Caption Preview:
+                                                    </div>
+
+                                                    {/* We use customCaption if set, otherwise generate from template */}
+                                                    {editingCaptionId === item.id ? (
+                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                                            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                                                                {[
+                                                                    { label: 'Orig', code: '{original}' },
+                                                                    { label: 'NoTags', code: '{original_no_tags}' },
+                                                                    { label: 'Time', code: '{time}' },
+                                                                    { label: 'Date', code: '{date}' }
+                                                                ].map(tag => (
+                                                                    <button
+                                                                        key={tag.code}
+                                                                        className="btn btn-xs btn-ghost"
+                                                                        style={{ fontSize: '9px', padding: '2px 4px', border: '1px solid var(--border-primary)', cursor: 'pointer' }}
+                                                                        onClick={() => handleCaptionChange(index, (item.customCaption !== undefined ? item.customCaption : generateCaption(captionTemplate || '', item.video, item.time)) + ' ' + tag.code)}
+                                                                        title={`Insert ${tag.code}`}
+                                                                    >
+                                                                        {tag.label}
+                                                                    </button>
+                                                                ))}
+                                                            </div>
+                                                            <div style={{ display: 'flex', gap: '8px' }}>
+                                                                <textarea
+                                                                    className="form-control"
+                                                                    value={item.customCaption !== undefined ? item.customCaption : generateCaption(captionTemplate || '', item.video, item.time)}
+                                                                    onChange={(e) => handleCaptionChange(index, e.target.value)}
+                                                                    rows={3}
+                                                                    style={{ width: '100%', fontSize: '12px', padding: '6px' }}
+                                                                    autoFocus
+                                                                />
+                                                                <button
+                                                                    className="btn btn-sm btn-primary"
+                                                                    onClick={() => setEditingCaptionId(null)}
+                                                                    style={{ height: '30px' }}
                                                                 >
-                                                                    {expandedItems[item.id] ? '(less)' : '(more)'}
-                                                                </span>
-                                                            )}
+                                                                    Done
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <div
+                                                            onClick={() => setEditingCaptionId(item.id)}
+                                                            style={{
+                                                                fontSize: '12px',
+                                                                color: 'var(--text-primary)',
+                                                                lineHeight: '1.3',
+                                                                padding: '6px',
+                                                                background: 'var(--bg-input)',
+                                                                border: '1px solid transparent',
+                                                                borderRadius: '4px',
+                                                                cursor: 'pointer',
+                                                                minHeight: '20px'
+                                                            }}
+                                                            title="Click to edit caption"
+                                                            onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--border-primary)'}
+                                                            onMouseLeave={(e) => e.currentTarget.style.borderColor = 'transparent'}
+                                                        >
+                                                            {item.customCaption !== undefined
+                                                                ? (item.customCaption || <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>(Empty caption)</span>)
+                                                                : generateCaption(captionTemplate || '', item.video, item.time)
+                                                            }
                                                         </div>
                                                     )}
 
-                                                    {/* Stats 2 (Likes) & URL */}
                                                     <div style={{ marginTop: 'auto', display: 'flex', alignItems: 'center', gap: '10px', fontSize: '11px', color: 'var(--text-muted)' }}>
                                                         <span style={{ color: '#ff2c55', display: 'flex', alignItems: 'center', gap: '3px' }}>
                                                             ❤️ {item.video.stats?.likes ? (typeof item.video.stats.likes === 'number' ? (item.video.stats.likes > 1000 ? (item.video.stats.likes / 1000).toFixed(1) + 'K' : item.video.stats.likes) : item.video.stats.likes) : '0'}

@@ -656,7 +656,7 @@ export class TikTokModule implements PlatformModule {
         return { description }
     }
 
-    async publishVideo(filePath: string, caption: string, cookies?: any[], onProgress?: (msg: string) => void, options?: { advancedVerification?: boolean }): Promise<{ success: boolean, videoUrl?: string, error?: string, videoId?: string, isReviewing?: boolean, warning?: string }> {
+    async publishVideo(filePath: string, caption: string, cookies?: any[], onProgress?: (msg: string) => void, options?: { advancedVerification?: boolean }): Promise<{ success: boolean, videoUrl?: string, error?: string, videoId?: string, isReviewing?: boolean, warning?: string, debugArtifacts?: { screenshot?: string, html?: string } }> {
         // Generate unique hashtag for verification ONLY if requested
         const useUniqueTag = options?.advancedVerification || false
         const uniqueTag = '#' + Math.random().toString(36).substring(2, 8);
@@ -990,6 +990,22 @@ export class TikTokModule implements PlatformModule {
             await cleanOverlays()
             await page.waitForTimeout(500)
 
+            // ─── CHECK FOR SPECIFIC VIOLATIONS (User Request) ───
+            try {
+                // "Content may be restricted"
+                const restrictionEl = await page.locator('text="Content may be restricted"')
+                    .or(page.locator('text="Violation reason"'))
+                    .or(page.locator('text="Nội dung có thể bị hạn chế"'))
+                    .first()
+
+                if (await restrictionEl.isVisible()) {
+                    console.log('  ❌ CRITICAL: Detected "Content may be restricted" popup!')
+                    throw new Error('TikTok detected content violation/restriction during upload.')
+                }
+            } catch (e: any) {
+                if (e.message.includes('violation')) throw e
+            }
+
             // ─── Set Caption ───
             console.log('✏️ Setting caption...')
             if (onProgress) onProgress('Setting video caption...')
@@ -1030,13 +1046,19 @@ export class TikTokModule implements PlatformModule {
                     const ts = Date.now()
                     const debugDir = path.join(app.getPath('userData'), 'debug_artifacts')
                     await fs.ensureDir(debugDir)
-                    const html = await page!.content()
-                    await fs.writeFile(path.join(debugDir, `caption_fail_${ts}.html`), html)
-                    await page!.screenshot({ path: path.join(debugDir, `caption_fail_${ts}.png`) })
-                    console.log(`  📄 HTML Dump saved to: ${path.join(debugDir, `caption_fail_${ts}.html`)}`)
+
+                    if (page && !page.isClosed()) {
+                        const html = await page!.content()
+                        await fs.writeFile(path.join(debugDir, `caption_fail_${ts}.html`), html)
+                        await page!.screenshot({ path: path.join(debugDir, `caption_fail_${ts}.png`) })
+                        console.log(`  📄 HTML Dump saved to: ${path.join(debugDir, `caption_fail_${ts}.html`)}`)
+                    } else {
+                        console.warn('  ⚠️ Cannot dump: Page already closed.')
+                    }
                 } catch (e) { console.error('Failed to dump caption debug:', e) }
             }
 
+            if (page.isClosed()) throw new Error('Browser closed unexpectedly before posting.')
             await page.waitForTimeout(1000)
 
             // ─── Click Post button ───
@@ -1186,6 +1208,19 @@ export class TikTokModule implements PlatformModule {
 
             // ─── Verify success & extract video link ───
             console.log('\n⏳ Verifying post success...')
+
+            // DUMP SOURCE AFTER POST FOR VERIFICATION (User Request)
+            try {
+                const ts = Date.now()
+                const debugDir = path.join(app.getPath('userData'), 'debug_artifacts')
+                await fs.ensureDir(debugDir)
+                if (page && !page.isClosed()) {
+                    await fs.writeFile(path.join(debugDir, `post_click_verify_${ts}.html`), await page.content())
+                    await page.screenshot({ path: path.join(debugDir, `post_click_verify_${ts}.png`) })
+                    console.log(`  📸 [VERIFY] Post-click HTML dump saved to: post_click_verify_${ts}.html`)
+                }
+            } catch (e) { console.warn(`  ⚠️ Failed to dump post-click state: ${e}`) }
+
             if (onProgress) onProgress('Verifying publication...')
             let videoUrl: string | undefined
             let videoId: string | undefined
@@ -1455,12 +1490,53 @@ export class TikTokModule implements PlatformModule {
                 return { success: true, warning: 'Published but could not satisfy verification.', isReviewing: true }
             }
 
+            console.log('Finalizing post (waiting for success indicator or timeout)...')
+            await page.waitForTimeout(5000)
+
+            // DUMP SOURCE AFTER POST FOR VERIFICATION (User Request)
+            try {
+                const ts = Date.now()
+                const debugDir = path.join(app.getPath('userData'), 'debug_artifacts')
+                await fs.ensureDir(debugDir)
+                if (page && !page.isClosed()) {
+                    await fs.writeFile(path.join(debugDir, `post_click_verify_${ts}.html`), await page.content())
+                    await page.screenshot({ path: path.join(debugDir, `post_click_verify_${ts}.png`) })
+                    console.log(`  📸 [VERIFY] Post-click HTML dump saved to: post_click_verify_${ts}.html`)
+                }
+            } catch (e) { console.warn(`  ⚠️ Failed to dump final source: ${e}`) }
+
             console.log(`  🔗 Final Video URL: ${videoUrl} (Reviewing: ${isReviewing})`)
             return { success: true, videoUrl, videoId, isReviewing: isReviewing }
-
         } catch (error: any) {
             console.error('Publish failed:', error)
-            return { success: false, error: error.message || String(error) }
+
+            // Capture debug artifacts on failure if page is still open
+            let debugArtifacts: { screenshot?: string, html?: string } | undefined
+            if (page && !page.isClosed()) {
+                try {
+                    const ts = Date.now()
+                    const debugDir = path.join(app.getPath('userData'), 'debug_artifacts')
+                    await fs.ensureDir(debugDir)
+
+                    const safeName = `error_${ts}`
+                    const screenshotPath = path.join(debugDir, `${safeName}.png`)
+                    const htmlPath = path.join(debugDir, `${safeName}.html`)
+
+                    await page.screenshot({ path: screenshotPath, fullPage: true })
+                    await fs.writeFile(htmlPath, await page.content())
+
+                    console.log(`  📸 Saved debug artifacts to: ${debugDir}`)
+                    debugArtifacts = { screenshot: screenshotPath, html: htmlPath }
+                } catch (e) {
+                    console.error('Failed to capture debug artifacts:', e)
+                }
+            }
+
+            return {
+                success: false,
+                error: error.message || String(error),
+                debugArtifacts // Return artifacts to be stored
+            }
         } finally {
             if (page) await page.close()
         }

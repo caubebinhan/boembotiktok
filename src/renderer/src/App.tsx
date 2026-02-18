@@ -7,6 +7,8 @@ import { ScheduleView } from './views/ScheduleView'
 import { StatsView } from './views/StatsView'
 import { SettingsView } from './views/SettingsView'
 import { CampaignDetailsWindow } from './views/CampaignDetailsWindow'
+import { DebugConsole } from './components/DebugConsole'
+import { RescheduleModal } from './components/RescheduleModal'
 
 import { ScannerApp } from './ScannerApp'
 
@@ -14,6 +16,8 @@ function App(): JSX.Element {
     const [activeTab, setActiveTab] = useState<'campaigns' | 'accounts' | 'resources' | 'schedule' | 'stats' | 'settings'>('campaigns')
     const [viewMode, setViewMode] = useState<'scan' | 'normal' | 'campaign-details'>('normal')
     const [campaignId, setCampaignId] = useState<number | null>(null)
+    const [missedJobs, setMissedJobs] = useState<any[]>([])
+    const [showRecoveryModal, setShowRecoveryModal] = useState(false)
 
     useEffect(() => {
         const params = new URLSearchParams(window.location.search)
@@ -27,6 +31,33 @@ function App(): JSX.Element {
             setCampaignId(Number(id))
         }
     }, [])
+
+    // Check for crash recovery on mount
+    useEffect(() => {
+        const checkRecovery = async () => {
+            try {
+                const jobs = await (window as any).api.invoke('job:get-missed')
+                if (jobs && jobs.length > 0) {
+                    console.log('Found missed jobs:', jobs)
+                    setMissedJobs(jobs)
+                    setShowRecoveryModal(true)
+                }
+            } catch (e) {
+                console.error('Failed to check recovery:', e)
+            }
+        }
+        checkRecovery()
+    }, [])
+
+    const handleResumeRecovery = async (ids: number[]) => {
+        try {
+            await (window as any).api.invoke('job:resume-recovery', ids)
+            setShowRecoveryModal(false)
+            // Optional: Show success toast
+        } catch (e) {
+            console.error('Failed to resume:', e)
+        }
+    }
 
     if (viewMode === 'scan') {
         return <ScannerApp />
@@ -50,7 +81,17 @@ function App(): JSX.Element {
                 {activeTab === 'schedule' && <ScheduleView />}
                 {activeTab === 'stats' && <StatsView />}
                 {activeTab === 'settings' && <SettingsView />}
+
+                {showRecoveryModal && (
+                    <RescheduleModal
+                        missedJobs={missedJobs}
+                        onResume={handleResumeRecovery}
+                        onDiscard={() => setShowRecoveryModal(false)}
+                    />
+                )}
             </div>
+
+            <DebugConsole />
         </div>
     )
 }

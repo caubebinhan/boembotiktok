@@ -54,7 +54,8 @@ export const CampaignsView: React.FC = () => {
                 editPipeline: data.editPipeline,
                 targetAccounts: data.targetAccounts,
                 schedule: data.schedule,
-                executionOrder: data.executionOrder // Pass manual schedule to backend
+                executionOrder: data.executionOrder, // Pass manual schedule to backend
+                captionTemplate: data.captionTemplate // Ensure caption template is saved
             }
 
             // @ts-ignore

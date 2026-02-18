@@ -296,7 +296,43 @@ export const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ camp
                                                     {job.scheduled_for ? new Date(job.scheduled_for).toLocaleString() : 'Immediate'}
                                                 </td>
                                                 <td style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                                                    {job.result_json || '-'}
+                                                    {(() => {
+                                                        try {
+                                                            const res = JSON.parse(job.result_json || '{}');
+                                                            return (
+                                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                                                    <div>{job.result_json && job.result_json.length > 50 && !res.screenshot_path ? job.result_json.substring(0, 50) + '...' : (job.result_json || '-')}</div>
+
+                                                                    {/* Debug Buttons for Failed Jobs */}
+                                                                    <div style={{ display: 'flex', gap: '5px' }}>
+                                                                        {res.screenshot_path && (
+                                                                            <button
+                                                                                className="btn-xs btn-outline"
+                                                                                onClick={() => (window as any).api.invoke('open-path', res.screenshot_path)}
+                                                                                title="View Error Screenshot"
+                                                                            >
+                                                                                📸 Screenshot
+                                                                            </button>
+                                                                        )}
+                                                                        {res.html_path && (
+                                                                            <button
+                                                                                className="btn-xs btn-outline"
+                                                                                onClick={() => (window as any).api.invoke('open-path', res.html_path)}
+                                                                                title="View HTML Dump"
+                                                                            >
+                                                                                📄 Log
+                                                                            </button>
+                                                                        )}
+                                                                    </div>
+                                                                    {res.raw_reason && (
+                                                                        <div style={{ color: '#ff4d4f', fontSize: '11px', fontStyle: 'italic' }}>
+                                                                            {res.raw_reason}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            )
+                                                        } catch { return job.result_json || '-' }
+                                                    })()}
                                                 </td>
                                             </tr>
                                         ))}

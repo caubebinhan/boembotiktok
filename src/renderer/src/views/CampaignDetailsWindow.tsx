@@ -5,6 +5,7 @@ import { VideoTimeline } from '../components/campaign/VideoTimeline'
 import { AccountPanel } from '../components/campaign/AccountPanel'
 import { LogViewer } from '../components/campaign/LogViewer'
 import { determineVideoStatus } from '../utils/campaignStateManager'
+import { EditCaptionModal } from '../components/EditCaptionModal'
 
 interface Props {
     id: number
@@ -14,54 +15,47 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
     const [campaign, setCampaign] = useState<any>(null)
     const [jobs, setJobs] = useState<any[]>([])
     const [accounts, setAccounts] = useState<any[]>([])
-    const [activeTab, setActiveTab] = useState<'timeline' | 'accounts' | 'logs'>('timeline')
+    const [activeTab, setActiveTab] = useState<'timeline' | 'published' | 'accounts' | 'logs'>('timeline')
 
     const [stats, setStats] = useState({ queued: 0, preparing: 0, uploading: 0, published: 0, failed: 0, skipped: 0 })
 
-    // Data Loading
-    const loadCampaign = useCallback(async () => {
-        try {
-            // @ts-ignore
-            const data = await window.api.invoke('get-campaigns')
-            const c = data.find((c: any) => c.id === Number(id))
-            setCampaign(c)
-
-            // Load accounts used in this campaign (mocking for now, or fetching all)
-            // @ts-ignore
-            const allAccounts = await window.api.invoke('publish-account:list')
-            if (c && c.config_json) {
-                const conf = JSON.parse(c.config_json)
-                if (conf.targetAccounts && conf.targetAccounts.length > 0) {
-                    setAccounts(allAccounts.filter((a: any) => conf.targetAccounts.includes(a.username)))
-                } else {
-                    setAccounts(allAccounts)
-                }
-            } else {
-                setAccounts(allAccounts)
-            }
-        } catch (err) { console.error(err) }
-    }, [id])
+    // Edit Modal State
+    const [editingJob, setEditingJob] = useState<any>(null)
 
     const loadData = useCallback(async () => {
         try {
             // @ts-ignore
-            const [campaignJobs, campaignStats] = await Promise.all([
+            const c: any = await window.api.invoke('get-campaign-details', id)
+            if (c) {
+                setCampaign(c)
                 // @ts-ignore
-                window.api.invoke('get-campaign-jobs', Number(id)),
+                const j: any[] = await window.api.invoke('get-campaign-jobs', id)
+                setJobs(j || [])
+
+                // Calculate stats
+                const newStats = { queued: 0, preparing: 0, uploading: 0, published: 0, failed: 0, skipped: 0 }
+                j?.forEach(job => {
+                    if (job.status === 'pending') newStats.queued++
+                    if (job.status === 'processing') newStats.preparing++ // Simplified mapping
+                    if (job.status === 'uploading') newStats.uploading++
+                    if (job.status === 'completed') newStats.published++
+                    if (job.status === 'failed') newStats.failed++
+                    if (job.status === 'skipped') newStats.skipped++
+                })
+                setStats(newStats)
+
                 // @ts-ignore
-                window.api.invoke('get-campaign-stats', Number(id))
-            ])
-            setJobs(campaignJobs || [])
-            if (campaignStats) setStats(campaignStats)
+                const accs = await window.api.invoke('publish-account:list')
+                setAccounts(accs || [])
+            }
         } catch (e) { console.error(e) }
     }, [id])
 
     useEffect(() => {
-        loadCampaign()
         loadData()
-        const interval = setInterval(loadData, 2000)
+        const interval = setInterval(loadData, 5000)
         return () => clearInterval(interval)
-    }, [id, loadCampaign, loadData])
+    }, [loadData])
 
     // Actions
     const handleRunNow = async () => {
@@ -91,9 +85,26 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
             try {
                 // @ts-ignore
                 const status = await window.api.invoke('job:check-status', jobId)
-                // alert(`Status Check: ${status}`) // Optional feedback
                 loadData()
             } catch (e: any) { console.error(e); alert('Failed to refresh status: ' + e.message) }
+        }
+        if (action === 'edit-caption') {
+            const job = jobs.find(j => j.id === jobId)
+            if (job) {
+                setEditingJob(job)
+            }
+        }
+    }
+
+    const handleSaveCaption = async (jobId: number, newCaption: string) => {
+        try {
+            // @ts-ignore
+            await window.api.invoke('job:update-data', jobId, { caption: newCaption, description: newCaption })
+            setEditingJob(null)
+            loadData()
+        } catch (e: any) {
+            console.error(e)
+            alert('Failed to save caption: ' + e.message)
         }
     }
 
@@ -102,6 +113,16 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
     // Derived Data
     const config = JSON.parse(campaign.config_json || '{}')
     const videos = config.videos || []
+
+    // Filter for Published Tab
+    const publishedVideos = videos.filter((v: any) => {
+        // Check if this video has a successful publish job or is marked as published
+        // We can check the `jobs` list or just rely on video status if synced?
+        // VideoTimeline.tsx uses job state.
+        // Let's filter by checking if ANY publish job for this video is completed?
+        // Or simpler: filter videos where `status` is 'published'
+        return v.status === 'published'
+    })
 
     return (
         <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
@@ -113,6 +134,14 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
                 {/* TABS CONTENT */}
                 {activeTab === 'timeline' && (
                     <VideoTimeline videos={videos} jobs={jobs} onAction={handleAction} />
+                )}
+                {activeTab === 'published' && (
+                    <div style={{ padding: '0 32px' }}>
+                        <div style={{ fontSize: '12px', fontWeight: 700, color: '#4ade80', marginBottom: '24px', letterSpacing: '0.5px' }}>
+                            ✅ PUBLISHED VIDEOS ({publishedVideos.length})
+                        </div>
+                        <VideoTimeline videos={publishedVideos} jobs={jobs} onAction={handleAction} />
+                    </div>
                 )}
                 {activeTab === 'accounts' && (
                     <AccountPanel accounts={accounts} jobs={jobs} />
@@ -129,7 +158,12 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
                 padding: '0 32px'
             }}>
                 <div style={{ display: 'flex', gap: '8px' }}>
-                    {[{ id: 'timeline', label: 'Overview' }, { id: 'accounts', label: 'Accounts' }, { id: 'logs', label: 'Logs' }].map(tab => (
+                    {[
+                        { id: 'timeline', label: 'Overview' },
+                        { id: 'published', label: 'Published' },
+                        { id: 'accounts', label: 'Accounts' },
+                        { id: 'logs', label: 'Logs' }
+                    ].map(tab => (
                         <button
                             key={tab.id}
                             data-testid={`tab-${tab.id}`}
@@ -148,6 +182,15 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
                     ))}
                 </div>
             </div>
+
+            {editingJob && (
+                <EditCaptionModal
+                    jobId={editingJob.id}
+                    initialCaption={JSON.parse(editingJob.data_json || '{}').caption || ''}
+                    onSave={handleSaveCaption}
+                    onClose={() => setEditingJob(null)}
+                />
+            )}
         </div>
     )
 }

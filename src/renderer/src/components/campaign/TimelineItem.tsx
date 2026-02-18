@@ -99,6 +99,13 @@ export const TimelineItem: React.FC<Props> = ({ video, status, downloadJob, publ
                                 ✋ Solve CAPTCHA
                             </button>
                         )}
+                        {publishJob && publishJob.status === 'pending' && (
+                            <button className="btn btn-sm" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border-primary)', fontSize: '11px' }}
+                                onClick={() => onAction('edit-caption', publishJob.id)}
+                                title="Edit Caption">
+                                ✏️ Edit
+                            </button>
+                        )}
                         {publishJob && publishJob.status === 'completed' && (
                             <button className="btn btn-sm" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border-primary)', fontSize: '11px' }}
                                 onClick={() => onAction('refresh', publishJob.id)}
@@ -165,11 +172,45 @@ export const TimelineItem: React.FC<Props> = ({ video, status, downloadJob, publ
                         </div>
                     )}
                     {publishJob && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                             <span style={{ color: publishJob.status === 'completed' ? '#4ade80' : 'var(--text-muted)' }}>
                                 {publishJob.status === 'completed' ? '✓' : '🚀'}
                             </span>
                             Publish: {publishJob.status} - {formatDateTime(publishJob.created_at)}
+
+                            {/* Debug Artifacts Link */}
+                            {(() => {
+                                try {
+                                    const res = publishJob.result_json ? JSON.parse(publishJob.result_json) : {}
+                                    if (res.debugArtifacts && res.debugArtifacts.screenshot) {
+                                        return (
+                                            <span
+                                                style={{
+                                                    marginLeft: '8px',
+                                                    cursor: 'pointer',
+                                                    color: '#ef4444',
+                                                    textDecoration: 'underline',
+                                                    fontSize: '10px',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    gap: '4px'
+                                                }}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    // @ts-ignore
+                                                    if (window.api && window.api.invoke) {
+                                                        // @ts-ignore
+                                                        window.api.invoke('open-path', res.debugArtifacts.screenshot)
+                                                    }
+                                                }}
+                                                title="View Error Screenshot"
+                                            >
+                                                📸 View Error
+                                            </span>
+                                        )
+                                    }
+                                } catch (e) { return null }
+                            })()}
                         </div>
                     )}
                 </div>

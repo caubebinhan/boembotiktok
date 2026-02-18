@@ -56,6 +56,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 type: initialData.type === 'scan_all' ? 'scheduled' : (initialData.type || 'scheduled'),
                 editPipeline: config.editPipeline || { effects: [] },
                 targetAccounts: config.targetAccounts || [],
+                captionTemplate: config.captionTemplate || '',
                 postOrder: config.postOrder || 'newest',
                 schedule: config.schedule || {
                     runAt: new Date(Date.now() + 60000).toISOString(),
@@ -74,6 +75,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
             type: 'one_time' as 'one_time' | 'scheduled',
             editPipeline: { effects: [] as any[] },
             targetAccounts: [] as string[],
+            captionTemplate: '',
             postOrder: 'newest' as 'oldest' | 'newest' | 'most_likes' | 'least_likes',
             schedule: {
                 runAt: new Date(Date.now() + 60000).toISOString(),
@@ -424,6 +426,41 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                         </div>
                     </div>
                 </label>
+            </div>
+
+            {/* Caution Template Section - Moved from Step 5 for better visibility */}
+            <div className="card" style={{ padding: '20px', background: 'rgba(255, 255, 255, 0.05)', marginTop: '16px' }}>
+                <h4 style={{ marginTop: 0, marginBottom: '10px' }}>📝 Caption Template</h4>
+                <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '10px' }}>
+                    Customize the caption for published videos. Leave empty to use the original description.
+                </p>
+                <div style={{ marginBottom: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    {[
+                        { label: 'Original Desc', code: '{original}' },
+                        { label: 'No Hashtags', code: '{original_no_tags}' },
+                        { label: 'Time (HH:mm)', code: '{time}' },
+                        { label: 'Date (YYYY-MM-DD)', code: '{date}' },
+                        { label: 'Author', code: '{author}' },
+                        { label: 'Tags', code: '{tags}' }
+                    ].map(tag => (
+                        <button
+                            key={tag.code}
+                            className="btn btn-sm btn-ghost"
+                            style={{ fontSize: '11px', border: '1px solid var(--border-primary)', padding: '2px 8px', cursor: 'pointer' }}
+                            onClick={() => setFormData(prev => ({ ...prev, captionTemplate: (prev.captionTemplate || '') + ' ' + tag.code }))}
+                        >
+                            {tag.label}
+                        </button>
+                    ))}
+                </div>
+                <textarea
+                    className="form-control"
+                    rows={3}
+                    placeholder="e.g. {original} - Reposted from {author} at {time} #fyp"
+                    value={formData.captionTemplate || ''}
+                    onChange={e => setFormData({ ...formData, captionTemplate: e.target.value })}
+                    style={{ width: '100%', resize: 'vertical', position: 'relative', zIndex: 10, minHeight: '80px' }}
+                />
             </div>
 
             {/* ─── Unified Start Time Configuration (For both One-Time and Recurring) ─── */}
@@ -1025,10 +1062,11 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                             savedVideos={savedVideos}
                             schedule={formData.schedule}
                             initialItems={formData.executionOrder && formData.executionOrder.length > 0 ? formData.executionOrder : undefined}
+                            captionTemplate={formData.captionTemplate}
                             onScheduleChange={(items) => setFormData(prev => ({
                                 ...prev,
                                 executionOrder: items.map(i => ({
-                                    ...i, // Persist all props including time
+                                    ...i, // Persist all props including time and customCaption
                                     time: i.time // Ensure time is explicitly saved
                                 }))
                             }))}
