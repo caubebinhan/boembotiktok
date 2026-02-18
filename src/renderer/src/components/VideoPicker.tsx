@@ -165,16 +165,15 @@ export const VideoPicker: React.FC<VideoPickerProps> = ({ mode = 'standalone', o
                             if (videoEl) thumbSrc = videoEl.poster;
                         }
 
-                        // Description: Prioritize img alt text, then title. 
-                        // Avoid link.innerText because it contains stats (e.g. "2516 視聴済み")
-                        const description = (img && img.alt) ? img.alt : (link.title || '');
-                        // Log inside webview (will show in webview devtools if open)
-                        console.log('[DEBUG_DESC] Scanned ' + idMatch[1] + ' - Desc: ' + description.substring(0, 30));
+                        // Description: User requested to leave empty during scan
+                        const description = '';
+                        // Log inside webview
+                        console.log('[DEBUG_DESC] Scanned ' + idMatch[1] + ' - Desc: (Empty - waiting for download)');
 
                         results.push({
                             id: idMatch[1],
                             url: link.href,
-                            description: description || 'No description',
+                            description: description || '',
                             thumbnail: thumbSrc || '', 
                             stats: {
                                 views: viewsText || '0',

@@ -280,7 +280,41 @@ class JobQueue {
         }
 
         // 3. Update video record (including valid caption from library)
-        const video = storageService.get("SELECT id, metadata, description FROM videos WHERE platform_id = ?", [data.platform_id])
+        // CRITICAL FIX: Update data.description from meta IMMEDIATELY, regardless of DB state
+        if (meta && meta.description) {
+            console.log(`[DEBUG_DESC] JobQueue received new caption from TikTokModule: "${meta.description}"`)
+            data.description = meta.description
+        }
+
+        let video = storageService.get("SELECT id, metadata, description FROM videos WHERE platform_id = ?", [data.platform_id])
+
+        // CRITICAL FIX: If video doesn't exist (because handleScan didn't insert it), create it now!
+        if (!video) {
+            console.log(`[DEBUG_DESC] Video record missing for ${data.platform_id}. Creating new record...`)
+            try {
+                const now = new Date().toISOString()
+                const initialMeta = {
+                    author: meta ? meta.author : null,
+                    stats: data.videoStats
+                }
+                storageService.run(
+                    `INSERT INTO videos (platform, platform_id, url, description, status, metadata, created_at) 
+                     VALUES ('tiktok', ?, ?, ?, 'downloading', ?, ?)`,
+                    [
+                        data.platform_id,
+                        data.url,
+                        data.description || '', // Use the description we just updated from meta
+                        JSON.stringify(initialMeta),
+                        now
+                    ]
+                )
+                // Fetch the newly created video so we can update it below (or just proceed)
+                video = storageService.get("SELECT id, metadata, description FROM videos WHERE platform_id = ?", [data.platform_id])
+            } catch (e: any) {
+                console.error(`[JobQueue] Failed to create video record:`, e)
+            }
+        }
+
         if (video) {
             let dbMeta = {}
             try { dbMeta = JSON.parse(video.metadata || '{}') } catch (e) { }
@@ -293,12 +327,14 @@ class JobQueue {
                     // Update if different, OR if old description was likely a placeholder
                     const isPlaceholder = oldDesc === 'No description' || oldDesc === ''
 
-                    console.log(`[DEBUG_DESC] Metadata update check for video ${video.id}:`, { old: oldDesc, new: newDesc, isPlaceholder })
-
-                    if (newDesc && (newDesc !== oldDesc || isPlaceholder)) {
-                        console.log(`[DEBUG_DESC] Updating video caption in DB.`)
-                        storageService.run("UPDATE videos SET description = ? WHERE id = ?", [newDesc, video.id])
-                        data.description = newDesc
+                    // Force update if we have a better description (even if it's just cleaned)
+                    // and ensure we NEVER save "No description" back to DB
+                    if (newDesc && newDesc !== 'No description') {
+                        if (newDesc !== oldDesc || isPlaceholder) {
+                            console.log(`[DEBUG_DESC] Updating video caption in DB.`)
+                            storageService.run("UPDATE videos SET description = ? WHERE id = ?", [newDesc, video.id])
+                            data.description = newDesc
+                        }
                     }
                 }
                 if (meta.author) {
@@ -313,6 +349,10 @@ class JobQueue {
         // 4. Create PUBLISH job with video info
         if (data.targetAccounts && data.targetAccounts.length > 0) {
             this.updateJobData(job.id, { ...data, status: 'Scheduling publication...' })
+
+            // Critical Safeguard: Ensure no "No description" leaks to publish job
+            if (data.description === 'No description') data.description = '';
+
             console.log(`[DEBUG_DESC] Creating PUBLISH jobs with caption: "${data.description}"`)
             for (const accId of data.targetAccounts) {
                 // Get account info for display
@@ -327,7 +367,7 @@ class JobQueue {
                             account_id: accId,
                             account_name: acc?.display_name || acc?.username || 'Unknown',
                             account_username: acc?.username || '',
-                            caption: data.description || '',
+                            caption: (data.description === 'No description' ? '' : data.description) || '',
                             thumbnail: data.thumbnail || '',
                             videoStats: data.videoStats || {},
                             advancedVerification: data.advancedVerification,
@@ -363,11 +403,14 @@ class JobQueue {
         this.updateJobData(job.id, { ...data, status: `Initializing upload...` })
 
         // Final Fallback for empty caption
+        // Final Fallback for empty caption
         if (!caption || caption === 'No description') {
             const videoRec = storageService.get("SELECT description FROM videos WHERE platform_id = ?", [data.video_id || data.platform_id])
             if (videoRec && videoRec.description && videoRec.description !== 'No description') {
                 console.log(`[DEBUG_DESC] Publish job caption was empty, using fallback from DB: "${videoRec.description}"`)
                 caption = videoRec.description
+            } else {
+                caption = '' // Force empty if still "No description"
             }
         }
 

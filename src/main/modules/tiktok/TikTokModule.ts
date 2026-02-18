@@ -198,26 +198,49 @@ export class TikTokModule implements PlatformModule {
 
             // === Extract Data ===
             const videos = await page.evaluate(() => {
+                const cleanDesc = (text: string) => {
+                    if (!text) return '';
+                    return text
+                        .replace(/[\d,.]+[KMB]?\s*Play/i, '')
+                        .replace(/\s*[·\-\|]\s*(?:original sound|âm thanh gốc|music|âm thanh).*$/i, '')
+                        .replace(/\s*の\s*(?:original sound|âm thanh gốc|music|âm thanh).*$/i, '')
+                        .replace(/^.*?を使用して.*?가 작성한/i, '')
+                        .replace(/\s*·\s*\d+.*$/g, '')
+                        .trim();
+                };
+
                 const anchors = Array.from(document.querySelectorAll('a'))
                 return anchors
                     .filter(a => a.href.includes('/video/'))
                     .map(a => {
                         const m = a.href.match(/\/video\/(\d+)/)
-                        // Try to find views count inside the video container
-                        // Structure varies, usually a sibling or child with specific class/icon
-                        // This is a naive attempt to grab text content as views if it looks like a number
-                        const container = a.closest('div[class*="DivItemContainer"]') || a.parentElement
+                        const container = a.closest('[data-e2e="user-post-item"]') ||
+                            a.closest('div[class*="DivItemContainer"]') ||
+                            a.parentElement
+
                         const viewsText = container ? container.textContent?.match(/(\d+(\.\d+)?[KMB]?)/)?.[0] : ''
+
+                        // Description Extraction
+                        let description = '';
+                        const descEl = container?.querySelector('[data-e2e="user-post-item-desc"]') ||
+                            container?.querySelector('[data-e2e="search-card-video-caption"]')
+
+                        if (descEl && descEl.textContent) {
+                            description = descEl.textContent;
+                        } else {
+                            const img = a.querySelector('img');
+                            description = (img && img.alt) ? img.alt : (a.textContent || '');
+                        }
 
                         return {
                             id: m ? m[1] : '',
                             url: a.href,
-                            desc: a.textContent || '', // This often grabs views too, needs cleaning
+                            desc: '', // User requested empty desc during scan
                             thumb: a.querySelector('img')?.src || '',
                             stats: {
                                 views: viewsText || '0',
-                                likes: '0', // Need detail page
-                                comments: '0' // Need detail page
+                                likes: '0',
+                                comments: '0'
                             }
                         }
                     })
@@ -279,17 +302,8 @@ export class TikTokModule implements PlatformModule {
         const diff = 'tiktok_' + platformId + '.mp4'
         const filePath = path.join(downloadsDir, diff)
 
-        // 0. Check Cache (User Request: "quét cache nếu file đã đc download")
-        if (await fs.pathExists(filePath)) {
-            const stats = await fs.stat(filePath)
-            if (stats.size > 50 * 1024) { // > 50KB (valid video)
-                console.log(`[Cache] Video already exists (${(stats.size / 1024 / 1024).toFixed(2)} MB). Skipping download.`)
-                return { filePath, cached: true }
-            } else {
-                console.log(`[Cache] Found invalid/small file (${stats.size} bytes). Re-downloading...`)
-                await fs.remove(filePath)
-            }
-        }
+        // 0. Check Cache (Moved to after metadata extraction)
+        // const filePath = ... (already defined)
 
         let videoStreamUrl = ''
         let downloadHeaders: Record<string, string> = {
@@ -312,16 +326,32 @@ export class TikTokModule implements PlatformModule {
 
             if (result.status === 'success' && result.result) {
                 const videoData = result.result.video
-                // Strict type checking based on test_lib_only.ts success
-                if (Array.isArray(videoData) && videoData.length > 0) {
-                    videoStreamUrl = videoData[0]
-                } else if (typeof videoData === 'string') {
-                    videoStreamUrl = videoData
+                if (videoData) {
+                    console.log('Library Result Full:', JSON.stringify(result, null, 2))
+                    // Fix: The library returns `playAddr` as an array of strings inside the `video` object
+                    if (Array.isArray(videoData.playAddr) && videoData.playAddr.length > 0) {
+                        videoStreamUrl = videoData.playAddr[0]
+                    } else if (typeof videoData.playAddr === 'string') {
+                        videoStreamUrl = videoData.playAddr
+                    }
                 }
+
+                // HELPER: Clean Description
+                const cleanDesc = (text: string) => {
+                    if (!text) return '';
+                    return text
+                        .replace(/[\d,.]+[KMB]?\s*Play/i, '')
+                        .replace(/\s*[·\-\|]\s*(?:original sound|âm thanh gốc|music|âm thanh|nhạc nền).*/i, '')
+                        .replace(/の\s*(?:original sound|âm thanh gốc|music|âm thanh|nhạc nền).*/i, '')
+                        .replace(/を(?:使用|使っ).*/i, '')
+                        .replace(/が作成した.*/i, '')
+                        .replace(/#\w+$/g, '')
+                        .trim();
+                };
 
                 // Extract metadata
                 meta = {
-                    description: result.result.description || '',
+                    description: cleanDesc(result.result.desc || ''),
                     author: result.result.author ? {
                         nickname: result.result.author.nickname,
                         avatar: result.result.author.avatar
@@ -332,6 +362,31 @@ export class TikTokModule implements PlatformModule {
             if (!videoStreamUrl) {
                 console.warn('Library returned success but no video URL found. Result:', JSON.stringify(result.result))
                 throw new Error('Library result empty')
+            }
+
+            // 2. Fallback for Empty Description (User Requirement: "fetch caption in detail page")
+            if (!meta.description) {
+                console.warn('[TikTokModule] Library returned empty description. Triggering Puppeteer fallback for metadata...')
+                try {
+                    const fallbackMeta = await this.getMetadataFallback(url) // New method
+                    if (fallbackMeta.description) {
+                        const cleanDesc = (text: string) => {
+                            if (!text) return '';
+                            return text
+                                .replace(/[\d,.]+[KMB]?\s*Play/i, '')
+                                .replace(/\s*[·\-\|]\s*(?:original sound|âm thanh gốc|music|âm thanh|nhạc nền).*/i, '')
+                                .replace(/の\s*(?:original sound|âm thanh gốc|music|âm thanh|nhạc nền).*/i, '')
+                                .replace(/を(?:使用|使っ).*/i, '')
+                                .replace(/が作成した.*/i, '')
+                                .replace(/#\w+$/g, '')
+                                .trim();
+                        };
+                        meta.description = cleanDesc(fallbackMeta.description)
+                        console.log(`[DEBUG_DESC] Puppeteer fallback recovered caption: "${meta.description}"`)
+                    }
+                } catch (e: any) {
+                    console.error('[TikTokModule] Metadata fallback failed:', e.message)
+                }
             }
 
             console.log(`[DEBUG_DESC] Library result status: ${result.status}`)
@@ -346,6 +401,18 @@ export class TikTokModule implements PlatformModule {
         }
 
 
+
+        // 2.5. Check Cache NOW (Moved here to ensure we have metadata first)
+        if (await fs.pathExists(filePath)) {
+            const stats = await fs.stat(filePath)
+            if (stats.size > 50 * 1024) {
+                console.log(`[Cache] Video already exists (${(stats.size / 1024 / 1024).toFixed(2)} MB). Skipping download.`)
+                // CRITICAL FIX: Return meta even if cached!
+                return { filePath, cached: true, meta }
+            } else {
+                await fs.remove(filePath)
+            }
+        }
 
         // 3. Download the Extracted URL
         try {
@@ -444,17 +511,31 @@ export class TikTokModule implements PlatformModule {
             }
 
             // 3. Extract Description (Critical Fix)
+            // 3. Extract Description (Critical Fix)
             description = await page.evaluate(() => {
-                const descEl = document.querySelector('[data-e2e="video-desc"]')
-                if (descEl && descEl.textContent) return descEl.textContent.trim()
+                const descEl = document.querySelector('[data-e2e="browse-video-desc"]') ||
+                    document.querySelector('[data-e2e="video-desc"]')
 
-                const metaDesc = document.querySelector('meta[property="og:description"]')
-                if (metaDesc) return metaDesc.getAttribute('content') || ''
+                let raw = '';
+                if (descEl && descEl.textContent) raw = descEl.textContent.trim()
+                else {
+                    const metaDesc = document.querySelector('meta[property="og:description"]')
+                    if (metaDesc) raw = metaDesc.getAttribute('content') || ''
+                    else {
+                        const title = document.querySelector('title')
+                        if (title) raw = title.innerText.replace(' | TikTok', '').trim()
+                    }
+                }
 
-                const title = document.querySelector('title')
-                if (title) return title.innerText.replace(' | TikTok', '').trim()
-
-                return ''
+                if (!raw) return '';
+                return raw
+                    .replace(/[\d,.]+[KMB]?\s*Play/i, '')
+                    .replace(/\s*[·\-\|]\s*(?:original sound|âm thanh gốc|music|âm thanh|nhạc nền).*/i, '')
+                    .replace(/の\s*(?:original sound|âm thanh gốc|music|âm thanh|nhạc nền).*/i, '')
+                    .replace(/を(?:使用|使っ).*/i, '')
+                    .replace(/が作成した.*/i, '')
+                    .replace(/#\w+$/g, '')
+                    .trim();
             })
             console.log(`[DEBUG_DESC] Extracted Description (Fallback): "${description}"`)
 
@@ -508,8 +589,6 @@ export class TikTokModule implements PlatformModule {
             headers: downloadHeaders
         })
 
-        response.data.pipe(writer)
-
         return new Promise((resolve, reject) => {
             writer.on('finish', async () => {
                 // Validate file size
@@ -518,7 +597,9 @@ export class TikTokModule implements PlatformModule {
                     if (stats.size < 50 * 1024) { // < 50KB
                         reject(new Error(`Downloaded file too small (${stats.size} bytes). Path: ${filePath}`))
                     } else {
-                        resolve({ filePath, cached: false, meta: { description } })
+                        // CRITICAL FIX: Return the `meta` object populated from Puppeteer
+                        const meta = { description }
+                        resolve({ filePath, cached: false, meta })
                     }
                 } catch (e) {
                     reject(e)
@@ -526,6 +607,53 @@ export class TikTokModule implements PlatformModule {
             })
             writer.on('error', reject)
         })
+    }
+
+    // New helper to fetch metadata only
+    async getMetadataFallback(url: string): Promise<{ description: string }> {
+        console.log('[TikTokModule] Starting Puppeteer Metadata Extraction (Lazy)...')
+        // Use Browser to get actual video stream
+        if (!browserService.isConnected()) {
+            await browserService.init(true)
+        }
+
+        const page = await browserService.newPage()
+        if (!page) throw new Error('Failed to create page for metadata')
+
+        let description = ''
+        try {
+            console.log(`[TikTokModule] Navigating to ${url} for metadata...`)
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+
+            // Try to wait for the specific selector requested by user
+            try {
+                console.log('[TikTokModule] Waiting for selector [data-e2e="browse-video-desc"] or [data-e2e="video-desc"]...')
+                await page.waitForSelector('[data-e2e="browse-video-desc"], [data-e2e="video-desc"]', { timeout: 10000 })
+                console.log('[TikTokModule] Selector found!')
+            } catch (e) {
+                console.warn('[TikTokModule] Selector wait timeout. Attempting immediate extraction...')
+            }
+
+            description = await page.evaluate(() => {
+                const descEl = document.querySelector('[data-e2e="browse-video-desc"]') ||
+                    document.querySelector('[data-e2e="video-desc"]')
+
+                if (descEl && descEl.textContent) return descEl.textContent.trim()
+
+                const metaDesc = document.querySelector('meta[property="og:description"]')
+                if (metaDesc) return metaDesc.getAttribute('content') || ''
+
+                const title = document.querySelector('title')
+                if (title) return title.innerText.replace(' | TikTok', '').trim()
+
+                return ''
+            })
+        } catch (e) {
+            console.error('[TikTokModule] Metadata extraction error:', e)
+        } finally {
+            await page.close()
+        }
+        return { description }
     }
 
     async publishVideo(filePath: string, caption: string, cookies?: any[], onProgress?: (msg: string) => void, options?: { advancedVerification?: boolean }): Promise<{ success: boolean, videoUrl?: string, error?: string, videoId?: string, isReviewing?: boolean, warning?: string }> {
@@ -929,7 +1057,7 @@ export class TikTokModule implements PlatformModule {
             await page.evaluate(() => { document.body.style.zoom = '0.33' })
 
             console.log('⏳ Waiting 5s for UI to settle (User Request)...')
-            await page.waitForTimeout(5000)
+            await new Promise(resolve => setTimeout(resolve, 5000))
 
             console.log('📜 Looking for scrollable container...')
 
