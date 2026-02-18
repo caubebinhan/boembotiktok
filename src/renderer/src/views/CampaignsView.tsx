@@ -12,15 +12,15 @@ export const CampaignsView: React.FC = () => {
 
     // ... (loadCampaigns is same)
 
-    const loadCampaigns = async () => {
+    const loadCampaigns = React.useCallback(async () => {
         try {
             // @ts-ignore
             const data = await window.api.invoke('get-campaigns')
             setCampaigns(data || [])
         } catch (err) {
-            console.error(err)
+            console.error('Failed to load campaigns:', err)
         }
-    }
+    }, [])
 
     useEffect(() => {
         loadCampaigns()
@@ -33,9 +33,9 @@ export const CampaignsView: React.FC = () => {
         return () => {
             if (removeListener) removeListener()
         }
-    }, [])
+    }, [loadCampaigns])
 
-    const handleCreateCampaign = async (data: any, runNow: boolean) => {
+    const handleCreateCampaign = React.useCallback(async (data: any, runNow: boolean) => {
         try {
             // Build cron from schedule
             let cron = ''
@@ -76,11 +76,9 @@ export const CampaignsView: React.FC = () => {
         } catch (err) {
             console.error('Failed to create campaign:', err)
         }
-    }
+    }, [loadCampaigns])
 
-    // ... (handlers)
-
-    const handleToggleStatus = async (id: number, currentStatus: string) => {
+    const handleToggleStatus = React.useCallback(async (id: number, currentStatus: string) => {
         try {
             const nextStatus = currentStatus === 'active' ? 'paused' : 'active'
             // @ts-ignore
@@ -89,9 +87,9 @@ export const CampaignsView: React.FC = () => {
         } catch (err) {
             console.error('Failed to toggle status:', err)
         }
-    }
+    }, [loadCampaigns])
 
-    const handlePause = async (id: number) => {
+    const handlePause = React.useCallback(async (id: number) => {
         try {
             // @ts-ignore
             await window.api.invoke('campaign:pause', id)
@@ -99,23 +97,23 @@ export const CampaignsView: React.FC = () => {
         } catch (err) {
             console.error('Failed to pause campaign:', err)
         }
-    }
+    }, [loadCampaigns])
 
-    const handleOpenScanner = async () => {
+    const handleOpenScanner = React.useCallback(async () => {
         try {
             // @ts-ignore
             await window.api.invoke('open-scanner-window')
         } catch (err) {
             console.error('Failed to open scanner:', err)
         }
-    }
+    }, [])
 
-    const handleSelectCampaign = async (campaign: any) => {
+    const handleSelectCampaign = React.useCallback(async (campaign: any) => {
         // @ts-ignore
         await window.api.invoke('open-campaign-details', campaign.id)
-    }
+    }, [])
 
-    const handleDelete = async (id: number) => {
+    const handleDelete = React.useCallback(async (id: number) => {
         try {
             // @ts-ignore
             await window.api.invoke('delete-campaign', id)
@@ -123,11 +121,11 @@ export const CampaignsView: React.FC = () => {
         } catch (err) {
             console.error('Failed to delete campaign:', err)
         }
-    }
+    }, [loadCampaigns])
 
     const [processingIds, setProcessingIds] = useState<Set<number>>(new Set())
 
-    const handleRun = async (id: number) => {
+    const handleRun = React.useCallback(async (id: number) => {
         const camp = campaigns.find(c => c.id === id)
         const name = camp ? camp.name : 'Campaign'
 
@@ -141,7 +139,7 @@ export const CampaignsView: React.FC = () => {
                 return
             }
 
-            if (!confirm(`Run "${name}" immediately?`)) return
+            if (!confirm(`Run “${name}” immediately?`)) return
 
             // Optimistic UI: Disable button immediately
             setProcessingIds(prev => new Set(prev).add(id))
@@ -160,9 +158,9 @@ export const CampaignsView: React.FC = () => {
                 return next
             })
         }
-    }
+    }, [campaigns, loadCampaigns])
 
-    const handleClone = async (id: number) => {
+    const handleClone = React.useCallback(async (id: number) => {
         try {
             // Fetch full campaign details including config
             // @ts-ignore
@@ -173,7 +171,7 @@ export const CampaignsView: React.FC = () => {
         } catch (e) {
             console.error('Failed to prepare clone:', e)
         }
-    }
+    }, [])
 
     return (
         <div className="page-enter" style={{ flex: 1, height: '100%', display: 'flex', flexDirection: 'column', padding: '24px', overflow: 'hidden' }}>

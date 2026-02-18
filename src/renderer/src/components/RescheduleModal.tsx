@@ -95,7 +95,7 @@ export const RescheduleModal: React.FC<RescheduleModalProps> = ({ missedJobs, on
                         <div>
                             <h2 style={{ margin: 0, fontSize: '1.2rem', color: '#fff' }}>Missed Jobs Detected</h2>
                             <p style={{ margin: '4px 0 0', fontSize: '0.9rem', color: '#ccc' }}>
-                                The app closed unexpectedly with <strong>{jobs.length} pending jobs</strong>. Please reschedule them below.
+                                The app closed unexpectedly with <strong style={{ fontVariantNumeric: 'tabular-nums' }}>{jobs.length} pending jobs</strong>. Please reschedule them below.
                             </p>
                         </div>
                     </div>
@@ -104,7 +104,7 @@ export const RescheduleModal: React.FC<RescheduleModalProps> = ({ missedJobs, on
                 {/* Body - Schedule Preview */}
                 <div style={{ flex: 1, overflow: 'hidden', padding: '20px', display: 'flex', flexDirection: 'column' }}>
                     <div style={{ marginBottom: '10px', color: '#888', fontSize: '0.9rem' }}>
-                        Adjust the timeline below. Jobs are set to resume from NOW by default.
+                        Adjust the timeline below… Jobs are set to resume from “Now” by default.
                     </div>
 
                     <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #333', borderRadius: '8px', background: '#111' }}>
@@ -143,6 +143,7 @@ export const RescheduleModal: React.FC<RescheduleModalProps> = ({ missedJobs, on
 
                     <button
                         onClick={handleConfirm}
+                        autoFocus
                         style={{
                             padding: '10px 24px', background: '#3b82f6',
                             border: 'none', color: '#fff',

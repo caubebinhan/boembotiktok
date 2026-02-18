@@ -1161,3 +1161,29 @@ select.form-control {
 .video-card-popup {
   animation: fadeIn 0.15s ease;
 }
+
+/* === Utilities === */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.truncate {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* === Accessibility === */
+:focus-visible {
+  outline: 2px solid var(--accent-purple);
+  outline-offset: 2px;
+}
+
+.campaign-item-card:focus-visible {
+  border-color: var(--accent-purple) !important;
+  box-shadow: 0 0 0 2px rgba(124, 92, 252, 0.2) !important;
+}
+
+.btn:focus-visible {
+  box-shadow: 0 0 0 2px var(--bg-primary), 0 0 0 4px var(--accent-purple);
+}

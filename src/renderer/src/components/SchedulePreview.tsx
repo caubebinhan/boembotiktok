@@ -365,7 +365,7 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
                                             <span style={{ fontSize: '16px' }}>{item.icon}</span>
                                             <span style={{ fontWeight: 600, fontSize: '14px' }}>{item.label}</span>
-                                            <span style={{ fontSize: '10px', background: 'rgba(255,255,255,0.1)', padding: '2px 6px', borderRadius: '4px' }}>
+                                            <span className="tabular-nums" style={{ fontSize: '10px', background: 'rgba(255,255,255,0.1)', padding: '2px 6px', borderRadius: '4px' }}>
                                                 Seq #{index + 1}
                                             </span>
                                         </div>
@@ -391,7 +391,7 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                                                         background: 'linear-gradient(to top, rgba(0,0,0,0.9), transparent)',
                                                         padding: '4px 2px', display: 'flex', justifyContent: 'center', gap: '4px'
                                                     }}>
-                                                        <span style={{ fontSize: '9px', color: '#fff' }}>👁️ {item.video.stats?.views ? (typeof item.video.stats.views === 'number' ? (item.video.stats.views > 1000 ? (item.video.stats.views / 1000).toFixed(1) + 'K' : item.video.stats.views) : item.video.stats.views) : '0'}</span>
+                                                        <span className="tabular-nums" style={{ fontSize: '9px', color: '#fff' }}>👁️ {item.video.stats?.views ? (typeof item.video.stats.views === 'number' ? (item.video.stats.views > 1000 ? (item.video.stats.views / 1000).toFixed(1) + 'K' : item.video.stats.views) : item.video.stats.views) : '0'}</span>
                                                     </div>
                                                 </div>
 
@@ -466,7 +466,7 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                                                     )}
 
                                                     <div style={{ marginTop: 'auto', display: 'flex', alignItems: 'center', gap: '10px', fontSize: '11px', color: 'var(--text-muted)' }}>
-                                                        <span style={{ color: '#ff2c55', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                                                        <span className="tabular-nums" style={{ color: '#ff2c55', display: 'flex', alignItems: 'center', gap: '3px' }}>
                                                             ❤️ {item.video.stats?.likes ? (typeof item.video.stats.likes === 'number' ? (item.video.stats.likes > 1000 ? (item.video.stats.likes / 1000).toFixed(1) + 'K' : item.video.stats.likes) : item.video.stats.likes) : '0'}
                                                         </span>
                                                         <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
