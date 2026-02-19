@@ -18,8 +18,9 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
     const [accounts, setAccounts] = useState<any[]>([])
     const [activeTab, setActiveTab] = useState<'timeline' | 'published' | 'accounts' | 'logs'>('timeline')
 
-    const [stats, setStats] = useState({ queued: 0, preparing: 0, uploading: 0, published: 0, failed: 0, skipped: 0 })
+    const [stats, setStats] = useState({ scanned: 0, queued: 0, preparing: 0, uploading: 0, published: 0, failed: 0, skipped: 0 })
     const [isProcessing, setIsProcessing] = useState(false)
+    const [nextScan, setNextScan] = useState<string | null>(null)
 
     // Edit Modal State
     const [editingJob, setEditingJob] = useState<any>(null)
@@ -33,18 +34,29 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
                 setCampaign(c)
                 // @ts-ignore
                 const j: any[] = await window.api.invoke('get-campaign-jobs', id)
-                setJobs(j || [])
+                const jobList = j || []
+                setJobs(jobList)
 
                 // Calculate stats based on grouped jobs to avoid double counting
-                const newStats = { queued: 0, preparing: 0, uploading: 0, published: 0, failed: 0, skipped: 0 }
+                const newStats = { scanned: 0, queued: 0, preparing: 0, uploading: 0, published: 0, failed: 0, skipped: 0 }
+
+                // Track unique videos
+                const uniqueVideos = new Set<string>()
+                if (c.config_json) {
+                    try {
+                        const config = JSON.parse(c.config_json)
+                        config.videos?.forEach((v: any) => uniqueVideos.add(v.id || v.platform_id))
+                    } catch { }
+                }
 
                 // Group jobs by video to determine final status per video
                 const videoJobMap = new Map<string, { download?: any, publish?: any }>()
-                j?.forEach(job => {
+                jobList.forEach(job => {
                     let vid = null
                     try {
                         const d = JSON.parse(job.data_json || '{}')
                         vid = d.platform_id || d.video_id || d.video?.id
+                        if (vid) uniqueVideos.add(vid)
                     } catch { }
                     if (!vid) return
 
@@ -57,6 +69,8 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
                     }
                     videoJobMap.set(vid, current)
                 })
+
+                newStats.scanned = uniqueVideos.size
 
                 videoJobMap.forEach(({ publish, download }) => {
                     const job = publish || download
@@ -71,6 +85,10 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
                     else if (status === 'skipped') newStats.skipped++
                 })
                 setStats(newStats)
+
+                // Find next scan time
+                const pendingScan = jobList.find(j => j.type === 'SCAN' && j.status === 'pending')
+                setNextScan(pendingScan ? pendingScan.scheduled_for : null)
 
                 // @ts-ignore
                 const accs = await window.api.invoke('publish-account:list')
@@ -180,14 +198,21 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
 
     return (
         <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
-            <CampaignHeader campaign={campaign} onRunNow={handleRunNow} onPause={handlePause} onRefresh={loadData} isRunning={isRunning} />
+            <CampaignHeader
+                campaign={campaign}
+                onRunNow={handleRunNow}
+                onPause={handlePause}
+                onRefresh={loadData}
+                isRunning={isRunning}
+                nextScan={nextScan}
+            />
 
             <div style={{ flex: 1, overflowY: 'auto', paddingTop: '24px' }}>
                 <CampaignStats stats={stats} />
 
                 {/* TABS CONTENT */}
                 {activeTab === 'timeline' && (
-                    <VideoTimeline videos={videos} jobs={jobs} onAction={handleAction} />
+                    <VideoTimeline videos={videos} jobs={jobs} onAction={handleAction} campaign={campaign} />
                 )}
                 {activeTab === 'published' && (
                     <div style={{ padding: '0 32px' }}>

@@ -229,6 +229,16 @@ app.whenReady().then(async () => {
             return campaignService.getCampaign(id)
         })
 
+        ipcMain.handle('campaign:get-pending-videos', async (_event: any, campaignId: number) => {
+            return storageService.getAll(`
+                SELECT * FROM videos 
+                WHERE campaign_id = ? AND status = 'pending_review'
+            `, [campaignId]).map(v => ({
+                ...v,
+                ...JSON.parse(v.data_json || '{}')
+            }))
+        })
+
         ipcMain.handle('open-campaign-details', async (_event, id) => {
             const win = new BrowserWindow({
                 width: 1200,

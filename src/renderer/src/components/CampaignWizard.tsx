@@ -28,7 +28,7 @@ interface SourceEntry {
     historyLimit?: number | 'unlimited'
     futureLimit?: number | 'unlimited'
     totalLimit?: number | 'unlimited'
-
+    autoSchedule: boolean
 }
 
 interface CampaignFormData {
@@ -60,6 +60,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
     const [runNow, setRunNow] = useState(false)
     const [isSaving, setIsSaving] = useState(false)
     const isInitialized = React.useRef(false)
+    const [needsReview, setNeedsReview] = useState(initialData?.status === 'needs_review')
     const [formData, setFormData] = useState<CampaignFormData>(() => {
         if (initialData) {
             const config = typeof initialData.config_json === 'string' ? JSON.parse(initialData.config_json) : initialData.config_json || {}
@@ -117,21 +118,48 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         console.log('[CampaignWizard] Initializing from initialData:', initialData?.name);
         const config = typeof initialData.config_json === 'string' ? JSON.parse(initialData.config_json) : initialData.config_json || {}
 
-        // Sync Sources
+        // Restore Sources
         if (config.sources) {
-            const newSources: SourceEntry[] = []
+            const restoredSources: SourceEntry[] = []
             if (config.sources.channels) {
-                config.sources.channels.forEach((c: any) => newSources.push({ ...c, type: 'channel' }))
+                config.sources.channels.forEach((c: any) => {
+                    restoredSources.push({
+                        ...c,
+                        type: 'channel',
+                        autoSchedule: c.autoSchedule !== false
+                    })
+                })
             }
             if (config.sources.keywords) {
-                config.sources.keywords.forEach((k: any) => newSources.push({ ...k, type: 'keyword' }))
+                config.sources.keywords.forEach((k: any) => {
+                    restoredSources.push({
+                        ...k,
+                        type: 'keyword',
+                        autoSchedule: k.autoSchedule !== false
+                    })
+                })
             }
-            setSources(newSources)
+            setSources(restoredSources)
         }
-        // Sync Videos
-        if (config.videos) {
+
+        // Special handling for Needs Review
+        if (initialData.status === 'needs_review') {
+            setStep(4)
+            // Fetch videos with 'pending_review' status for this campaign
+            const loadPendingVideos = async () => {
+                try {
+                    // @ts-ignore
+                    const videos = await window.api.invoke('campaign:get-pending-videos', initialData.id)
+                    if (videos && videos.length > 0) {
+                        setSavedVideos(videos)
+                    }
+                } catch (e) {
+                    console.error('Failed to load pending videos:', e)
+                }
+            }
+            loadPendingVideos()
+        } else if (config.videos) {
             setSavedVideos(config.videos)
-            setVideoCount(config.videos.length)
         }
 
         // Sync Form Data (Critical for Clone/Edit)
@@ -216,7 +244,8 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                                     type: 'channel',
                                     videoCount: 0,
                                     maxScanCount: 50,
-                                    timeRange: 'history_and_future'
+                                    timeRange: 'history_and_future',
+                                    autoSchedule: true
                                 });
                             }
                         });
@@ -231,7 +260,8 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                                     type: 'keyword',
                                     videoCount: 0,
                                     maxScanCount: 50,
-                                    timeRange: 'history_and_future'
+                                    timeRange: 'history_and_future',
+                                    autoSchedule: true
                                 });
                             }
                         });
@@ -410,6 +440,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                     type="text"
                     className="form-control"
                     placeholder="e.g. Daily TikTok Scan"
+                    autoFocus
                     value={formData.name}
                     onChange={e => {
                         const val = e.target.value;
@@ -417,11 +448,13 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                         console.log('[Wizard_Input] Campaign Name TARGET VALUE:', val);
                         setFormData(prev => ({ ...prev, name: val }));
                     }}
+                    onFocus={() => console.log('[Wizard_Input] Campaign Name Focused')}
+                    onBlur={() => console.log('[Wizard_Input] Campaign Name Blurred')}
                     data-testid="campaign-name-input"
                     style={{
                         width: '100%', padding: '12px', background: 'var(--bg-secondary)',
                         border: '1px solid var(--border-primary)', borderRadius: '8px',
-                        color: '#fff', fontSize: '14px'
+                        color: '#fff', fontSize: '14px', position: 'relative', zIndex: 10
                     }}
                 />
             </div>
@@ -431,8 +464,9 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 <div className="radio-group" style={{ display: 'flex', gap: '20px' }}>
                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '15px', background: formData.type === 'one_time' ? 'rgba(255,255,255,0.05)' : 'transparent', borderRadius: '8px', cursor: 'pointer', border: formData.type === 'one_time' ? '1px solid var(--accent-primary)' : '1px solid transparent' }}>
                         <input type="radio" checked={formData.type === 'one_time'} onChange={() => {
-                            console.log('[Wizard_Input] Campaign Type: one_time');
+                            console.log('[Wizard_Input] Campaign Type: one_time (Clearing Sources)');
                             setFormData({ ...formData, type: 'one_time' });
+                            setSources([]); // Clear sources when switching to one_time
                         }} />
                         <div>
                             <strong>One-Time Run</strong>
@@ -441,8 +475,10 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                     </label>
                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '15px', background: formData.type === 'scheduled' ? 'rgba(255,255,255,0.05)' : 'transparent', borderRadius: '8px', cursor: 'pointer', border: formData.type === 'scheduled' ? '1px solid var(--accent-primary)' : '1px solid transparent' }}>
                         <input type="radio" checked={formData.type === 'scheduled'} onChange={() => {
-                            console.log('[Wizard_Input] Campaign Type: scheduled');
+                            console.log('[Wizard_Input] Campaign Type: scheduled (Clearing Selected Videos)');
                             setFormData({ ...formData, type: 'scheduled' });
+                            setSavedVideos([]); // Clear videos when switching to scheduled
+                            setVideoCount(0);
                         }} />
                         <div>
                             <strong data-testid="type-scheduled">Scheduled Scan</strong>
@@ -863,87 +899,135 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                                     </button>
                                 </div>
                             ) : (
-                                sources.map(src => (
-                                    <div key={`${src.type}-${src.name}`} style={{
-                                        background: 'var(--bg-secondary)', border: '1px solid var(--border-primary)',
-                                        borderRadius: '8px', overflow: 'hidden'
-                                    }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', padding: '10px', gap: '10px' }}>
-                                            <div style={{
-                                                width: '28px', height: '28px', borderRadius: '50%',
-                                                background: src.type === 'channel' ? 'linear-gradient(135deg, #25f4ee, #fe2c55)' : 'linear-gradient(135deg, #ff9800, #ff5722)',
-                                                display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '12px', fontWeight: 700
-                                            }}>
-                                                {src.type === 'channel' ? '📺' : '🔍'}
-                                            </div>
-                                            <div style={{ flex: 1, minWidth: 0 }}>
-                                                <div style={{ fontWeight: 600, fontSize: '13px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                    {src.type === 'channel' ? `@${src.name}` : `"${src.name}"`}
+                                (
+                                    sources.map(src => (
+                                        <div key={`${src.type}-${src.name}`} style={{
+                                            background: 'var(--bg-secondary)', border: '1px solid var(--border-primary)',
+                                            borderRadius: '8px', overflow: 'hidden'
+                                        }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', padding: '10px 15px', gap: '10px', borderBottom: '1px solid var(--border-primary)', background: 'rgba(255,255,255,0.02)' }}>
+                                                <div style={{
+                                                    width: '28px', height: '28px', borderRadius: '50%',
+                                                    background: src.type === 'channel' ? 'linear-gradient(135deg, #25f4ee, #fe2c55)' : 'linear-gradient(135deg, #ff9800, #ff5722)',
+                                                    display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '12px', fontWeight: 700
+                                                }}>
+                                                    {src.type === 'channel' ? '📺' : '🔍'}
                                                 </div>
-                                                <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                                                    {src.type === 'channel' ? 'Channel' : 'Keyword'}
+                                                <div style={{ flex: 1, minWidth: 0 }}>
+                                                    <div style={{ fontWeight: 700, fontSize: '14px', color: '#fff' }}>
+                                                        {src.type === 'channel' ? `@${src.name}` : `"${src.name}"`}
+                                                    </div>
                                                 </div>
+                                                <button className="btn btn-ghost btn-sm" onClick={() => removeSource(src.name)} style={{ color: 'var(--accent-red)', opacity: 0.7 }}>
+                                                    ✕
+                                                </button>
                                             </div>
-                                            <button className="btn btn-ghost btn-sm" onClick={() => setEditingSource(editingSource === src.name ? null : src.name)}>
-                                                ⚙️
-                                            </button>
-                                            <button className="btn btn-ghost btn-sm" onClick={() => removeSource(src.name)} style={{ color: 'var(--accent-red)' }}>
-                                                ✕
-                                            </button>
-                                        </div>
 
-                                        {/* Source Settings Expansion */}
-                                        {/* Keep existing source settings logic here... I'll copy-paste it from previous block to ensure it persists correctly */}
-                                        {editingSource === src.name && (
-                                            <div style={{ padding: '15px', background: 'rgba(0,0,0,0.2)', borderTop: '1px solid var(--border-primary)' }}>
-                                                {/* ... (Existing Source Settings UI) ... */}
-                                                {/* Re-injecting simplified logic to avoid huge block: */}
-                                                <div style={{ marginBottom: '15px' }}>
-                                                    <label style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: '8px' }}>
-                                                        🎯 VIDEO LIMITS
-                                                    </label>
-                                                    {['history_only', 'history_and_future', 'custom_range'].includes(src.timeRange || 'history_only') && (
-                                                        <div style={{ marginBottom: '8px' }}>
-                                                            <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '4px' }}>Max History Videos</div>
-                                                            <div style={{ display: 'flex', gap: '10px' }}>
-                                                                <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', cursor: 'pointer' }}>
-                                                                    <input type="radio" checked={src.historyLimit === 'unlimited'} onChange={() => updateSourceSettings(src.name, { historyLimit: 'unlimited', maxScanCount: 'unlimited' })} />
-                                                                    Unlimited
-                                                                </label>
-                                                                <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', cursor: 'pointer' }}>
-                                                                    <input type="radio" checked={src.historyLimit !== 'unlimited'} onChange={() => updateSourceSettings(src.name, { historyLimit: 50, maxScanCount: 50 })} />
-                                                                    Limit
-                                                                </label>
-                                                                {src.historyLimit !== 'unlimited' && (
-                                                                    <input type="number" className="form-control" style={{ width: '50px', padding: '2px', fontSize: '11px' }} value={src.historyLimit || 50}
-                                                                        onChange={e => updateSourceSettings(src.name, { historyLimit: Number(e.target.value), maxScanCount: Number(e.target.value) })}
-                                                                    />
-                                                                )}
-                                                            </div>
+                                            <div style={{ padding: '15px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
+                                                {/* Scan Limit (Only for History-related modes) */}
+                                                {(src.timeRange !== 'future_only') && (
+                                                    <div>
+                                                        <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', display: 'block', marginBottom: '8px', textTransform: 'uppercase' }}>
+                                                            🎯 Scan Limit
+                                                        </label>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                            <input
+                                                                type="number"
+                                                                className="form-control"
+                                                                style={{ width: '60px', padding: '4px 8px', fontSize: '12px' }}
+                                                                value={src.maxScanCount === 'unlimited' ? '' : (src.maxScanCount || 50)}
+                                                                placeholder="∞"
+                                                                onChange={e => updateSourceSettings(src.name, {
+                                                                    maxScanCount: e.target.value === '' ? 'unlimited' : Number(e.target.value),
+                                                                    historyLimit: e.target.value === '' ? 'unlimited' : Number(e.target.value)
+                                                                })}
+                                                            />
+                                                            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>videos</span>
                                                         </div>
-                                                    )}
-                                                    {/* Condensed View... Assuming logic is preserved in react state updates */}
-                                                </div>
-                                                <div style={{ marginBottom: '10px' }}>
-                                                    <label style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: '8px' }}>
-                                                        🎲 PRIORITY SORTING
+                                                    </div>
+                                                )}
+
+                                                {/* Sort Order */}
+                                                <div>
+                                                    <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', display: 'block', marginBottom: '8px', textTransform: 'uppercase' }}>
+                                                        🎲 Sorting
                                                     </label>
                                                     <select
                                                         className="form-control"
-                                                        style={{ width: '100%', padding: '8px', fontSize: '12px' }}
+                                                        style={{ width: '100%', padding: '4px 8px', fontSize: '12px' }}
                                                         value={src.sortOrder || 'newest'}
                                                         onChange={e => updateSourceSettings(src.name, { sortOrder: e.target.value })}
                                                     >
-                                                        <option value="newest">⚡ Newest first (Real-time)</option>
-                                                        <option value="most_likes">🔥 Most liked (Batch)</option>
-                                                        <option value="most_viewed">🔥 Most viewed (Batch)</option>
-                                                        <option value="oldest">🔥 Oldest first (Batch)</option>
+                                                        <option value="newest">Newest</option>
+                                                        <option value="most_likes">Most Likes</option>
+                                                        <option value="most_viewed">Most Viewed</option>
+                                                        <option value="oldest">Oldest</option>
                                                     </select>
                                                 </div>
+
+                                                {/* Time Range */}
+                                                <div style={{ gridColumn: 'span 2' }}>
+                                                    <label style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', display: 'block', marginBottom: '8px', textTransform: 'uppercase' }}>
+                                                        📅 Time Range
+                                                    </label>
+                                                    <select
+                                                        className="form-control"
+                                                        style={{ width: '100%', padding: '4px 8px', fontSize: '12px' }}
+                                                        value={src.timeRange || 'history_and_future'}
+                                                        onChange={e => updateSourceSettings(src.name, { timeRange: e.target.value })}
+                                                    >
+                                                        <option value="history_and_future">History & Future (Both)</option>
+                                                        <option value="history_only">History (Past Only)</option>
+                                                        <option value="future_only">Future (Monitoring Only)</option>
+                                                        <option value="custom_range">Custom Date Range...</option>
+                                                    </select>
+                                                </div>
+
+                                                {/* Custom Date Range Pickers */}
+                                                {src.timeRange === 'custom_range' && (
+                                                    <div style={{ gridColumn: 'span 2', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginTop: '5px' }}>
+                                                        <div>
+                                                            <label style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Start Date</label>
+                                                            <DatePicker
+                                                                selected={src.startDate ? new Date(src.startDate) : null}
+                                                                onChange={(date: Date | null) => updateSourceSettings(src.name, { startDate: date ? date.toISOString().split('T')[0] : null })}
+                                                                dateFormat="yyyy-MM-dd"
+                                                                className="form-control"
+                                                                placeholderText="Start"
+                                                            />
+                                                        </div>
+                                                        <div>
+                                                            <label style={{ fontSize: '10px', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>End Date</label>
+                                                            <DatePicker
+                                                                selected={src.endDate ? new Date(src.endDate) : null}
+                                                                onChange={(date: Date | null) => updateSourceSettings(src.name, { endDate: date ? date.toISOString().split('T')[0] : null })}
+                                                                dateFormat="yyyy-MM-dd"
+                                                                className="form-control"
+                                                                placeholderText="End"
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                )}
+
+                                                {/* Auto-Schedule Toggle */}
+                                                <div style={{ gridColumn: 'span 2', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--border-primary)' }}>
+                                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={src.autoSchedule ?? true}
+                                                            onChange={e => updateSourceSettings(src.name, { autoSchedule: e.target.checked })}
+                                                            style={{ width: '16px', height: '16px' }}
+                                                        />
+                                                        <div>
+                                                            <div style={{ fontSize: '12px', fontWeight: 600 }}>Auto-schedule videos</div>
+                                                            <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>If off, you must manually approve videos after scanning</div>
+                                                        </div>
+                                                    </label>
+                                                </div>
                                             </div>
-                                        )}
-                                    </div>
-                                ))
+                                        </div>
+                                    ))
+                                )
                             )}
                         </div>
                     )}
@@ -1212,13 +1296,28 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
             sourceData: {
                 channels: sources.filter(s => s.type === 'channel').map(s => ({
                     name: s.name,
+                    timeRange: s.timeRange || 'history_and_future',
+                    startDate: s.startDate,
+                    endDate: s.endDate,
+                    maxScanCount: s.maxScanCount,
+                    historyLimit: s.historyLimit,
+                    futureLimit: s.futureLimit,
+                    totalLimit: s.totalLimit,
+                    autoSchedule: s.autoSchedule !== false,
                     minViews: s.minViews,
                     minLikes: s.minLikes,
                     sortOrder: s.sortOrder
                 })),
                 keywords: sources.filter(s => s.type === 'keyword').map(s => ({
                     name: s.name,
+                    timeRange: s.timeRange || 'history_and_future',
+                    startDate: s.startDate,
+                    endDate: s.endDate,
                     maxScanCount: s.maxScanCount || 50,
+                    historyLimit: s.historyLimit,
+                    futureLimit: s.futureLimit,
+                    totalLimit: s.totalLimit,
+                    autoSchedule: s.autoSchedule !== false,
                     minViews: s.minViews,
                     minLikes: s.minLikes,
                     sortOrder: s.sortOrder
@@ -1243,7 +1342,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
             <div
                 className="campaign-wizard-modal page-enter no-drag"
                 style={{ width: '900px', height: '85vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', borderRadius: '16px', overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,0.5)', pointerEvents: 'auto' } as any}
-            // onMouseDown={(e) => e.stopPropagation()} // REMOVED: Caused DatePicker to not close on outside click.
+                onMouseDown={(e) => e.stopPropagation()}
             >
                 {renderStepper()}
 
@@ -1270,6 +1369,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                             }))}
                             onStartTimeChange={(date) => setFormData({ ...formData, schedule: { ...formData.schedule, runAt: date.toISOString() } })}
                             onIntervalChange={(val) => setFormData(prev => ({ ...prev, schedule: { ...prev.schedule, interval: val } }))}
+                            onSourcesChange={(newSources) => setSources(newSources)}
                         />
                     )}
                     {step === 5 && renderStep4_Target()}

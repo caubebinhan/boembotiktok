@@ -2,6 +2,7 @@ import React from 'react'
 
 interface Props {
     stats: {
+        scanned?: number
         queued: number
         preparing: number
         uploading: number
@@ -13,6 +14,7 @@ interface Props {
 
 export const CampaignStats: React.FC<Props> = ({ stats }) => {
     const items = [
+        { label: 'Scanned', value: stats.scanned || 0, color: '#a855f7', bg: 'rgba(168, 85, 247, 0.08)' },
         { label: 'Queued', value: stats.queued, color: '#9ca3af', bg: 'rgba(156, 163, 175, 0.08)' },
         { label: 'Preparing', value: stats.preparing, color: '#eab308', bg: 'rgba(234, 179, 8, 0.08)' },
         { label: 'Uploading', value: stats.uploading, color: '#3b82f6', bg: 'rgba(59, 130, 246, 0.08)' },
@@ -26,7 +28,7 @@ export const CampaignStats: React.FC<Props> = ({ stats }) => {
             <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '12px', letterSpacing: '0.5px' }}>
                 📈 REAL-TIME STATS
             </div>
-            <div data-testid="campaign-stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '12px' }}>
+            <div data-testid="campaign-stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '12px' }}>
                 {items.map(item => (
                     <div key={item.label} style={{
                         background: item.bg,
@@ -38,7 +40,7 @@ export const CampaignStats: React.FC<Props> = ({ stats }) => {
                         alignItems: 'center',
                         justifyContent: 'center'
                     }}>
-                        <div style={{ fontSize: '24px', fontWeight: 700, color: item.color, marginBottom: '4px' }}>
+                        <div className="tabular-nums" style={{ fontSize: '24px', fontWeight: 700, color: item.color, marginBottom: '4px' }}>
                             {item.value}
                         </div>
                         <div style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 500 }}>

@@ -7,16 +7,35 @@ import fs from 'fs-extra'
 import path from 'path'
 import { app } from 'electron'
 import { Downloader } from '@tobyg74/tiktok-api-dl'
+import * as Sentry from '@sentry/electron/main'
+import { fileLogger } from '../../services/FileLogger'
 
 export interface ScanOptions {
     limit?: number | 'unlimited'
     mode?: 'incremental' | 'batch'
     sortOrder?: 'newest' | 'oldest' | 'most_likes' | 'most_viewed'
-    timeRange?: 'from_now' | 'include_history'
+    // New filtering options
+    timeRange?: 'all' | 'today' | 'yesterday' | 'week' | 'month' | 'year' | 'custom_range' | 'future_only' | 'history_only' | 'history_and_future' | 'from_now'
     isBackground?: boolean
-    startDate?: string // YYYY-MM-DD
-    endDate?: string   // YYYY-MM-DD
+    startDate?: string // ISO date string
+    endDate?: string   // ISO date string
+    onProgress?: (progress: string) => void
 }
+
+// Helper to get date from TikTok Snowflake ID
+// ID >> 32 = Unix Timestamp (seconds)
+function getDateFromVideoId(id: string): Date {
+    try {
+        const bin = BigInt(id).toString(2);
+        const timeBin = bin.slice(0, 32);
+        const unixSeconds = parseInt(timeBin, 2);
+        return new Date(unixSeconds * 1000);
+    } catch (e) {
+        console.error('Error parsing date from ID:', id, e);
+        return new Date(); // Fallback to now if fails
+    }
+}
+
 
 export class TikTokModule implements PlatformModule {
     name = 'TikTok'
@@ -98,6 +117,9 @@ export class TikTokModule implements PlatformModule {
                 }
 
                 console.log(`[TikTokModule] Scanning round ${rounds}/${MAX_ROUNDS}... Found ${currentCount}/${maxVideos}`)
+                if (options.onProgress) {
+                    options.onProgress(`Scanning round ${rounds}: found ${currentCount}/${maxVideos} videos...`)
+                }
                 await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
                 try {
                     // Randomized delay to mimic human behavior and avoid rate limits (2s - 5s)
@@ -220,6 +242,7 @@ export class TikTokModule implements PlatformModule {
             return { videos: foundVideos }
 
         } catch (error) {
+            Sentry.captureException(error, { tags: { module: 'tiktok', operation: 'scanKeyword', keyword } })
             console.error('Error scanning keyword:', error)
             return { videos: [] }
         } finally {
@@ -237,6 +260,7 @@ export class TikTokModule implements PlatformModule {
         }
         this.isScanning = true
         console.log(`Starting scan for: ${username} (Background: ${isBackground})`)
+        fileLogger.log(`Starting scan for: ${username} (Background: ${isBackground})`)
 
         if (!browserService.isConnected()) {
             await browserService.init(true)
@@ -274,13 +298,48 @@ export class TikTokModule implements PlatformModule {
                 )
             }
 
+            try {
+                // Initial wait for content
+                await page.waitForSelector('[data-e2e="user-post-item"]', { timeout: 10000 })
+            } catch (e) {
+                console.log('Timeout waiting for video selector, checking for CAPTCHA...')
+                // CAPTCHA Handling
+                const isCaptcha = await page.$('.captcha-verify-container, #captcha_container')
+                if (isCaptcha) {
+                    console.log('CAPTCHA DETECTED! Waiting 30s for user to solve...')
+                    fileLogger.log('CAPTCHA DETECTED! Waiting 30s for user to solve...')
+
+                    // Wait for CAPTCHA to disappear
+                    await page.waitForFunction(() => !document.querySelector('.captcha-verify-container') && !document.querySelector('#captcha_container'), { timeout: 30000 }).catch(() => {
+                        console.log('CAPTCHA wait timeout - proceeding hoping best')
+                        fileLogger.log('CAPTCHA wait timeout')
+                    })
+
+                    // Re-wait for content
+                    try {
+                        await page.waitForSelector('[data-e2e="user-post-item"]', { timeout: 10000 })
+                    } catch (e2) {
+                        console.log('Still no content after CAPTCHA wait')
+                    }
+                } else {
+                    console.log('No CAPTCHA found. Possible empty profile or layout change.')
+                }
+            }
+
             // === Scroll to End Logic ===
             let prevCount = 0
             let rounds = 0
 
             // Check for Incremental Mode (stop at last known video)
             let stopId: string | null = null
-            if (options.timeRange === 'from_now') {
+
+            // Start/End Date Filtering Setup
+            const startDate = options.startDate ? new Date(options.startDate) : null;
+            const endDate = options.endDate ? new Date(options.endDate) : null;
+
+            console.log(`[TikTokModule] Scan Range: ${startDate ? startDate.toISOString() : 'Earliest'} -> ${endDate ? endDate.toISOString() : 'Latest'}`);
+
+            if (options.timeRange === 'from_now' || options.timeRange === 'future_only') {
                 try {
                     const lastRow = storageService.get(`SELECT platform_id FROM videos WHERE platform='tiktok' AND url LIKE '%/@${username}/video/%' ORDER BY platform_id DESC LIMIT 1`)
                     if (lastRow) {
@@ -295,13 +354,15 @@ export class TikTokModule implements PlatformModule {
 
             while (rounds < MAX_ROUNDS) {
                 rounds++
-                console.log(`[TikTokModule] Scanning round ${rounds}/${MAX_ROUNDS}...`)
 
                 await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
                 await page.waitForTimeout(2000)
 
                 const currentCount = await page.evaluate(() => document.querySelectorAll('a[href*="/video/"]').length)
                 console.log(`[TikTokModule] Round ${rounds}: Found ${currentCount} videos so far (Target: ${options.limit === 'unlimited' ? 'Unlimited' : limit}).`)
+                if (options.onProgress) {
+                    options.onProgress(`Scanning round ${rounds}: found ${currentCount} videos so far...`)
+                }
 
                 if (options.limit !== 'unlimited' && currentCount >= limit) {
                     console.log(`[TikTokModule] Reached limit (${limit}). Stopping scroll.`)
@@ -335,21 +396,42 @@ export class TikTokModule implements PlatformModule {
                     console.log(`[TikTokModule] Reached end of feed for @${username}.`)
                     break
                 }
+
+                // Date-Check Break Logic (Stop if we scrolled past startDate)
+                // We need to sample the last video to see its date
+                if (startDate) {
+                    const lastVideoDate = await page.evaluate(() => {
+                        const anchors = Array.from(document.querySelectorAll('a[href*="/video/"]'));
+                        const lastAnchor = anchors[anchors.length - 1];
+                        if (!lastAnchor) return null;
+
+                        // Check if pinned (closest container has pin/top label?)
+                        // Pinned videos stay at top, so checking the LAST video is safe
+                        // Pinned logic check:
+                        const container = lastAnchor.closest('[data-e2e="user-post-item"]');
+                        if (container) {
+                            const isPinned = !!container.querySelector('[data-e2e="video-card-badge"]'); // Top/Pinned badge
+                            if (isPinned) return null; // If last is pinned, we barely started? Unlikely in standard feed
+                        }
+
+                        const m = (lastAnchor as HTMLAnchorElement).href.match(/\/video\/(\d+)/);
+                        return m ? m[1] : null;
+                    });
+
+                    if (lastVideoDate) {
+                        const date = getDateFromVideoId(lastVideoDate);
+                        if (date < startDate) {
+                            console.log(`[TikTokModule] Reached date ${date.toISOString()} which is older than start date ${startDate.toISOString()}. Stopping.`);
+                            break;
+                        }
+                    }
+                }
+
                 prevCount = currentCount
             }
 
             // === Extract Data ===
             const videos = await page.evaluate(() => {
-                const cleanDesc = (text: string) => {
-                    if (!text) return '';
-                    return text
-                        .replace(/[\d,.]+[KMB]?\s*Play/i, '')
-                        .replace(/\s*[·\-\|]\s*(?:original sound|âm thanh gốc|music|âm thanh).*$/i, '')
-                        .replace(/\s*の\s*(?:original sound|âm thanh gốc|music|âm thanh).*$/i, '')
-                        .replace(/^.*?を使用して.*?가 작성한/i, '')
-                        .replace(/\s*·\s*\d+.*$/g, '')
-                        .trim();
-                };
 
                 const anchors = Array.from(document.querySelectorAll('a'))
                 return anchors
@@ -374,6 +456,9 @@ export class TikTokModule implements PlatformModule {
                             description = (img && img.alt) ? img.alt : (a.textContent || '');
                         }
 
+                        const isPinned = !!(container?.querySelector('[data-e2e="video-card-badge"]')?.textContent?.toLowerCase().includes('pinned') ||
+                            container?.querySelector('[data-e2e="video-card-badge"]')?.textContent?.toLowerCase().includes('top'));
+
                         return {
                             id: m ? m[1] : '',
                             url: a.href,
@@ -383,24 +468,54 @@ export class TikTokModule implements PlatformModule {
                                 views: viewsText || '0',
                                 likes: '0',
                                 comments: '0'
-                            }
+                            },
+                            isPinned
                         }
                     })
                     .filter(v => v.id)
             })
 
             console.log(`Found ${videos.length} videos on page`)
+            fileLogger.log(`Found ${videos.length} videos on page for @${username}`)
+
+            if (videos.length === 0) {
+                const dumpPath = path.join(app.getPath('userData'), `scan_dump_${username}_${Date.now()}.html`)
+                try {
+                    const html = await page.content()
+                    await fs.writeFile(dumpPath, html)
+                    console.log(`[TikTokModule] ZERO VIDEOS FOUND. Dumped HTML to: ${dumpPath}`)
+                    fileLogger.log(`[TikTokModule] ZERO VIDEOS FOUND. Dumped HTML to: ${dumpPath}`)
+                } catch (e) {
+                    console.error('Failed to dump HTML:', e)
+                }
+            }
 
             for (const v of videos) {
+                // Calculate Posted Date
+                const postedAt = getDateFromVideoId(v.id);
+
+                // --- DATE FILTERING ---
+                // Skip if older than startDate (and not pinned - pinned videos can be old but at top)
+                if (startDate && postedAt < startDate && !v.isPinned) {
+                    console.log(`[TikTokModule] Skipping ${v.id} (Date: ${postedAt.toISOString()} < Start: ${startDate.toISOString()})`);
+                    continue;
+                }
+                // Skip if newer than endDate
+                if (endDate && postedAt > endDate) {
+                    console.log(`[TikTokModule] Skipping ${v.id} (Date: ${postedAt.toISOString()} > End: ${endDate.toISOString()})`);
+                    continue;
+                }
+                // ----------------------
+
                 const exists = storageService.get('SELECT id FROM videos WHERE platform_id = ?', [v.id])
 
                 if (!exists) {
                     storageService.run(
-                        `INSERT INTO videos (platform, platform_id, url, description, status, metadata)
-                         VALUES ('tiktok', ?, ?, ?, 'discovered', ?)`,
-                        [v.id, v.url, v.desc, JSON.stringify({ thumbnail: v.thumb, stats: v.stats })]
+                        `INSERT INTO videos (platform, platform_id, url, description, status, metadata, posted_at)
+                         VALUES ('tiktok', ?, ?, ?, 'discovered', ?, ?)`,
+                        [v.id, v.url, v.desc, JSON.stringify({ thumbnail: v.thumb, stats: v.stats, isPinned: v.isPinned }), postedAt.toISOString()]
                     )
-                    console.log(`[DEBUG_DESC] scanProfile: New video found: ${v.id}. Desc: "${v.desc}"`)
+                    console.log(`[DEBUG_DESC] scanProfile: New video found: ${v.id} (${postedAt.toISOString()}). Desc: "${v.desc}"`)
 
                     if (isBackground) {
                         const newId = storageService.get('SELECT last_insert_rowid() as id').id
@@ -409,7 +524,8 @@ export class TikTokModule implements PlatformModule {
                             url: v.url,
                             platform_id: v.id,
                             thumbnail: v.thumb,
-                            stats: v.stats
+                            stats: v.stats,
+                            posted_at: postedAt.toISOString()
                         })
                     }
                 }
@@ -418,6 +534,7 @@ export class TikTokModule implements PlatformModule {
             return { videos: foundVideos, channel: channelInfo }
 
         } catch (error) {
+            Sentry.captureException(error, { tags: { module: 'tiktok', operation: 'scanProfile', username } })
             console.error('Error scanning profile:', error)
             return { videos: [], channel: null }
         } finally {
@@ -537,6 +654,7 @@ export class TikTokModule implements PlatformModule {
             console.log(`[TikTokModule] Extraction Phase Completed. Selected Stream: ${videoStreamUrl.substring(0, 60)}...`)
 
         } catch (e: any) {
+            Sentry.captureException(e, { tags: { module: 'tiktok', operation: 'downloadVideo_library', url } })
             console.error('[TikTokModule] Library extraction fatal error:', e.message)
             console.log('[TikTokModule] Redirecting to FULL Puppeteer download fallback...')
             return await this.downloadVideoFallback(url, filePath)
@@ -611,6 +729,7 @@ export class TikTokModule implements PlatformModule {
                     jobQueue.setGlobalThrottle(30)
                 } catch (e) { }
             }
+            Sentry.captureException(error, { tags: { module: 'tiktok', operation: 'downloadVideo_axios' } })
             console.error('Download failed:', error)
             throw error
         }
@@ -695,6 +814,7 @@ export class TikTokModule implements PlatformModule {
             console.log(`Extracted Video URL: ${videoStreamUrl} (Size: ${largestVideoSize})`)
 
         } catch (e) {
+            Sentry.captureException(e, { tags: { module: 'tiktok', operation: 'downloadVideoFallback' } })
             console.error('Extraction error:', e)
         } finally {
             await page.close()

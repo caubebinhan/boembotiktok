@@ -186,7 +186,9 @@ class StorageService {
             try { this.db.run("ALTER TABLE jobs ADD COLUMN result_json TEXT") } catch (e) { /* ignore */ }
             try { this.db.run("ALTER TABLE jobs ADD COLUMN scheduled_for DATETIME") } catch (e) { /* ignore */ }
             try { this.db.run("ALTER TABLE accounts ADD COLUMN metadata TEXT") } catch (e) { /* ignore */ }
+            try { this.db.run("ALTER TABLE accounts ADD COLUMN metadata TEXT") } catch (e) { /* ignore */ }
             try { this.db.run("ALTER TABLE jobs ADD COLUMN metadata TEXT") } catch (e) { /* ignore */ }
+            try { this.db.run("ALTER TABLE videos ADD COLUMN posted_at DATETIME") } catch (e) { /* ignore */ }
 
             await this.save()
             console.log('Migrations executed')

@@ -3,49 +3,48 @@ import { CampaignList } from '../components/CampaignList'
 import { CampaignWizard } from '../components/CampaignWizard'
 import { TodaySchedule } from '../components/TodaySchedule'
 import { RescheduleModal } from '../components/RescheduleModal'
+import { useAppDispatch, useAppSelector } from '../store/hooks'
+import {
+    fetchCampaigns,
+    triggerCampaign,
+    pauseCampaign,
+    deleteCampaign,
+    toggleCampaignStatus,
+    selectCampaigns,
+    selectProcessingIds,
+    addProcessingId,
+    removeProcessingId
+} from '../store/campaignSlice'
 
 export const CampaignsView: React.FC = () => {
-    const [campaigns, setCampaigns] = useState<any[]>([])
+    const dispatch = useAppDispatch()
+    const campaigns = useAppSelector(selectCampaigns)
+    const processingIds = useAppSelector(selectProcessingIds)
     const [wizardState, setWizardState] = useState<{ isOpen: boolean, initialData?: any }>({ isOpen: false })
     const [activeTab, setActiveTab] = useState<'all' | 'today'>('all')
     const [rescheduleTarget, setRescheduleTarget] = useState<{ campaign: any, missedJobs: any[] } | null>(null)
 
-    // ... (loadCampaigns is same)
-
-    const loadCampaigns = React.useCallback(async () => {
-        try {
-            // @ts-ignore
-            const data = await window.api.invoke('get-campaigns')
-            setCampaigns(data || [])
-        } catch (err) {
-            console.error('Failed to load campaigns:', err)
-        }
-    }, [])
-
     useEffect(() => {
-        loadCampaigns()
+        dispatch(fetchCampaigns())
 
-        // Listen for updates from other windows (e.g. details window closed)
+        // Listen for updates from other windows
         // @ts-ignore
         const removeListener = window.api.on('campaigns-updated', () => {
-            loadCampaigns()
+            dispatch(fetchCampaigns())
         })
         return () => {
             if (removeListener) removeListener()
         }
-    }, [loadCampaigns])
+    }, [dispatch])
 
     const handleCreateCampaign = React.useCallback(async (data: any, runNow: boolean) => {
         try {
-            // Build cron from schedule
             let cron = ''
             if (data.type === 'scheduled' && data.schedule) {
-                // Ensure valid interval
                 const interval = Math.max(1, Number(data.schedule.interval) || 60)
                 cron = `*/${interval} * * * *`
             }
 
-            // Full config includes all wizard data
             const config = {
                 sources: data.sourceData?.channels || data.sourceData?.keywords ? {
                     channels: data.sourceData.channels || [],
@@ -56,8 +55,8 @@ export const CampaignsView: React.FC = () => {
                 editPipeline: data.editPipeline,
                 targetAccounts: data.targetAccounts,
                 schedule: data.schedule,
-                executionOrder: data.executionOrder, // Pass manual schedule to backend
-                captionTemplate: data.captionTemplate, // Ensure caption template is saved
+                executionOrder: data.executionOrder,
+                captionTemplate: data.captionTemplate,
                 autoSchedule: data.autoSchedule,
                 advancedVerification: data.advancedVerification
             }
@@ -65,39 +64,24 @@ export const CampaignsView: React.FC = () => {
             // @ts-ignore
             const result = await window.api.invoke('create-campaign', data.name, data.type, cron, config)
 
-            // triggerCampaign handles everything: singles first, then scans
             if (result && result.lastInsertId) {
-                // @ts-ignore
-                await window.api.invoke('trigger-campaign', result.lastInsertId, runNow)
+                dispatch(triggerCampaign({ id: result.lastInsertId, runNow }))
             }
 
             setWizardState({ isOpen: false })
-            loadCampaigns()
+            dispatch(fetchCampaigns())
         } catch (err) {
             console.error('Failed to create campaign:', err)
         }
-    }, [loadCampaigns])
+    }, [dispatch])
 
     const handleToggleStatus = React.useCallback(async (id: number, currentStatus: string) => {
-        try {
-            const nextStatus = currentStatus === 'active' ? 'paused' : 'active'
-            // @ts-ignore
-            await window.api.invoke('update-campaign-status', id, nextStatus)
-            loadCampaigns()
-        } catch (err) {
-            console.error('Failed to toggle status:', err)
-        }
-    }, [loadCampaigns])
+        dispatch(toggleCampaignStatus({ id, currentStatus }))
+    }, [dispatch])
 
     const handlePause = React.useCallback(async (id: number) => {
-        try {
-            // @ts-ignore
-            await window.api.invoke('campaign:pause', id)
-            await loadCampaigns()
-        } catch (err) {
-            console.error('Failed to pause campaign:', err)
-        }
-    }, [loadCampaigns])
+        dispatch(pauseCampaign(id))
+    }, [dispatch])
 
     const handleOpenScanner = React.useCallback(async () => {
         try {
@@ -109,21 +93,25 @@ export const CampaignsView: React.FC = () => {
     }, [])
 
     const handleSelectCampaign = React.useCallback(async (campaign: any) => {
-        // @ts-ignore
-        await window.api.invoke('open-campaign-details', campaign.id)
+        if (campaign.status === 'needs_review') {
+            try {
+                // @ts-ignore
+                const details = await window.api.invoke('get-campaign-details', campaign.id)
+                if (details) {
+                    setWizardState({ isOpen: true, initialData: details })
+                }
+            } catch (e) {
+                console.error('Failed to open review wizard:', e)
+            }
+        } else {
+            // @ts-ignore
+            await window.api.invoke('open-campaign-details', campaign.id)
+        }
     }, [])
 
     const handleDelete = React.useCallback(async (id: number) => {
-        try {
-            // @ts-ignore
-            await window.api.invoke('delete-campaign', id)
-            loadCampaigns()
-        } catch (err) {
-            console.error('Failed to delete campaign:', err)
-        }
-    }, [loadCampaigns])
-
-    const [processingIds, setProcessingIds] = useState<Set<number>>(new Set())
+        dispatch(deleteCampaign(id))
+    }, [dispatch])
 
     const handleRun = React.useCallback(async (id: number) => {
         const camp = campaigns.find(c => c.id === id)
@@ -139,30 +127,18 @@ export const CampaignsView: React.FC = () => {
                 return
             }
 
-            if (!confirm(`Run “${name}” immediately?`)) return
+            if (!confirm(`Run "${name}" immediately?`)) return
 
-            // Optimistic UI: Disable button immediately
-            setProcessingIds(prev => new Set(prev).add(id))
-
-            // @ts-ignore
-            await window.api.invoke('trigger-campaign', id, true)
-            // Small delay to ensure DB updates are committed
-            await new Promise(resolve => setTimeout(resolve, 500))
-            await loadCampaigns()
+            dispatch(addProcessingId(id))
+            dispatch(triggerCampaign({ id, runNow: true }))
         } catch (err) {
             console.error('Failed to run campaign:', err)
-        } finally {
-            setProcessingIds(prev => {
-                const next = new Set(prev)
-                next.delete(id)
-                return next
-            })
+            dispatch(removeProcessingId(id))
         }
-    }, [campaigns, loadCampaigns])
+    }, [campaigns, dispatch])
 
     const handleClone = React.useCallback(async (id: number) => {
         try {
-            // Fetch full campaign details including config
             // @ts-ignore
             const details = await window.api.invoke('get-campaign-details', id)
             if (details) {
@@ -189,7 +165,7 @@ export const CampaignsView: React.FC = () => {
                             const res = await window.api.invoke('run-self-test')
                             if (res.success) {
                                 alert('✅ Self-Test Passed!\n' + res.logs.join('\n'))
-                                loadCampaigns()
+                                dispatch(fetchCampaigns())
                             } else {
                                 alert('❌ Self-Test Failed:\n' + res.error + '\n\nLogs:\n' + res.logs.join('\n'))
                             }
@@ -239,10 +215,8 @@ export const CampaignsView: React.FC = () => {
             <div style={{ flex: 1, overflow: 'hidden' }}>
                 {activeTab === 'all' ? (
                     <CampaignList
-                        campaigns={campaigns}
-                        // @ts-ignore
+                        campaigns={campaigns as any}
                         onCreate={() => setWizardState({ isOpen: true })}
-                        // @ts-ignore
                         onToggleStatus={handleToggleStatus}
                         onSelect={handleSelectCampaign}
                         onDelete={handleDelete}
@@ -270,13 +244,13 @@ export const CampaignsView: React.FC = () => {
                         // @ts-ignore
                         await window.api.invoke('job:resume-recovery', items)
                         setRescheduleTarget(null)
-                        loadCampaigns()
+                        dispatch(fetchCampaigns())
                     }}
                     onDiscard={async () => {
                         // @ts-ignore
                         await window.api.invoke('job:discard-recovery', rescheduleTarget.missedJobs.map(j => j.id))
                         setRescheduleTarget(null)
-                        loadCampaigns()
+                        dispatch(fetchCampaigns())
                     }}
                 />
             )}

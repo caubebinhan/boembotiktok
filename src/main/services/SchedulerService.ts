@@ -246,6 +246,8 @@ class SchedulerService {
                             })
                         ]
                     )
+                    // Mark video as scheduled (clear pending_review)
+                    storageService.run("UPDATE videos SET status = 'scheduled' WHERE campaign_id = ? AND platform_id = ? AND status = 'pending_review'", [id, v.platform_id || v.id])
                 } else if (item.type === 'scan' && item.sourceId) {
                     // Strict Check: ONLY create Scan job if sources exist in config
                     // Even if item is type 'scan', if config.sources is empty, it's invalid

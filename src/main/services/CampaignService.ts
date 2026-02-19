@@ -35,6 +35,9 @@ class CampaignService {
             (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.status = 'skipped') as skipped_count,
             (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.status = 'paused') as paused_count,
             (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.status = 'missed') as missed_count,
+            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.type = 'SCAN' AND j.status = 'running') as scanning_count,
+            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.type = 'SCAN' AND j.status = 'pending') as scan_pending_count,
+            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.type = 'SCAN' AND j.status = 'completed') as scanned_count,
             (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.created_at > datetime('now', '-1 day')) as total_recent
             FROM campaigns c 
             ORDER BY c.created_at DESC
@@ -59,9 +62,8 @@ class CampaignService {
     updateConfig(id: number, config: any) {
         const json = JSON.stringify(config)
         console.log(`[CampaignService] Updating config for campaign #${id}. New Config:`, JSON.stringify(config, null, 2));
-        // Also update source_config based on new config?
-        // Ideally we keep source_config in sync or deprecate it.
-        // For now, update config_json.
+        // Reset 'needs_review' status to 'active' on save
+        storageService.run("UPDATE campaigns SET status = 'active' WHERE id = ? AND status = 'needs_review'", [id])
         return storageService.run('UPDATE campaigns SET config_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [json, id])
     }
 

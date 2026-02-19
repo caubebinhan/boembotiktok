@@ -1,6 +1,7 @@
 import { BrowserWindow, ipcMain, app } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs-extra'
+import * as Sentry from '@sentry/electron/main'
 import { storageService } from './StorageService'
 import { moduleManager } from './ModuleManager'
 import { TikTokModule, ScanOptions } from '../modules/tiktok/TikTokModule'
@@ -8,6 +9,7 @@ import { publishAccountService } from './PublishAccountService'
 import { campaignService } from './CampaignService'
 import { notificationService } from './NotificationService'
 import { CaptionGenerator } from './CaptionGenerator'
+import { fileLogger } from './FileLogger'
 
 class JobQueue {
     private interval: NodeJS.Timeout | null = null
@@ -420,7 +422,12 @@ class JobQueue {
             storageService.run("UPDATE jobs SET status = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?", [finalStatus, job.id])
 
         } catch (error: any) {
+            Sentry.captureException(error, {
+                tags: { service: 'JobQueue', operation: 'executeJob', jobType: job.type },
+                extra: { jobId: job.id, campaignId: job.campaign_id }
+            })
             console.error(`Job #${job.id} failed:`, error)
+            fileLogger.log(`Job #${job.id} failed:`, { error: error.message, stack: error.stack, jobType: job.type })
 
             // Extract path if present in error message (for "file too small" or similar)
             let resultUpdate = ''
@@ -443,13 +450,23 @@ class JobQueue {
                 notificationService.notifyJobFailed(campaign ? campaign.name : 'Unknown', error.message)
             } catch (e) { /* ignore */ }
         } finally {
-            // Check if Campaign is Completed (regardless of success/failure)
-            this.checkCampaignCompletion(job.campaign_id)
+            // Only check completion after DOWNLOAD/PUBLISH jobs.
+            // SCAN jobs create downstream DOWNLOAD/PUBLISH jobs — checking after SCAN
+            // would prematurely mark campaign as finished before those jobs exist.
+            if (job.type !== 'SCAN') {
+                this.checkCampaignCompletion(job.campaign_id)
+            }
             this.broadcastUpdate()
         }
     }
 
     private async handleScan(job: any, data: any, tiktok: TikTokModule) {
+        console.log(`[SCAN_DEBUG] ========== SCAN START (Job #${job.id}) ==========`)
+        console.log(`[SCAN_DEBUG] Full data.sources:`, JSON.stringify(data.sources, null, 2))
+        console.log(`[SCAN_DEBUG] data.postOrder: ${data.postOrder}`)
+        console.log(`[SCAN_DEBUG] data.isMonitoring: ${data.isMonitoring}`)
+        console.log(`[SCAN_DEBUG] data.targetAccounts:`, JSON.stringify(data.targetAccounts))
+
         // 1. Get scheduling params
         const intervalMinutes = data.intervalMinutes || 15
         let scheduleTime = data.nextScheduleTime ? new Date(data.nextScheduleTime) : new Date()
@@ -480,31 +497,45 @@ class JobQueue {
         }
 
         if (data.sources) {
+            console.log(`[SCAN_DEBUG] Has sources. Channels: ${data.sources.channels?.length || 0}, Keywords: ${data.sources.keywords?.length || 0}`)
             // 2a. Scan Channels
             if (data.sources.channels) {
                 for (const ch of data.sources.channels) {
-                    console.log(`[JobQueue] [SCAN] Processing channel: @${ch.name} (Monitoring: ${isMonitoring})`)
+                    console.log(`[SCAN_DEBUG] --- Channel: @${ch.name} ---`)
+                    console.log(`[SCAN_DEBUG]   timeRange: ${ch.timeRange}`)
+                    console.log(`[SCAN_DEBUG]   maxScanCount: ${ch.maxScanCount}`)
+                    console.log(`[SCAN_DEBUG]   historyLimit: ${ch.historyLimit}`)
+                    console.log(`[SCAN_DEBUG]   startDate: ${ch.startDate}, endDate: ${ch.endDate}`)
+                    console.log(`[SCAN_DEBUG]   sortOrder: ${ch.sortOrder}`)
+                    console.log(`[SCAN_DEBUG]   autoSchedule: ${ch.autoSchedule}`)
+                    console.log(`[SCAN_DEBUG]   isMonitoring: ${isMonitoring}`)
                     this.updateJobData(job.id, { ...data, status: `Scanning channel @${ch.name}...`, scannedCount })
 
                     // Determine Fetch Limit based on Phase
-                    // History Phase: Use historyLimit (if set) or maxScanCount
-                    // Future Phase: Use maxScanCount (fetch batch size) - strict limit checks happen post-scan
                     let fetchLimit = ch.maxScanCount
                     if (!isMonitoring && ch.historyLimit && ch.historyLimit !== 'unlimited') {
                         fetchLimit = ch.historyLimit
                     }
+                    console.log(`[SCAN_DEBUG]   Resolved fetchLimit: ${fetchLimit}`)
 
                     const scanOptions: ScanOptions = {
                         limit: fetchLimit,
-                        timeRange: resolveTimeRange(ch.timeRange),
+                        timeRange: resolveTimeRange(ch.timeRange) as any,
                         startDate: ch.startDate,
                         endDate: ch.endDate,
-                        // If monitoring, force 'from_now' behavior if logic requires, 
-                        // but TikTokModule handles 'from_now' efficiently already.
+                        isBackground: true, // Critical: scanProfile only returns videos when isBackground=true
+                        onProgress: (p) => {
+                            this.updateJobData(job.id, { ...data, status: `Scanning @${ch.name}: ${p}`, scannedCount })
+                        }
                     }
+                    console.log(`[SCAN_DEBUG]   scanOptions:`, JSON.stringify({ limit: scanOptions.limit, timeRange: scanOptions.timeRange, startDate: scanOptions.startDate, endDate: scanOptions.endDate, isBackground: scanOptions.isBackground }))
 
                     const result = await tiktok.scanProfile(ch.name, scanOptions) || { videos: [] }
                     let newVideos = result.videos || []
+                    console.log(`[SCAN_DEBUG]   scanProfile returned ${newVideos.length} videos`)
+                    if (newVideos.length > 0) {
+                        console.log(`[SCAN_DEBUG]   First video:`, JSON.stringify({ id: newVideos[0].id, desc: newVideos[0].desc?.substring(0, 50) }))
+                    }
 
                     // Apply source-level sorting
                     const sortOrder = ch.sortOrder || data.postOrder || 'newest'
@@ -513,6 +544,9 @@ class JobQueue {
                         if (sortOrder === 'most_likes') return (b.stats?.likes || 0) - (a.stats?.likes || 0)
                         return (b.id || '').localeCompare(a.id || '')
                     })
+
+                    // Attach source info
+                    newVideos.forEach((v: any) => v.source = { type: 'channel', name: ch.name })
 
                     // Strict Fetch Limit (if module over-fetched)
                     if (fetchLimit !== 'unlimited' && typeof fetchLimit === 'number') {
@@ -537,23 +571,35 @@ class JobQueue {
 
                     const scanOptions: ScanOptions = {
                         limit: fetchLimit,
-                        timeRange: resolveTimeRange(kw.timeRange),
+                        timeRange: resolveTimeRange(kw.timeRange) as any,
                         startDate: kw.startDate,
-                        endDate: kw.endDate
+                        endDate: kw.endDate,
+                        isBackground: true,
+                        onProgress: (p) => {
+                            this.updateJobData(job.id, { ...data, status: `Scanning keyword "${kw.name}": ${p}`, scannedCount })
+                        }
                     }
 
                     const result = await tiktok.scanKeyword(kw.name, scanOptions) || { videos: [] }
                     const newVideos = result.videos || []
+
+                    // Attach source info
+                    newVideos.forEach((v: any) => v.source = { type: 'keyword', name: kw.name })
 
                     allVideos.push(...newVideos)
                     scannedCount += newVideos.length
                     this.updateJobData(job.id, { ...data, status: `Scanned keyword "${kw.name}": found ${newVideos.length} videos`, scannedCount })
                 }
             }
+        } else {
+            console.log(`[SCAN_DEBUG] WARNING: data.sources is FALSY! No sources to scan.`)
         }
+
+        console.log(`[SCAN_DEBUG] Total allVideos before dedup: ${allVideos.length}`)
 
         // 3. Deduplicate
         const uniqueVideos = Array.from(new Map(allVideos.map(v => [v.id, v])).values())
+        console.log(`[SCAN_DEBUG] After dedup: ${uniqueVideos.length} unique videos`)
 
         // 4. Global sort
         const postOrder = data.postOrder || 'newest'
@@ -589,8 +635,7 @@ class JobQueue {
 
         // Let's look at the First Channel/Keyword to get the "Campaign Config" for limits.
         // (Assuming uniform config for now, or taking the most restrictive/lax?)
-        // Let's iterate and schedule, checking limits as we go.
-
+        // Let's iterate and schedule, checking
         console.log(`[JobQueue] [SCAN] Checks: TotalScheduled=${totalScheduled}, Monitored=${monitoredCount}. Monitoring=${isMonitoring}`)
 
         // 5. Create Scheduled DOWNLOAD Jobs
@@ -627,30 +672,49 @@ class JobQueue {
             }
 
             // Schedule
-            storageService.run(
-                `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'DOWNLOAD', 'pending', ?, ?)`,
-                [
-                    job.campaign_id,
-                    scheduleTime.toISOString().replace('T', ' ').slice(0, 19),
-                    JSON.stringify({
-                        url: v.url,
-                        platform_id: v.platform_id || v.id,
-                        video_id: v.id,
-                        targetAccounts,
-                        description: v.desc || v.description,
-                        thumbnail: v.thumbnail || v.cover || '',
-                        videoStats: v.stats || { views: 0, likes: 0 },
-                        editPipeline: data.editPipeline,
-                        advancedVerification: data.advancedVerification,
-                        status: `Queued: Download`
-                    })
-                ]
-            )
-            newlyScheduled++
-            totalScheduled++
-            if (isMonitoring) monitoredCount++
+            const sourceOfVideo = data.sources?.channels?.find((c: any) => c.name === v.channelName) ||
+                data.sources?.keywords?.find((k: any) => k.name === v.keyword) ||
+                sourceConfig;
 
-            scheduleTime = new Date(scheduleTime.getTime() + intervalMinutes * 60000)
+            const isAutoSchedule = sourceOfVideo.autoSchedule !== false;
+
+            if (isAutoSchedule) {
+                storageService.run(
+                    `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'DOWNLOAD', 'pending', ?, ?)`,
+                    [
+                        job.campaign_id,
+                        scheduleTime.toISOString().replace('T', ' ').slice(0, 19),
+                        JSON.stringify({
+                            url: v.url,
+                            platform_id: v.platform_id || v.id,
+                            video_id: v.id,
+                            targetAccounts,
+                            description: v.desc || v.description,
+                            thumbnail: v.thumbnail || v.cover || '',
+                            videoStats: v.stats || { views: 0, likes: 0 },
+                            source: v.source,
+                            editPipeline: data.editPipeline,
+                            advancedVerification: data.advancedVerification,
+                            status: `Queued: Download`
+                        })
+                    ]
+                )
+                newlyScheduled++
+                totalScheduled++
+                if (isMonitoring) monitoredCount++
+                scheduleTime = new Date(scheduleTime.getTime() + intervalMinutes * 60000)
+            } else {
+                // Manual Review Needed
+                console.log(`[JobQueue] [SCAN] Video ${v.id} requires manual approval (autoSchedule=false). Saving to metadata.`)
+                // Mark campaign as needing review
+                storageService.run("UPDATE campaigns SET status = 'needs_review' WHERE id = ?", [job.campaign_id])
+                // Save found video info to campaign config or metadata for later preview
+                // For now, we can create a record in 'videos' with status 'pending_review'
+                storageService.run(
+                    `INSERT OR REPLACE INTO videos (platform_id, campaign_id, data_json, status) VALUES (?, ?, ?, 'pending_review')`,
+                    [v.platform_id || v.id, job.campaign_id, JSON.stringify({ ...v, source: v.source }), 'pending_review']
+                )
+            }
         }
 
         // Update Job Result
@@ -1033,36 +1097,64 @@ class JobQueue {
 
     private checkCampaignCompletion(campaignId: number) {
         try {
-            // Check for any pending or running jobs for this campaign
+            // Check for any pending or running jobs (SCAN, DOWNLOAD, PUBLISH)
             const pendingJobs = storageService.get(
                 "SELECT COUNT(*) as count FROM jobs WHERE campaign_id = ? AND status IN ('pending', 'running')",
                 [campaignId]
             ).count
 
-            if (pendingJobs === 0) {
-                const campaign = storageService.get('SELECT * FROM campaigns WHERE id = ?', [campaignId])
-                if (campaign) {
-                    const config = JSON.parse(campaign.config_json || '{}')
+            if (pendingJobs > 0) {
+                console.log(`[CampaignCheck] ID: ${campaignId} has ${pendingJobs} pending/running jobs. Skipping.`)
+                return
+            }
 
-                    const hasSources = (config.sources?.channels?.length > 0) || (config.sources?.keywords?.length > 0)
-                    const isRecurring = !!config.schedule?.interval
+            const campaign = storageService.get('SELECT * FROM campaigns WHERE id = ?', [campaignId])
+            if (!campaign) return
 
-                    console.log(`[CampaignCheck] ID: ${campaignId} Pending: ${pendingJobs} HasSources: ${hasSources} IsRecurring: ${isRecurring}`)
+            const config = JSON.parse(campaign.config_json || '{}')
+            const hasSources = (config.sources?.channels?.length > 0) || (config.sources?.keywords?.length > 0)
 
-                    if (!hasSources || !isRecurring) {
-                        storageService.run("UPDATE campaigns SET status = 'finished' WHERE id = ?", [campaignId])
-                        console.log(`Campaign ${campaignId} finished (all jobs and monitoring complete).`)
-
-                        try {
-                            const stats = campaignService.getCampaignStats(campaignId)
-                            notificationService.notifyCampaignComplete(campaign.name, stats)
-                        } catch (e) { /* ignore */ }
-                    } else {
-                        console.log(`Campaign ${campaignId} kept active (Recurring / Sources present)`)
-                    }
+            // Safety: If campaign has sources, require at least 1 completed PUBLISH job
+            // to avoid marking as finished before the pipeline (Scan → Download → Publish) runs.
+            if (hasSources) {
+                const completedPublish = storageService.get(
+                    "SELECT COUNT(*) as count FROM jobs WHERE campaign_id = ? AND type = 'PUBLISH' AND status IN ('completed', 'uploaded')",
+                    [campaignId]
+                ).count
+                if (completedPublish === 0) {
+                    console.log(`[CampaignCheck] ID: ${campaignId} No completed publish jobs yet. Waiting for pipeline to finish.`)
+                    return
                 }
+            }
+
+            // Check if ALL sources have determinate video counts
+            // Determinate = history_only, or custom_range with endDate
+            // Indeterminate = future_only, history_and_future, custom_range without endDate
+            const allSources = [
+                ...(config.sources?.channels || []),
+                ...(config.sources?.keywords || [])
+            ]
+            const isDeterminate = !hasSources || allSources.every((src: any) => {
+                const mode = src.timeRange
+                if (!mode || mode === 'future_only' || mode === 'history_and_future') return false
+                if (mode === 'custom_range' && !src.endDate) return false
+                return true
+            })
+
+            console.log(`[CampaignCheck] ID: ${campaignId} Pending: 0 HasSources: ${hasSources} isDeterminate: ${isDeterminate}`)
+
+            if (isDeterminate || !hasSources) {
+                // All videos are finite and all published → campaign finished
+                storageService.run("UPDATE campaigns SET status = 'finished' WHERE id = ?", [campaignId])
+                console.log(`Campaign ${campaignId} finished (all jobs complete, determinate video count).`)
+
+                try {
+                    const stats = campaignService.getCampaignStats(campaignId)
+                    notificationService.notifyCampaignComplete(campaign.name, stats)
+                } catch (e) { /* ignore */ }
             } else {
-                console.log(`[CampaignCheck] ID: ${campaignId} has ${pendingJobs} pending jobs.`)
+                // Indeterminate sources → keep active, waiting for next scan (monitoring)
+                console.log(`Campaign ${campaignId} stays active → Monitoring mode (waiting for new videos via next scan).`)
             }
         } catch (e) {
             console.error('Error checking campaign completion:', e)

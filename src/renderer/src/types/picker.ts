@@ -66,7 +66,7 @@ export interface Campaign {
     id: number
     name: string
     type: 'scan_all' | 'scan_new'
-    status: 'active' | 'paused'
+    status: 'active' | 'paused' | 'needs_review' | 'finished'
     schedule_cron: string
     config_json: string
     created_at: string

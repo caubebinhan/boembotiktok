@@ -5,12 +5,13 @@ import { formatDateTime } from '../../utils/formatters'
 interface Props {
     video: any
     status: VideoStatus
+    source?: { type: string, name: string }
     downloadJob?: any
     publishJob?: any
     onAction: (action: string, id: number) => void
 }
 
-export const TimelineItem: React.FC<Props> = ({ video, status, downloadJob, publishJob, onAction }) => {
+export const TimelineItem: React.FC<Props> = ({ video, status, source, downloadJob, publishJob, onAction }) => {
     const colorHex = getStatusColorHex(status.color)
 
     // Calculate progress width if applicable
@@ -64,7 +65,7 @@ export const TimelineItem: React.FC<Props> = ({ video, status, downloadJob, publ
                             )}
                         </div>
 
-                        {/* Title & Target */}
+                        {/* Title & Target & Source */}
                         <div>
                             <div style={{ fontWeight: 700, fontSize: '14px', marginBottom: '4px' }}>
                                 {(() => {
@@ -77,6 +78,11 @@ export const TimelineItem: React.FC<Props> = ({ video, status, downloadJob, publ
                                 })()}
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                {source && (
+                                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px', paddingRight: '8px', borderRight: '1px solid var(--border-primary)' }}>
+                                        {source.type === 'channel' ? '📺 ' : '🔍 '}{source.type === 'channel' ? '@' : ''}{source.name}
+                                    </span>
+                                )}
                                 <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                                     🎯 @{JSON.parse(publishJob?.data_json || '{}').account_name || 'queued'}
                                 </span>

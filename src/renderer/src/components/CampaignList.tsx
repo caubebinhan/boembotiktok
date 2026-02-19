@@ -1,4 +1,4 @@
-import React, { memo } from 'react'
+import React, { memo, useMemo } from 'react'
 import { Campaign } from '../types/picker'
 import { formatFrequency } from '../utils/formatters'
 
@@ -26,6 +26,50 @@ interface ItemProps {
     processingIds?: Set<number>
 }
 
+/** Derive scanning/monitoring/progress state from campaign data */
+function useCampaignProgress(c: Campaign) {
+    return useMemo(() => {
+        let config: any = {}
+        try { config = JSON.parse(c.config_json || '{}') } catch { }
+
+        const hasSources = (config.sources?.channels?.length > 0) || (config.sources?.keywords?.length > 0)
+        const isScanning = ((c as any).scanning_count || 0) > 0
+        const hasPendingScan = ((c as any).scan_pending_count || 0) > 0
+
+        // Determinate = ALL sources have finite video counts
+        // history_only → determinate
+        // custom_range with endDate → determinate
+        // future_only, history_and_future, custom_range without endDate → indeterminate
+        const allSources = [
+            ...(config.sources?.channels || []),
+            ...(config.sources?.keywords || [])
+        ]
+        const isDeterminate = !hasSources || allSources.every((src: any) => {
+            const mode = src.timeRange
+            if (!mode || mode === 'future_only' || mode === 'history_and_future') return false
+            if (mode === 'custom_range' && !src.endDate) return false
+            return true
+        })
+
+        // Waiting for scan = scan pending but not yet running
+        const isWaitingForScan = hasSources && !isScanning && hasPendingScan && c.status === 'active'
+        // Monitoring = indeterminate, all current jobs done, campaign active, no scan running/pending
+        const isMonitoring = hasSources && !isDeterminate && !isScanning && !hasPendingScan && c.status === 'active' &&
+            (c.queued_count || 0) === 0 && (c.preparing_count || 0) === 0 && (c.uploading_count || 0) === 0
+        const isFinished = c.status === 'finished'
+
+        const channelCount = config.sources?.channels?.length || 0
+        const keywordCount = config.sources?.keywords?.length || 0
+
+        // Progress ratio for bar
+        const totalJobs = (c.queued_count || 0) + (c.preparing_count || 0) + (c.uploading_count || 0) + (c.published_count || 0) + (c.failed_count || 0) + (c.downloaded_count || 0)
+        const completedJobs = (c.published_count || 0)
+        const progressRatio = totalJobs > 0 ? completedJobs / totalJobs : 0
+
+        return { hasSources, isScanning, isWaitingForScan, hasPendingScan, isDeterminate, isMonitoring, isFinished, channelCount, keywordCount, progressRatio, totalJobs }
+    }, [c])
+}
+
 const CampaignItem = memo(({
     campaign: c,
     onToggleStatus,
@@ -38,39 +82,70 @@ const CampaignItem = memo(({
 }: ItemProps) => {
     const isProcessing = processingIds?.has(c.id);
     const isRunning = isProcessing || (c.queued_count || 0) > 0 || (c.preparing_count || 0) > 0 || (c.uploading_count || 0) > 0;
-    const hasActivity = (c.published_count || 0) > 0 || (c.paused_count || 0) > 0 || (c.failed_count || 0) > 0;
-    const isFinished = !isRunning && hasActivity;
+    const needsReview = c.status === 'needs_review';
+    const progress = useCampaignProgress(c);
+
+    // Status badge config — recurrent campaign status priority:
+    // Scanning > Waiting for Scan > Monitoring > Finished > Active/Paused
+    let statusBadge = { label: '○ Paused', bg: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)' }
+    if (needsReview) {
+        statusBadge = { label: '● Action Needed', bg: 'rgba(245,158,11,0.12)', color: '#f59e0b' }
+    } else if (progress.isScanning) {
+        statusBadge = { label: '🔍 Scanning...', bg: 'rgba(59,130,246,0.12)', color: '#60a5fa' }
+    } else if (progress.isWaitingForScan) {
+        statusBadge = { label: '⏳ Waiting for Scan', bg: 'rgba(245,158,11,0.12)', color: '#fbbf24' }
+    } else if (progress.isMonitoring) {
+        statusBadge = { label: '📡 Monitoring', bg: 'rgba(139,92,246,0.12)', color: '#a78bfa' }
+    } else if (progress.isFinished) {
+        statusBadge = { label: '✅ Finished', bg: 'rgba(34,197,94,0.12)', color: '#4ade80' }
+    } else if (c.status === 'active') {
+        statusBadge = { label: '● Active', bg: 'rgba(74,222,128,0.12)', color: '#4ade80' }
+    }
 
     return (
         <div
             style={{
                 padding: '14px 16px',
                 background: 'var(--bg-card)',
-                border: '1px solid var(--border-subtle)',
+                border: `1px solid ${progress.isScanning ? 'rgba(59,130,246,0.3)' : 'var(--border-subtle)'}`,
                 borderRadius: 'var(--radius-lg)',
                 transition: 'border-color 0.2s, box-shadow 0.2s',
                 cursor: 'pointer',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: '8px',
-                outline: 'none'
+                outline: 'none',
+                position: 'relative',
+                overflow: 'hidden'
             }}
             tabIndex={0}
             role="button"
             aria-label={`Campaign: ${c.name}`}
             onClick={() => onSelect(c)}
             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onSelect(c) }}
-            className="campaign-item-card" // Added class for focus-visible in CSS
+            className="campaign-item-card"
         >
+            {/* Progress bar at bottom */}
+            {progress.totalJobs > 0 && (
+                <div style={{
+                    position: 'absolute', bottom: 0, left: 0, right: 0, height: '3px',
+                    background: 'rgba(255,255,255,0.04)'
+                }}>
+                    <div style={{
+                        height: '100%', width: `${progress.progressRatio * 100}%`,
+                        background: progress.isFinished ? '#22c55e' : 'linear-gradient(90deg, #3b82f6, #8b5cf6)',
+                        transition: 'width 0.5s ease',
+                        borderRadius: '0 2px 2px 0'
+                    }} />
+                </div>
+            )}
+
+            {/* Row 1: Name + Status */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
                 <div style={{
-                    fontWeight: 600,
-                    fontSize: '14px',
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    minWidth: 0,
-                    flex: 1
+                    fontWeight: 600, fontSize: '14px',
+                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                    minWidth: 0, flex: 1
                 }} title={c.name}>
                     {c.name}
                 </div>
@@ -79,12 +154,16 @@ const CampaignItem = memo(({
                         className="badge"
                         style={{
                             cursor: 'pointer',
-                            background: c.status === 'active' ? 'rgba(74,222,128,0.12)' : 'rgba(255,255,255,0.06)',
-                            color: c.status === 'active' ? '#4ade80' : 'var(--text-muted)'
+                            background: statusBadge.bg,
+                            color: statusBadge.color,
+                            display: 'flex', alignItems: 'center', gap: '4px'
                         }}
                         onClick={(e) => { e.stopPropagation(); onToggleStatus(c.id, c.status) }}
                     >
-                        {c.status === 'active' ? '● Active' : '○ Paused'}
+                        {progress.isScanning && (
+                            <div className="spinner" style={{ width: '10px', height: '10px', borderWidth: '1.5px', borderColor: `${statusBadge.color} transparent transparent transparent` }} />
+                        )}
+                        {statusBadge.label}
                     </span>
                     {(c.missed_count || 0) > 0 ? (
                         <span className="badge badge-error" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -94,19 +173,25 @@ const CampaignItem = memo(({
                 </div>
             </div>
 
+            {/* Row 2: Type + Source Info */}
             <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: 'var(--text-secondary)' }}>
                 <span>
                     {c.type === 'scan_all' ? '🔄 Full Scan' : '📋 New Items'}
                 </span>
                 <span>📅 {formatFrequency(c)}</span>
+                {progress.hasSources && (
+                    <span style={{ color: 'var(--text-muted)' }}>
+                        {progress.channelCount > 0 && `📺 ${progress.channelCount} channel${progress.channelCount > 1 ? 's' : ''}`}
+                        {progress.channelCount > 0 && progress.keywordCount > 0 && ' · '}
+                        {progress.keywordCount > 0 && `🔍 ${progress.keywordCount} keyword${progress.keywordCount > 1 ? 's' : ''}`}
+                    </span>
+                )}
             </div>
 
+            {/* Row 3: Stats */}
             <div style={{
-                display: 'flex',
-                gap: '12px',
-                fontSize: '11px',
-                marginTop: '6px',
-                color: 'var(--text-muted)',
+                display: 'flex', gap: '12px', fontSize: '11px',
+                marginTop: '2px', color: 'var(--text-muted)',
                 fontVariantNumeric: 'tabular-nums'
             }}>
                 <span title="Queued Videos">
@@ -117,7 +202,7 @@ const CampaignItem = memo(({
                     Downloaded: <b>{c.downloaded_count || 0}</b>
                 </span>
                 <span style={{ color: 'var(--border-primary)' }}>|</span>
-                <span title="Published Videos">
+                <span title="Published Videos" style={{ color: (c.published_count || 0) > 0 ? '#4ade80' : undefined }}>
                     Published: <b>{c.published_count || 0}</b>
                 </span>
                 {(c.failed_count || 0) > 0 ? (
@@ -130,6 +215,7 @@ const CampaignItem = memo(({
                 ) : null}
             </div>
 
+            {/* Row 4: Actions */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
                 <div style={{ display: 'flex', gap: '8px' }}>
                     <button className="btn btn-ghost btn-sm" style={{ fontSize: '12px', padding: '4px 8px' }}>
@@ -146,14 +232,22 @@ const CampaignItem = memo(({
                             ⏸ Pause
                         </button>
                     ) : (
-                        onRun ? (
-                            <button className="btn btn-ghost btn-sm"
-                                onClick={(e) => { e.stopPropagation(); onRun(c.id) }}
-                                title={isFinished ? "Run Again" : "Run Now"}
-                                style={{ padding: '4px 8px', color: isFinished ? 'var(--text-primary)' : 'var(--accent-green)' }}>
-                                {isFinished ? '↻ Run Again' : '▶ Run'}
+                        needsReview ? (
+                            <button className="btn btn-primary btn-sm"
+                                onClick={(e) => { e.stopPropagation(); onSelect(c) }}
+                                style={{ padding: '4px 8px', fontSize: '12px' }}>
+                                🗓️ Schedule Preview
                             </button>
-                        ) : null
+                        ) : (
+                            onRun ? (
+                                <button className="btn btn-ghost btn-sm"
+                                    onClick={(e) => { e.stopPropagation(); onRun(c.id) }}
+                                    title={progress.isFinished ? "Run Again" : "Run Now"}
+                                    style={{ padding: '4px 8px', color: progress.isFinished ? 'var(--text-primary)' : 'var(--accent-green)' }}>
+                                    {progress.isFinished ? '↻ Run Again' : '▶ Run'}
+                                </button>
+                            ) : null
+                        )
                     )}
 
                     {onClone ? (
@@ -180,7 +274,7 @@ const CampaignItem = memo(({
                     ) : null}
                 </div>
             </div>
-        </div>
+        </div >
     )
 });
 
@@ -242,4 +336,3 @@ export const CampaignList: React.FC<Props> = ({
         </div>
     )
 }
-

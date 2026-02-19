@@ -20,6 +20,7 @@ interface SchedulePreviewProps {
     onScheduleChange?: (items: TimelineItem[]) => void
     onStartTimeChange?: (date: Date) => void
     onIntervalChange?: (interval: number) => void
+    onSourcesChange?: (sources: any[]) => void
 }
 
 export interface TimelineItem {
@@ -65,7 +66,7 @@ const generateCaption = (template: string, video: any, time: Date): string => {
     return caption
 }
 
-export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, savedVideos, schedule, initialItems, captionTemplate, onScheduleChange, onStartTimeChange, onIntervalChange }) => {
+export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, savedVideos, schedule, initialItems, captionTemplate, onScheduleChange, onStartTimeChange, onIntervalChange, onSourcesChange }) => {
     // ... (keep existing state setup) ...
     const [items, setItems] = useState<TimelineItem[]>([])
     const [startTime, setStartTime] = useState<Date>(new Date())
@@ -307,6 +308,36 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                 </div>
             </div>
 
+            {/* Source Configuration Section */}
+            <div style={{ marginBottom: '20px', background: 'var(--bg-secondary)', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-primary)' }}>
+                <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '10px', textTransform: 'uppercase' }}>
+                    Source Verification Options
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '10px' }}>
+                    {sources.map((src, idx) => (
+                        <div key={idx} style={{ background: 'var(--bg-primary)', padding: '10px', borderRadius: '8px', border: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <span style={{ fontSize: '16px' }}>{src.type === 'channel' ? '📺' : '🔍'}</span>
+                                <div style={{ fontSize: '13px', fontWeight: 500 }}>{src.name}</div>
+                            </div>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={src.autoSchedule ?? true}
+                                    onChange={e => {
+                                        const newSources = [...sources]
+                                        newSources[idx] = { ...newSources[idx], autoSchedule: e.target.checked }
+                                        onSourcesChange?.(newSources)
+                                    }}
+                                    style={{ width: '14px', height: '14px' }}
+                                />
+                                <span style={{ fontSize: '12px' }}>Auto-schedule</span>
+                            </label>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
             <div className="timeline-container" style={{ padding: '0 10px', maxHeight: '500px', overflowY: 'auto' }}>
                 {groupedItems.map((group, gIdx) => (
                     <div key={gIdx} style={{ marginBottom: '25px' }}>
@@ -363,12 +394,27 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
 
                                     {/* Content */}
                                     <div style={{ flex: 1, minWidth: 0 }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                                            <span style={{ fontSize: '16px' }}>{item.icon}</span>
-                                            <span style={{ fontWeight: 600, fontSize: '14px' }}>{item.label}</span>
-                                            <span className="tabular-nums" style={{ fontSize: '10px', background: 'rgba(255,255,255,0.1)', padding: '2px 6px', borderRadius: '4px' }}>
-                                                Seq #{index + 1}
-                                            </span>
+                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                <span style={{ fontSize: '16px' }}>{item.icon}</span>
+                                                <span style={{ fontWeight: 600, fontSize: '14px' }}>{item.label}</span>
+                                                <span className="tabular-nums" style={{ fontSize: '10px', background: 'rgba(255,255,255,0.1)', padding: '2px 6px', borderRadius: '4px' }}>
+                                                    Seq #{index + 1}
+                                                </span>
+                                            </div>
+                                            <button
+                                                onClick={() => {
+                                                    const newItems = [...items]
+                                                    newItems.splice(index, 1)
+                                                    setItems(newItems)
+                                                    recalculateTimes(newItems, startTime, interval)
+                                                }}
+                                                className="btn btn-ghost"
+                                                style={{ padding: '4px', height: 'auto', color: 'var(--text-muted)' }}
+                                                title="Remove from schedule"
+                                            >
+                                                🗑️
+                                            </button>
                                         </div>
 
                                         {item.video && (
