@@ -35,16 +35,40 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
                 const j: any[] = await window.api.invoke('get-campaign-jobs', id)
                 setJobs(j || [])
 
-                // Calculate stats
+                // Calculate stats based on grouped jobs to avoid double counting
                 const newStats = { queued: 0, preparing: 0, uploading: 0, published: 0, failed: 0, skipped: 0 }
+
+                // Group jobs by video to determine final status per video
+                const videoJobMap = new Map<string, { download?: any, publish?: any }>()
                 j?.forEach(job => {
+                    let vid = null
+                    try {
+                        const d = JSON.parse(job.data_json || '{}')
+                        vid = d.platform_id || d.video_id || d.video?.id
+                    } catch { }
+                    if (!vid) return
+
+                    const current = videoJobMap.get(vid) || {}
+                    if (job.type === 'DOWNLOAD') current.download = job
+                    if (job.type === 'PUBLISH') {
+                        if (!current.publish || job.id > current.publish.id) {
+                            current.publish = job
+                        }
+                    }
+                    videoJobMap.set(vid, current)
+                })
+
+                videoJobMap.forEach(({ publish, download }) => {
+                    const job = publish || download
+                    if (!job) return
+
                     const status = job.status?.toLowerCase() || ''
                     if (status === 'pending') newStats.queued++
-                    if (status === 'processing' || status === 'running' || status === 'preparing') newStats.preparing++
-                    if (status === 'uploading') newStats.uploading++
-                    if (status === 'completed' || status === 'success') newStats.published++
-                    if (status.includes('failed')) newStats.failed++
-                    if (status === 'skipped') newStats.skipped++
+                    else if (status === 'processing' || status === 'running' || status === 'preparing') newStats.preparing++
+                    else if (status === 'uploading') newStats.uploading++
+                    else if (status === 'completed' || status === 'success') newStats.published++
+                    else if (status.includes('failed')) newStats.failed++
+                    else if (status === 'skipped') newStats.skipped++
                 })
                 setStats(newStats)
 

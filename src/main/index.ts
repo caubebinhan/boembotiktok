@@ -1,4 +1,10 @@
+import * as Sentry from '@sentry/electron/main'
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+
+Sentry.init({
+    dsn: "https://d1b349bdb3819e07b291007cc5649940@o4510911108546560.ingest.us.sentry.io/4510911110316032",
+    debug: !app.isPackaged,
+})
 import { join } from 'path'
 import { storageService } from './services/StorageService'
 import { browserService } from './services/BrowserService'
@@ -58,6 +64,7 @@ app.whenReady().then(async () => {
     try {
         await storageService.init()
         await logger.init() // Initialize Logger
+        logger.redirectConsole() // Capture all console.log/err to file
         // Initialize browser service (headless by default for background tasks, user can toggle)
         await browserService.init(true)
 
@@ -156,6 +163,10 @@ app.whenReady().then(async () => {
 
         ipcMain.handle('get-campaign-stats', async (_event: any, id: number) => {
             return campaignService.getCampaignStats(id)
+        })
+
+        ipcMain.handle('run-self-test', async () => {
+            return selfTestService.runTest()
         })
 
         ipcMain.handle('get-scheduled-jobs', async (_event: any, start: string, end: string) => {
@@ -258,6 +269,7 @@ app.whenReady().then(async () => {
         ipcMain.handle('edit:get-effects', async () => {
             return videoEditEngine.getEffects()
         })
+
 
         ipcMain.handle('edit:get-providers', async () => {
             return videoEditEngine.getProviders()
@@ -433,28 +445,49 @@ app.whenReady().then(async () => {
 
         // ─── Scanner Window IPC ──────────────────────────────────
         ipcMain.handle('open-scanner-window', async () => {
-            const isDev = !app.isPackaged
-            const scannerWindow = new BrowserWindow({
-                width: 1280,
-                height: 850,
-                title: '🔍 Scanner Tool',
-                autoHideMenuBar: true,
-                webPreferences: {
-                    preload: join(__dirname, '../preload/index.js'),
-                    sandbox: false,
-                    webviewTag: true
-                }
-            })
+            console.log('[Main] IPC: open-scanner-window received')
+            try {
+                const isDev = !app.isPackaged
+                console.log('[Main] Creating scanner window, isDev:', isDev)
 
-            if (isDev && process.env['ELECTRON_RENDERER_URL']) {
-                scannerWindow.loadURL(process.env['ELECTRON_RENDERER_URL'] + '?mode=scan')
-            } else {
-                scannerWindow.loadFile(join(__dirname, '../renderer/index.html'), {
-                    query: { mode: 'scan' }
+                const scannerWindow = new BrowserWindow({
+                    width: 1280,
+                    height: 850,
+                    title: '🔍 Scanner Tool',
+                    autoHideMenuBar: true,
+                    webPreferences: {
+                        preload: join(__dirname, '../preload/index.js'),
+                        sandbox: false,
+                        webviewTag: true
+                    }
                 })
-            }
 
-            return { windowId: scannerWindow.id }
+                if (isDev && process.env['ELECTRON_RENDERER_URL']) {
+                    const url = process.env['ELECTRON_RENDERER_URL'] + '?mode=scan'
+                    console.log('[Main] Loading dev URL:', url)
+                    scannerWindow.loadURL(url)
+                } else {
+                    const filePath = join(__dirname, '../renderer/index.html')
+                    console.log('[Main] Loading file:', filePath)
+                    scannerWindow.loadFile(filePath, {
+                        query: { mode: 'scan' }
+                    })
+                }
+
+                scannerWindow.on('ready-to-show', () => {
+                    console.log('[Main] Scanner window ready-to-show')
+                    scannerWindow.show()
+                })
+
+                scannerWindow.webContents.on('did-fail-load', (e, errorCode, errorDescription) => {
+                    console.error('[Main] Scanner window failed to load:', errorCode, errorDescription)
+                })
+
+                return { success: true, windowId: scannerWindow.id }
+            } catch (err) {
+                console.error('[Main] Error opening scanner window:', err)
+                throw err
+            }
         })
 
         // Receive results from scanner window and forward to main window
@@ -467,10 +500,7 @@ app.whenReady().then(async () => {
             return { success: true }
         })
 
-        // ─── Self Test IPC ───────────────────────────────────────
-        ipcMain.handle('run-self-test', async () => {
-            return selfTestService.runTest()
-        })
+        // ─── Self Test IPC ─────────────────────────────────────── (Duplicate removed)
 
         // ─── Test Helpers ────────────────────────────────────────
         ipcMain.handle('test:seed-account', async () => {
@@ -508,7 +538,7 @@ app.whenReady().then(async () => {
         jobQueue.start()
 
     } catch (err) {
-        console.error('Failed to init services:', err)
+        console.error('CRITICAL: Failed to init services or register IPC:', err)
     }
 
     createWindow()

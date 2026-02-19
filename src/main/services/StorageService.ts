@@ -195,10 +195,22 @@ class StorageService {
         }
     }
 
+    private maskParams(sql: string, params: any[]): any[] {
+        // Mask sensitive data in logs
+        if (sql.toLowerCase().includes('cookies_json') || sql.toLowerCase().includes('proxy_url')) {
+            return params.map(p => (typeof p === 'string' && p.length > 50) ? `[MASKED:${p.length} chars]` : p);
+        }
+        return params;
+    }
+
     public run(sql: string, params: any[] = []): { changes: number, lastInsertId: number } {
         if (!this.db) throw new Error('DB not initialized')
+
+        const masked = this.maskParams(sql, params);
+        console.log(`[StorageService] [RUN] SQL: ${sql.replace(/\s+/g, ' ')} | Params:`, JSON.stringify(masked));
+
         this.db.run(sql, params)
-        this.save().catch(e => console.error('Auto-save failed:', e))
+        this.save().catch(e => console.error('[StorageService] Auto-save failed:', e))
 
         const changes = this.db.getRowsModified()
         let lastInsertId = 0
@@ -211,20 +223,31 @@ class StorageService {
             } catch (e) { /* ignore */ }
         }
 
+        console.log(`[StorageService] [RUN] Result: Changes=${changes}, LastInsertId=${lastInsertId}`);
         return { changes, lastInsertId }
     }
 
     public get(sql: string, params: any[] = []): any {
         if (!this.db) throw new Error('DB not initialized')
+
+        const masked = this.maskParams(sql, params);
+        console.log(`[StorageService] [GET] SQL: ${sql.replace(/\s+/g, ' ')} | Params:`, JSON.stringify(masked));
+
         const stmt = this.db.prepare(sql)
         stmt.bind(params)
         const res = stmt.step() ? stmt.getAsObject() : null
         stmt.free()
+
+        console.log(`[StorageService] [GET] Result: ${res ? 'Found (Object)' : 'NotFound'}`);
         return res
     }
 
     public all(sql: string, params: any[] = []): any[] {
         if (!this.db) throw new Error('DB not initialized')
+
+        const masked = this.maskParams(sql, params);
+        console.log(`[StorageService] [ALL] SQL: ${sql.replace(/\s+/g, ' ')} | Params:`, JSON.stringify(masked));
+
         const stmt = this.db.prepare(sql)
         stmt.bind(params)
         const result: any[] = []
@@ -232,6 +255,8 @@ class StorageService {
             result.push(stmt.getAsObject())
         }
         stmt.free()
+
+        console.log(`[StorageService] [ALL] Result: ${result.length} rows found.`);
         return result
     }
 

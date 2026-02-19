@@ -41,30 +41,34 @@ class BrowserService {
                 ]
             }
 
+            console.log(`[BrowserService] Launching with options:`, JSON.stringify(launchOptions, null, 2))
+
             try {
-                console.log('Attempting to launch Chrome...')
+                console.log('[BrowserService] Attempting to launch Chrome channel...')
                 this.browser = await chromium.launch({
                     ...launchOptions,
                     channel: 'chrome' // Try system Chrome first
                 })
             } catch (err) {
-                console.warn('Chrome launch failed, trying Edge...', err)
+                console.warn('[BrowserService] Chrome launch failed, trying Edge...', err)
                 try {
                     this.browser = await chromium.launch({
                         ...launchOptions,
                         channel: 'msedge' // Fallback to Edge
                     })
                 } catch (edgeErr) {
-                    console.error('Edge launch failed as well.', edgeErr)
+                    console.error('[BrowserService] Edge launch failed as well.', edgeErr)
                     throw new Error('No compatible browser found. Please install Chrome or Edge.')
                 }
             }
 
-            console.log('Browser launched successfully')
+            const version = this.browser.version()
+            console.log(`[BrowserService] Browser launched successfully. Version: ${version}`)
 
             // Create a persistent context
             const userDataDir = path.join(app.getPath('userData'), 'browser_session')
             await fs.ensureDir(userDataDir)
+            console.log(`[BrowserService] Using persistent UserDataDir: ${userDataDir}`)
 
             this.context = await this.browser.newContext({
                 viewport: { width: 1920, height: 1080 },
@@ -76,17 +80,38 @@ class BrowserService {
                 }
             })
 
+            console.log('[BrowserService] Persistent context created.')
+
+            // Add lifecycle listeners to context
+            this.context.on('page', (page) => {
+                const pageId = Math.random().toString(36).substring(7)
+                console.log(`[BrowserService] [Page:${pageId}] New page created. Total pages: ${this.context?.pages().length}`)
+
+                page.on('close', () => console.log(`[BrowserService] [Page:${pageId}] Page closed.`))
+                page.on('domcontentloaded', () => console.log(`[BrowserService] [Page:${pageId}] DOMContentLoaded: ${page.url()}`))
+                page.on('load', () => console.log(`[BrowserService] [Page:${pageId}] Load: ${page.url()}`))
+                page.on('crash', () => console.error(`[BrowserService] [Page:${pageId}] CRASHED!`))
+
+                // Track navigations
+                page.on('framenavigated', (frame) => {
+                    if (frame === page.mainFrame()) {
+                        console.log(`[BrowserService] [Page:${pageId}] Navigated to: ${page.url()}`)
+                    }
+                })
+            })
+
         } catch (error) {
-            console.error('Failed to launch browser:', error)
+            console.error('[BrowserService] Failed to launch browser:', error)
             // TODO: Handle missing browser (prompt user to install or download)
         }
     }
 
     async newPage(): Promise<Page | null> {
         if (!this.context) {
-            console.error('Browser context not initialized')
+            console.error('[BrowserService] Context not initialized cannot create page')
             return null
         }
+        console.log('[BrowserService] Requesting new page...')
         return this.context.newPage()
     }
 

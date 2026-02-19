@@ -96,6 +96,14 @@ export class LocalFFmpegProvider implements IEditProvider {
                 return this.applyTextOverlay(inputPath, effect.params, outputPath)
             case 'watermark':
                 return this.applyWatermark(inputPath, effect.params, outputPath)
+            case 'mirror':
+                return this.applyMirror(inputPath, effect.params, outputPath)
+            case 'color_adjust':
+                return this.applyColorAdjust(inputPath, effect.params, outputPath)
+            case 'speed_adjust':
+                return this.applySpeedAdjust(inputPath, effect.params, outputPath)
+            case 'subtle_zoom':
+                return this.applySubtleZoom(inputPath, effect.params, outputPath)
             default:
                 throw new Error(`Unknown effect: ${effect.effectId}`)
         }
@@ -194,6 +202,87 @@ export class LocalFFmpegProvider implements IEditProvider {
                 ])
                 .outputOptions(['-map [outv]', '-map 0:a?', '-c:a copy', '-preset fast'])
                 .on('start', cmd => console.log('[Watermark] FFmpeg:', cmd))
+                .on('end', () => resolve())
+                .on('error', err => reject(err))
+                .save(outputPath)
+        })
+    }
+
+    private async applyMirror(inputPath: string, params: Record<string, any>, outputPath: string): Promise<void> {
+        const { active = 'true' } = params
+        if (active !== 'true') {
+            fs.copyFileSync(inputPath, outputPath)
+            return
+        }
+
+        return new Promise((resolve, reject) => {
+            ffmpeg(inputPath)
+                .videoFilters('hflip')
+                .outputOptions(['-c:a copy', '-preset fast'])
+                .on('start', cmd => console.log('[Mirror] FFmpeg:', cmd))
+                .on('end', () => resolve())
+                .on('error', err => reject(err))
+                .save(outputPath)
+        })
+    }
+
+    private async applyColorAdjust(inputPath: string, params: Record<string, any>, outputPath: string): Promise<void> {
+        const { brightness = 0.05, contrast = 1.05, saturation = 1.1 } = params
+
+        return new Promise((resolve, reject) => {
+            ffmpeg(inputPath)
+                .videoFilters([{
+                    filter: 'eq',
+                    options: {
+                        brightness,
+                        contrast,
+                        saturation
+                    }
+                }])
+                .outputOptions(['-c:a copy', '-preset fast'])
+                .on('start', cmd => console.log('[ColorAdjust] FFmpeg:', cmd))
+                .on('end', () => resolve())
+                .on('error', err => reject(err))
+                .save(outputPath)
+        })
+    }
+
+    private async applySpeedAdjust(inputPath: string, params: Record<string, any>, outputPath: string): Promise<void> {
+        const { multiplier = 1.02 } = params
+        const videoMult = 1 / multiplier
+
+        return new Promise((resolve, reject) => {
+            ffmpeg(inputPath)
+                .complexFilter([
+                    `[0:v]setpts=${videoMult}*PTS[v]`,
+                    `[0:a]atempo=${multiplier}[a]`
+                ])
+                .outputOptions(['-map [v]', '-map [a]', '-preset fast'])
+                .on('start', cmd => console.log('[SpeedAdjust] FFmpeg:', cmd))
+                .on('end', () => resolve())
+                .on('error', err => reject(err))
+                .save(outputPath)
+        })
+    }
+
+    private async applySubtleZoom(inputPath: string, params: Record<string, any>, outputPath: string): Promise<void> {
+        const { level = 2 } = params
+        const zoom = 1 + (level / 100)
+
+        return new Promise((resolve, reject) => {
+            ffmpeg(inputPath)
+                .videoFilters([
+                    {
+                        filter: 'scale',
+                        options: `iw*${zoom}:-1`
+                    },
+                    {
+                        filter: 'crop',
+                        options: `iw/${zoom}:ih/${zoom}`
+                    }
+                ])
+                .outputOptions(['-c:a copy', '-preset fast'])
+                .on('start', cmd => console.log('[SubtleZoom] FFmpeg:', cmd))
                 .on('end', () => resolve())
                 .on('error', err => reject(err))
                 .save(outputPath)

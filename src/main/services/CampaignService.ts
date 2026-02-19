@@ -42,6 +42,8 @@ class CampaignService {
     }
 
     create(name: string, type: string, cron: string, config: any) {
+        console.log(`[CampaignService] Creating campaign: "${name}" | Type: ${type} | Cron: ${cron}`);
+        console.log(`[CampaignService] Initial Config:`, JSON.stringify(config, null, 2));
         return storageService.run(
             `INSERT INTO campaigns (name, platform, type, status, schedule_cron, config_json) 
              VALUES (?, ?, ?, 'active', ?, ?)`,
@@ -50,11 +52,13 @@ class CampaignService {
     }
 
     updateStatus(id: number, status: 'active' | 'paused') {
+        console.log(`[CampaignService] Updating status of campaign #${id} to: ${status}`);
         return storageService.run('UPDATE campaigns SET status = ? WHERE id = ?', [status, id])
     }
 
     updateConfig(id: number, config: any) {
         const json = JSON.stringify(config)
+        console.log(`[CampaignService] Updating config for campaign #${id}. New Config:`, JSON.stringify(config, null, 2));
         // Also update source_config based on new config?
         // Ideally we keep source_config in sync or deprecate it.
         // For now, update config_json.

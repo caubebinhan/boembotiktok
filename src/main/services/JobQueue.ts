@@ -1,7 +1,9 @@
 import { BrowserWindow, ipcMain, app } from 'electron'
+import * as path from 'path'
+import * as fs from 'fs-extra'
 import { storageService } from './StorageService'
 import { moduleManager } from './ModuleManager'
-import { TikTokModule } from '../modules/tiktok/TikTokModule'
+import { TikTokModule, ScanOptions } from '../modules/tiktok/TikTokModule'
 import { publishAccountService } from './PublishAccountService'
 import { campaignService } from './CampaignService'
 import { notificationService } from './NotificationService'
@@ -11,6 +13,7 @@ class JobQueue {
     private interval: NodeJS.Timeout | null = null
     private isRunning = false
     private isPaused = false
+    private globalThrottleUntil = 0 // Timestamp until which global throttling is active
     private readonly POLL_INTERVAL = 5000
 
     constructor() {
@@ -59,16 +62,19 @@ class JobQueue {
 
     async start() {
         if (this.interval) return
-        console.log('[JobQueue] Starting...')
+        console.log('[JobQueue] >>> STARTING WORKER CYCLE <<<');
 
         // 0. Reset stuck 'running' jobs to 'pending' (crash recovery)
         try {
+            console.log('[JobQueue] [Recovery] Checking for stuck jobs (status=running)...');
             const resetResult = storageService.run("UPDATE jobs SET status = 'pending' WHERE status = 'running'")
             if (resetResult.changes > 0) {
-                console.log(`[JobQueue] Reset ${resetResult.changes} stuck 'running' jobs to 'pending'`)
+                console.log(`[JobQueue] [Recovery] Success: Recovered ${resetResult.changes} stuck jobs.`);
+            } else {
+                console.log('[JobQueue] [Recovery] No stuck jobs found.');
             }
         } catch (e) {
-            console.error('[JobQueue] Failed to reset stuck jobs:', e)
+            console.error('[JobQueue] [Recovery] Error during startup recovery:', e)
         }
 
         // 1. Check for missed scheduled jobs (pending and in the past)
@@ -262,38 +268,91 @@ class JobQueue {
         return res.changes
     }
 
+    setGlobalThrottle(minutes: number = 15) {
+        this.globalThrottleUntil = Date.now() + (minutes * 60 * 1000)
+        console.warn(`[JobQueue] GLOBAL THROTTLE ENABLED for ${minutes} minutes.`)
+        notificationService.notify({
+            title: 'Bot Detection Warning',
+            body: `TikTok is rate-limiting the app. Pausing all background tasks for ${minutes} minutes to be safe.`,
+            silent: false
+        })
+    }
+
+    private logQueueState() {
+        try {
+            const stats = storageService.get(`
+                SELECT 
+                    COUNT(*) as total,
+                    SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running,
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed
+                FROM jobs
+            `)
+            console.log(`[JobQueue] [STATE] Summary: Total=${stats.total}, Running=${stats.running}, Pending=${stats.pending}, Failed=${stats.failed}, Completed=${stats.completed}`);
+        } catch (e) { /* ignore */ }
+    }
+
     async processQueue() {
-        if (this.isRunning || this.isPaused) return
+        if (this.isRunning) {
+            console.log('[JobQueue] [Process] Skip: Already running a pull cycle.');
+            return;
+        }
+        if (this.isPaused) {
+            console.log('[JobQueue] [Process] Skip: Queue is paused.');
+            return;
+        }
+        if (Date.now() < this.globalThrottleUntil) {
+            console.log(`[JobQueue] [Process] Skip: Global throttle active until ${new Date(this.globalThrottleUntil).toISOString()}`);
+            return;
+        }
+
         this.isRunning = true
+        this.logQueueState();
 
         try {
-            // Check concurrency for running jobs
-            // Default to 100 as requested by user
             const maxConcurrentStr = storageService.get("SELECT value FROM settings WHERE key = 'app.maxConcurrentJobs'")?.value
             const maxConcurrent = parseInt(maxConcurrentStr || '100')
 
-            const active = storageService.get("SELECT COUNT(*) as count FROM jobs WHERE status = 'running'").count
-            if (active >= maxConcurrent) return
-
-            // Get next pending job that is scheduled for now or earlier
-            // Prioritize by scheduled time (urgency) then creation (FIFO)
-
             const nowIso = new Date().toISOString()
-            const job = storageService.get(`
+            const active = storageService.get("SELECT COUNT(*) as count FROM jobs WHERE status = 'running'").count
+            const needed = maxConcurrent - active
+            console.log(`[JobQueue] [Process] Slot Check: ${active}/${maxConcurrent} slots occupied. Pulling up to ${needed} jobs (Now: ${nowIso})...`);
+
+            if (needed <= 0) {
+                console.log('[JobQueue] [Process] Concurrency limit reached. Waiting for next cycle.');
+                return
+            }
+
+            // SMART SELECTION: Priority DESC, then PUBLISH first, then Oldest Scheduled
+            const jobs = storageService.all(`
                 SELECT * FROM jobs 
                 WHERE status = 'pending'
                 AND (scheduled_for IS NULL OR scheduled_for <= ?)
-                ORDER BY scheduled_for ASC, created_at ASC 
-                LIMIT 1
-            `, [nowIso])
+                ORDER BY priority DESC, (CASE WHEN type = 'PUBLISH' THEN 0 ELSE 1 END) ASC, scheduled_for ASC 
+                LIMIT ?
+            `, [nowIso, needed])
 
-            if (job) {
-                console.log(`JobQueue: Processing ${job.type} job #${job.id}`)
-                await this.executeJob(job)
+            if (jobs.length > 0) {
+                console.log(`[JobQueue] [Process] Found ${jobs.length} jobs to execute.`);
+
+                for (const job of jobs) {
+                    console.log(`[JobQueue] [Process] Initiating Job #${job.id} (Type: ${job.type})...`);
+                    this.executeJob(job).catch(e => console.error(`Job #${job.id} failed:`, e));
+
+                    // Stagger start by 5s to avoid Browser launch overlaps and CPU spikes
+                    if (jobs.indexOf(job) < jobs.length - 1) {
+                        await new Promise(r => setTimeout(r, 5000));
+                    }
+                }
+
+                console.log(`[JobQueue] [Process] All ${jobs.length} job(s) in this cycle have been triggered.`);
+            } else {
+                console.log('[JobQueue] [Process] No pending jobs due for execution.');
             }
 
         } catch (error) {
-            console.error('JobQueue error:', error)
+            console.error('[JobQueue] [Process] Cycle Error:', error)
         } finally {
             this.isRunning = false
         }
@@ -311,23 +370,51 @@ class JobQueue {
             // Initialize module if needed (e.g. browser context)
             if (!tiktok) throw new Error('TikTok module missing')
 
-            let publishResult: any = null
-            if (job.type === 'SCAN') {
-                await this.handleScan(job, data, tiktok)
-            } else if (job.type === 'DOWNLOAD') {
-                await this.handleDownload(job, data, tiktok)
-            } else if (job.type === 'PUBLISH') {
-                publishResult = await this.handlePublish(job, data, tiktok)
+            console.log(`[JobQueue] [Execute] Job #${job.id} Loaded Data:`, JSON.stringify(data, null, 2));
+            console.log(`[JobQueue] [Execute] Module Context: TikTok Ready=${!!tiktok}`);
+
+            // 5-minute timeout for job execution
+            const JOB_TIMEOUT = 5 * 60 * 1000;
+            let timeoutId: NodeJS.Timeout;
+
+            const timeoutPromise = new Promise((_, reject) => {
+                timeoutId = setTimeout(() => {
+                    reject(new Error(`Job timed out after ${JOB_TIMEOUT / 1000 / 60} minutes`));
+                }, JOB_TIMEOUT);
+            });
+
+            const workPromise = (async () => {
+                let publishResult: any = null
+                if (job.type === 'SCAN') {
+                    console.log(`[JobQueue] [Execute] Handing off to SCAN logic...`);
+                    await this.handleScan(job, data, tiktok)
+                } else if (job.type === 'DOWNLOAD') {
+                    console.log(`[JobQueue] [Execute] Handing off to DOWNLOAD logic...`);
+                    await this.handleDownload(job, data, tiktok)
+                } else if (job.type === 'PUBLISH') {
+                    console.log(`[JobQueue] [Execute] Handing off to PUBLISH logic...`);
+                    publishResult = await this.handlePublish(job, data, tiktok)
+                }
+                return publishResult;
+            })();
+
+            let publishResult: any = null;
+            try {
+                publishResult = await Promise.race([workPromise, timeoutPromise]);
+            } finally {
+                clearTimeout(timeoutId!);
             }
+
+            console.log(`[JobQueue] Job #${job.id} successfully executed via logic handler.`);
 
             // Mark completed or uploaded based on result
             let finalStatus = 'completed'
             // If it was a publish job and it's reviewing/private, mark as 'uploaded' instead of 'completed'
             if (job.type === 'PUBLISH' && publishResult && (publishResult.isReviewing || publishResult.warning)) {
                 finalStatus = 'uploaded'
-                console.log(`Job #${job.id} uploaded but under review/verification failed. Status: ${finalStatus}`)
+                console.log(`[JobQueue] Job #${job.id} uploaded but under review/verification failed. Status: ${finalStatus}`)
             } else {
-                console.log(`Job #${job.id} completed`)
+                console.log(`[JobQueue] Job #${job.id} marked as COMPLETED.`)
             }
 
             storageService.run("UPDATE jobs SET status = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?", [finalStatus, job.id])
@@ -363,48 +450,101 @@ class JobQueue {
     }
 
     private async handleScan(job: any, data: any, tiktok: TikTokModule) {
-        // 1. Get scheduling params from job data (set by triggerCampaign)
+        // 1. Get scheduling params
         const intervalMinutes = data.intervalMinutes || 15
         let scheduleTime = data.nextScheduleTime ? new Date(data.nextScheduleTime) : new Date()
         const targetAccounts = data.targetAccounts || []
 
-        // 2. Scan ALL sources and collect videos
+        // Track Lifecycle State
+        const isMonitoring = data.isMonitoring || false // Are we in the future monitoring loop?
+        let totalScheduled = data.totalScheduled || 0
+        let monitoredCount = data.monitoredCount || 0
+
+        // 2. Scan ALL sources
         let allVideos: any[] = []
         let scannedCount = 0
+
+        // Helper to map new UI modes to TikTokModule options
+        const resolveTimeRange = (mode: string | undefined): 'from_now' | 'include_history' => {
+            if (mode === 'future_only') return 'from_now'
+            return 'include_history'
+        }
+
+        // Helper: Check continuous
+        const shouldContinue = (source: any): boolean => {
+            const mode = source.timeRange
+            if (!mode) return true
+            if (mode === 'future_only' || mode === 'history_and_future') return true
+            if (mode === 'custom_range' && !source.endDate) return true
+            return false
+        }
 
         if (data.sources) {
             // 2a. Scan Channels
             if (data.sources.channels) {
                 for (const ch of data.sources.channels) {
-                    console.log(`Scanning channel: ${ch.name}`)
+                    console.log(`[JobQueue] [SCAN] Processing channel: @${ch.name} (Monitoring: ${isMonitoring})`)
                     this.updateJobData(job.id, { ...data, status: `Scanning channel @${ch.name}...`, scannedCount })
-                    const result = await tiktok.scanProfile(ch.name) || { videos: [] }
-                    const newVideos = result.videos || []
 
-                    // Apply source-level sorting before adding (per-source sort order)
+                    // Determine Fetch Limit based on Phase
+                    // History Phase: Use historyLimit (if set) or maxScanCount
+                    // Future Phase: Use maxScanCount (fetch batch size) - strict limit checks happen post-scan
+                    let fetchLimit = ch.maxScanCount
+                    if (!isMonitoring && ch.historyLimit && ch.historyLimit !== 'unlimited') {
+                        fetchLimit = ch.historyLimit
+                    }
+
+                    const scanOptions: ScanOptions = {
+                        limit: fetchLimit,
+                        timeRange: resolveTimeRange(ch.timeRange),
+                        startDate: ch.startDate,
+                        endDate: ch.endDate,
+                        // If monitoring, force 'from_now' behavior if logic requires, 
+                        // but TikTokModule handles 'from_now' efficiently already.
+                    }
+
+                    const result = await tiktok.scanProfile(ch.name, scanOptions) || { videos: [] }
+                    let newVideos = result.videos || []
+
+                    // Apply source-level sorting
                     const sortOrder = ch.sortOrder || data.postOrder || 'newest'
                     newVideos.sort((a: any, b: any) => {
                         if (sortOrder === 'oldest') return (a.id || '').localeCompare(b.id || '')
                         if (sortOrder === 'most_likes') return (b.stats?.likes || 0) - (a.stats?.likes || 0)
-                        return (b.id || '').localeCompare(a.id || '') // newest (default)
+                        return (b.id || '').localeCompare(a.id || '')
                     })
 
-                    // Apply max scan limit
-                    const limited = ch.maxScanCount ? newVideos.slice(0, ch.maxScanCount) : newVideos
+                    // Strict Fetch Limit (if module over-fetched)
+                    if (fetchLimit !== 'unlimited' && typeof fetchLimit === 'number') {
+                        newVideos = newVideos.slice(0, fetchLimit)
+                    }
 
-                    allVideos.push(...limited)
-                    scannedCount += limited.length
-                    this.updateJobData(job.id, { ...data, status: `Scanned @${ch.name}: found ${limited.length} videos`, scannedCount })
+                    allVideos.push(...newVideos)
+                    scannedCount += newVideos.length
+                    this.updateJobData(job.id, { ...data, status: `Scanned @${ch.name}: found ${newVideos.length} videos`, scannedCount })
                 }
             }
 
             // 2b. Scan Keywords
             if (data.sources.keywords) {
                 for (const kw of data.sources.keywords) {
-                    console.log(`Scanning keyword: ${kw.name}`)
-                    this.updateJobData(job.id, { ...data, status: `Scanning keyword "${kw.name}"...`, scannedCount })
-                    const result = await tiktok.scanKeyword(kw.name, kw.maxScanCount || 50) || { videos: [] }
+                    console.log(`[JobQueue] [SCAN] Processing keyword: "${kw.name}"`)
+
+                    let fetchLimit = kw.maxScanCount
+                    if (!isMonitoring && kw.historyLimit && kw.historyLimit !== 'unlimited') {
+                        fetchLimit = kw.historyLimit
+                    }
+
+                    const scanOptions: ScanOptions = {
+                        limit: fetchLimit,
+                        timeRange: resolveTimeRange(kw.timeRange),
+                        startDate: kw.startDate,
+                        endDate: kw.endDate
+                    }
+
+                    const result = await tiktok.scanKeyword(kw.name, scanOptions) || { videos: [] }
                     const newVideos = result.videos || []
+
                     allVideos.push(...newVideos)
                     scannedCount += newVideos.length
                     this.updateJobData(job.id, { ...data, status: `Scanned keyword "${kw.name}": found ${newVideos.length} videos`, scannedCount })
@@ -415,37 +555,78 @@ class JobQueue {
         // 3. Deduplicate
         const uniqueVideos = Array.from(new Map(allVideos.map(v => [v.id, v])).values())
 
-        // 4. Global sort by Post Order
+        // 4. Global sort
         const postOrder = data.postOrder || 'newest'
-        const postOrderLabel = postOrder === 'most_likes' ? 'most likes first' : postOrder === 'oldest' ? 'oldest first' : 'newest first'
-        this.updateJobData(job.id, { ...data, status: `Sorting ${uniqueVideos.length} scanned videos (${postOrderLabel})...`, scannedCount })
-
         uniqueVideos.sort((a: any, b: any) => {
             const aLikes = (a.stats?.likes || 0)
             const bLikes = (b.stats?.likes || 0)
             if (postOrder === 'most_likes') return bLikes - aLikes
             if (postOrder === 'least_likes') return aLikes - bLikes
             if (postOrder === 'oldest') return a.id.localeCompare(b.id)
-            return b.id.localeCompare(a.id) // newest (default)
+            return b.id.localeCompare(a.id)
         })
 
-        console.log(`JobQueue: Found ${uniqueVideos.length} unique scanned videos. Scheduling downloads starting at ${scheduleTime.toISOString()}`)
-        this.updateJobData(job.id, { ...data, status: `Scheduling ${uniqueVideos.length} download jobs...`, scannedCount })
+        // 4b. APPLY GLOBAL/LIFECYCLE LIMITS (The "Stop" Logic)
+        // We need to check: 
+        // - Total Limit (across all time)
+        // - Future Limit (during monitoring phase)
 
-        // 5. Create Scheduled DOWNLOAD Jobs (continuing from after single videos)
-        let scheduledCount = 0
+        // Assume simplified single-source limit config for now (taken from first source or merged)
+        // In real app, limits might be per-source, but CampaignWizard UI seems to show per-source. 
+        // For simplicity in this loop, we enforce the LIMIT defined on the source that generated the video? 
+        // No, 'JobQueue' aggregates. Let's assume the limits are roughly enforcing the 'Campaign' goal. 
+        // If multiple sources have different limits, handling is complex. 
+        // Current Plan: CampaignWizard UI sets limits PER SOURCE. 
+        // But here we merged videos. 
+        // STRATEGY: We will proceed with scheduling, but if we hit a "Global Campaign Limit" we stop.
+        // Wait, the UI sets `historyLimit` on the SOURCE. 
+        // So `allVideos` should already be limited by `fetchLimit` (lines 465/483 above). 
+        // So `historyLimit` is handled!
+
+        // NOW: Handle `futureLimit` and `totalLimit`.
+        // These are tricky if per-source. 
+        // Let's assume for the "Monitoring" phase, we check the limits of the *Continuous* sources.
+
+        // Let's look at the First Channel/Keyword to get the "Campaign Config" for limits.
+        // (Assuming uniform config for now, or taking the most restrictive/lax?)
+        // Let's iterate and schedule, checking limits as we go.
+
+        console.log(`[JobQueue] [SCAN] Checks: TotalScheduled=${totalScheduled}, Monitored=${monitoredCount}. Monitoring=${isMonitoring}`)
+
+        // 5. Create Scheduled DOWNLOAD Jobs
+        let newlyScheduled = 0
 
         for (let i = 0; i < uniqueVideos.length; i++) {
             const v = uniqueVideos[i]
 
+            // CHECK LIMITS BEFORE SCHEDULING
+            // We need to find the Source config for this video to be precise, or just use the first available config.
+            // Let's use a heuristic: Get config from the first channel/keyword.
+            const sourceConfig = data.sources?.channels?.[0] || data.sources?.keywords?.[0] || {}
+
+            // Check TOTAL limit
+            if (sourceConfig.totalLimit && sourceConfig.totalLimit !== 'unlimited') {
+                if (totalScheduled >= sourceConfig.totalLimit) {
+                    console.log(`[JobQueue] [LIMIT] Total limit (${sourceConfig.totalLimit}) reached. Stopping scheduling.`)
+                    break
+                }
+            }
+
+            // Check FUTURE limit (only if monitoring)
+            if (isMonitoring && sourceConfig.futureLimit && sourceConfig.futureLimit !== 'unlimited') {
+                if (monitoredCount >= sourceConfig.futureLimit) {
+                    console.log(`[JobQueue] [LIMIT] Future limit (${sourceConfig.futureLimit}) reached. Stopping scheduling.`)
+                    break
+                }
+            }
+
             // Check if already processed
             const exists = storageService.get("SELECT id FROM videos WHERE platform_id = ? AND status IN ('downloaded', 'published')", [v.id])
             if (exists) {
-                console.log(`Skipping already processed video ${v.id}`)
                 continue
             }
 
-            console.log(`[DEBUG_DESC] handleScan: Creating DOWNLOAD job for ${v.id}. Desc: "${v.desc || v.description}"`);
+            // Schedule
             storageService.run(
                 `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'DOWNLOAD', 'pending', ?, ?)`,
                 [
@@ -465,23 +646,87 @@ class JobQueue {
                     })
                 ]
             )
-            scheduledCount++
+            newlyScheduled++
+            totalScheduled++
+            if (isMonitoring) monitoredCount++
+
             scheduleTime = new Date(scheduleTime.getTime() + intervalMinutes * 60000)
         }
 
         // Update Job Result
-        const result = { found: uniqueVideos.length, scheduled: scheduledCount, skipped: uniqueVideos.length - scheduledCount }
+        const result = { found: uniqueVideos.length, scheduled: newlyScheduled, skipped: uniqueVideos.length - newlyScheduled }
         storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [JSON.stringify(result), job.id])
-        this.updateJobData(job.id, { ...data, status: `Scan complete: Found ${scheduledCount} new videos today`, scannedCount })
+        this.updateJobData(job.id, {
+            ...data,
+            status: `Scan complete: Scheduled ${newlyScheduled} videos. (Total: ${totalScheduled})`,
+            scannedCount,
+            totalScheduled,
+            monitoredCount
+        })
+
+        // 6. Reschedule Next Scan (Continuous Loop) or FINISH
+        let isContinuous = false
+        if (data.sources?.channels?.some((c: any) => shouldContinue(c))) isContinuous = true
+        if (data.sources?.keywords?.some((k: any) => shouldContinue(k))) isContinuous = true
+        // Legacy fallback
+        if (data.sources?.channels && data.sources.channels.every((c: any) => !c.timeRange)) isContinuous = true
+
+        // Check if Stop Condition Met (Limits Reached)
+        // We check if we are "full" based on the config.
+        const sourceConfig = data.sources?.channels?.[0] || data.sources?.keywords?.[0] || {}
+        let limitsReached = false
+
+        if (sourceConfig.totalLimit !== 'unlimited' && sourceConfig.totalLimit !== undefined) {
+            if (totalScheduled >= sourceConfig.totalLimit) limitsReached = true
+        }
+        if (isMonitoring && sourceConfig.futureLimit !== 'unlimited' && sourceConfig.futureLimit !== undefined) {
+            if (monitoredCount >= sourceConfig.futureLimit) limitsReached = true
+        }
+
+        if (isContinuous && !limitsReached) {
+            const nextRun = new Date(Date.now() + intervalMinutes * 60000)
+            console.log(`[JobQueue] [SCAN] Rescheduling next scan for ${nextRun.toISOString()}`)
+
+            try {
+                const campaign = storageService.get('SELECT status FROM campaigns WHERE id = ?', [job.campaign_id])
+                if (campaign && campaign.status === 'active') {
+                    storageService.run(
+                        `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'SCAN', 'pending', ?, ?)`,
+                        [
+                            job.campaign_id,
+                            nextRun.toISOString(),
+                            JSON.stringify({
+                                ...data,
+                                nextScheduleTime: nextRun.toISOString(),
+                                isMonitoring: true, // Mark next info as Monitoring Phase
+                                totalScheduled,
+                                monitoredCount
+                            })
+                        ]
+                    )
+                }
+            } catch (e) {
+                console.error('[JobQueue] [SCAN] Error rescheduling:', e)
+            }
+        } else if (limitsReached) {
+            console.log(`[JobQueue] [SCAN] Campaign limits reached. Marking as FINISHED.`)
+            storageService.run("UPDATE campaigns SET status = 'finished' WHERE id = ?", [job.campaign_id])
+        } else {
+            console.log(`[JobQueue] [SCAN] Continuous mode disabled (History Only). Finishing scan loop.`)
+        }
     }
+
 
     private async handleDownload(job: any, data: any, tiktok: TikTokModule) {
         this.updateJobData(job.id, { ...data, status: 'Downloading video...' })
 
         // 1. Download video
+        console.log(`[JobQueue] [DOWNLOAD] Initiating download for URL: ${data.url} (Platform ID: ${data.platform_id})`)
         const { filePath, cached, meta } = await tiktok.downloadVideo(data.url, data.platform_id)
+        console.log(`[JobQueue] [DOWNLOAD] Download result: Cached=${cached}, MetaLoaded=${!!meta}, Path=${filePath}`)
 
         if (cached) {
+            console.log(`[JobQueue] [DOWNLOAD] Skipping physical download (Cache Hit).`)
             this.updateJobData(job.id, { ...data, status: 'Video already cached. Skipping download.' })
             // Small delay to let user see message
             await new Promise(r => setTimeout(r, 1000))
@@ -601,7 +846,7 @@ class JobQueue {
                 }
             }
 
-            console.log(`[JobQueue] Resolving caption. Pattern: "${captionPattern}", Original: "${originalDescription.substring(0, 30)}..."`)
+            console.log(`[JobQueue] [DOWNLOAD #${job.id}] Resolving caption. Pattern: "${captionPattern}", Original: "${originalDescription.substring(0, 30)}..."`)
 
             // 2. Generate Final Caption using Pattern
             const finalCaption = CaptionGenerator.generate(captionPattern, {
@@ -609,9 +854,12 @@ class JobQueue {
                 time: new Date(), // Or use scheduleTime if we knew it
                 author: meta ? meta.author : 'user'
             })
-            console.log(`[JobQueue] Generated final caption: "${finalCaption}" (Base: "${originalDescription.substring(0, 20)}...")`)
+            console.log(`[JobQueue] [DOWNLOAD] Caption Generation Outcome:`)
+            console.log(`  - Pattern Input: "${captionPattern}"`)
+            console.log(`  - Original Source: "${originalDescription.substring(0, 50)}..."`)
+            console.log(`  - FINAL OUTPUT: "${finalCaption}"`)
 
-            console.log(`[DEBUG_DESC] Creating PUBLISH jobs with caption: "${finalCaption}"`)
+            console.log(`[JobQueue] [DOWNLOAD #${job.id}] Creating PUBLISH jobs for accounts: ${data.targetAccounts.join(', ')}`)
             for (const accId of data.targetAccounts) {
                 // Get account info for display
                 const acc = storageService.get('SELECT username, display_name FROM publish_accounts WHERE id = ?', [accId])
@@ -684,10 +932,11 @@ class JobQueue {
         }
 
         log(`Invoking TikTokModule.publishVideo`)
-        log(`  - Video: ${video_path}`)
-        log(`  - Caption (Job Data): "${data.caption}"`)
-        log(`  - Caption (Final Passed): "${caption}"`)
-        log(`  - AdvancedVerification: ${data.advancedVerification}`)
+        log(`  - Video Absolute Path: ${require('path').resolve(video_path)}`)
+        log(`  - Video Stats (Input): ${JSON.stringify(data.videoStats || {})}`)
+        log(`  - Caption (Original): "${data.caption.substring(0, 50)}..."`)
+        log(`  - Caption (Final Passed to Module): "${caption}"`)
+        log(`  - AdvancedVerification Toggle: ${data.advancedVerification}`)
 
         const result = await tiktok.publishVideo(
             video_path,
@@ -801,8 +1050,8 @@ class JobQueue {
                     console.log(`[CampaignCheck] ID: ${campaignId} Pending: ${pendingJobs} HasSources: ${hasSources} IsRecurring: ${isRecurring}`)
 
                     if (!hasSources || !isRecurring) {
-                        storageService.run("UPDATE campaigns SET status = 'completed' WHERE id = ?", [campaignId])
-                        console.log(`Campaign ${campaignId} completed (all jobs finished).`)
+                        storageService.run("UPDATE campaigns SET status = 'finished' WHERE id = ?", [campaignId])
+                        console.log(`Campaign ${campaignId} finished (all jobs and monitoring complete).`)
 
                         try {
                             const stats = campaignService.getCampaignStats(campaignId)

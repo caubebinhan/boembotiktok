@@ -61,12 +61,15 @@ export const CampaignHeader: React.FC<Props> = ({ campaign, onRunNow, onPause, o
                 <button
                     className={`btn ${isRunning ? 'btn-secondary' : 'btn-primary'}`}
                     onClick={isRunning ? onPause : onRunNow}
+                    disabled={campaign.status === 'finished'}
                     style={{
-                        background: isRunning ? 'var(--bg-tertiary)' : 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
-                        boxShadow: isRunning ? 'none' : '0 4px 12px rgba(37, 99, 235, 0.3)',
+                        background: campaign.status === 'finished' ? '#10b981' : (isRunning ? 'var(--bg-tertiary)' : 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)'),
+                        boxShadow: isRunning || campaign.status === 'finished' ? 'none' : '0 4px 12px rgba(37, 99, 235, 0.3)',
                         display: 'flex',
                         alignItems: 'center',
-                        gap: '8px'
+                        gap: '8px',
+                        color: campaign.status === 'finished' ? '#fff' : 'inherit',
+                        cursor: campaign.status === 'finished' ? 'default' : 'pointer'
                     }}
                 >
                     {isRunning ? (
@@ -75,7 +78,11 @@ export const CampaignHeader: React.FC<Props> = ({ campaign, onRunNow, onPause, o
                             ⏸ Pause
                         </>
                     ) : (
-                        <>▶ Run Now</>
+                        campaign.status === 'finished' ? (
+                            <>✓ Finished</>
+                        ) : (
+                            <>▶ Run Now</>
+                        )
                     )}
                 </button>
             </div>

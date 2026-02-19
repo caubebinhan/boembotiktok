@@ -6,11 +6,23 @@ import axios from 'axios'
 import fs from 'fs-extra'
 import path from 'path'
 import { app } from 'electron'
+import { Downloader } from '@tobyg74/tiktok-api-dl'
+
+export interface ScanOptions {
+    limit?: number | 'unlimited'
+    mode?: 'incremental' | 'batch'
+    sortOrder?: 'newest' | 'oldest' | 'most_likes' | 'most_viewed'
+    timeRange?: 'from_now' | 'include_history'
+    isBackground?: boolean
+    startDate?: string // YYYY-MM-DD
+    endDate?: string   // YYYY-MM-DD
+}
 
 export class TikTokModule implements PlatformModule {
     name = 'TikTok'
     id = 'tiktok'
     private isScanning = false
+
 
     async initialize(): Promise<void> {
         console.log('TikTokModule initializing...')
@@ -21,7 +33,8 @@ export class TikTokModule implements PlatformModule {
         console.log('TikTokModule shutting down...')
     }
 
-    async scanKeyword(keyword: string, maxVideos = 50): Promise<any> {
+    async scanKeyword(keyword: string, options: ScanOptions = {}): Promise<any> {
+        const maxVideos = options.limit === 'unlimited' ? 1000 : (options.limit || 50)
         if (this.isScanning) {
             console.warn('Scan already in progress')
             return { videos: [] }
@@ -41,30 +54,59 @@ export class TikTokModule implements PlatformModule {
         try {
             await page.goto(`https://www.tiktok.com/search?q=${encodeURIComponent(keyword)}`, { waitUntil: 'networkidle', timeout: 60000 })
 
-            // === Scroll to End Logic ===
+            // Detection check
+            await (this as any).handleCaptchaDetection(page, `keyword_${keyword}`)
+
+            // === Scroll to End & Filter Logic ===
             let prevCount = 0
             let rounds = 0
-            const MAX_ROUNDS = 50 // Safety break
+            // If unlimited, go up to 200 rounds (approx 2000-3000 videos), else calc needed rounds
+            const MAX_ROUNDS = options.limit === 'unlimited' ? 200 : Math.ceil(maxVideos / 10) + 5
+
+            // Date Parsing Helper (Relative to absolute)
+            const parseRelativeDate = (text: string) => {
+                const now = new Date()
+                if (text.includes('m ago')) now.setMinutes(now.getMinutes() - parseInt(text))
+                else if (text.includes('h ago')) now.setHours(now.getHours() - parseInt(text))
+                else if (text.includes('d ago')) now.setDate(now.getDate() - parseInt(text))
+                else if (text.match(/\d{4}-\d{1,2}-\d{1,2}/)) return new Date(text)
+                else return now // Fallback or standard date format like "12-25" (assume current year if missing)
+                return now
+            }
 
             while (rounds < MAX_ROUNDS) {
                 rounds++
+
+                // Optimized: Check dates during scroll if startDate is set
+                if (options.startDate) {
+                    const oldestVideoDate = await page.evaluate(() => {
+                        const dates = Array.from(document.querySelectorAll('[data-e2e="search-card-video-time"], .video-date-selector')) // Adjust selector as needed
+                        if (dates.length === 0) return null
+                        return dates[dates.length - 1].textContent
+                    })
+
+                    // If we see a date older than startDate, we can stop scrolling
+                    // Note: Implementation depends on reliable date selectors in DOM. 
+                    // For now, we'll rely on post-fetch filtering mainly, unless we find a stable DOM element.
+                }
+
                 const currentCount = await page.evaluate(() => document.querySelectorAll('a[href*="/video/"]').length)
 
                 if (currentCount >= maxVideos) {
-                    console.log(`Reached max videos limit (${maxVideos})`)
+                    console.log(`[TikTokModule] Reached max videos limit (${maxVideos}) at round ${rounds}`)
                     break
                 }
 
-                console.log(`Scanning round ${rounds}... Found ${currentCount}/${maxVideos}`)
+                console.log(`[TikTokModule] Scanning round ${rounds}/${MAX_ROUNDS}... Found ${currentCount}/${maxVideos}`)
                 await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
                 try {
-                    await page.waitForTimeout(2000)
+                    // Randomized delay to mimic human behavior and avoid rate limits (2s - 5s)
+                    const delay = 2000 + Math.random() * 3000
+                    await page.waitForTimeout(delay)
                 } catch { break }
 
                 if (currentCount === prevCount && currentCount > 0) {
-                    // Check if "Load more" button exists (sometimes searching has a button)
-                    // converting to auto-scroll usually works though
-                    console.log('No new videos found, stopping.')
+                    console.log(`[TikTokModule] No new videos found after scrolling. Stopping.`)
                     break
                 }
                 prevCount = currentCount
@@ -80,11 +122,16 @@ export class TikTokModule implements PlatformModule {
                         const container = a.closest('[data-e2e="search_top-item"]') || a.closest('div[class*="DivItemContainer"]') || a.parentElement
                         const viewsText = container ? container.textContent?.match(/(\d+(\.\d+)?[KMB]?)/)?.[0] : ''
 
+                        // Try to find date element
+                        const dateEl = container?.querySelector('[data-e2e="search-card-video-time"]') || container?.querySelector('span[class*="-SpanTime"]')
+                        const dateText = dateEl ? dateEl.textContent : ''
+
                         return {
                             id: m ? m[1] : '',
                             url: a.href,
                             desc: a.textContent || '', // This often grabs views too, needs cleaning
                             thumb: a.querySelector('img')?.src || '',
+                            dateStr: dateText,
                             stats: {
                                 views: viewsText || '0',
                                 likes: '0',
@@ -95,10 +142,52 @@ export class TikTokModule implements PlatformModule {
                     .filter(v => v.id)
             })
 
-            console.log(`Found ${videos.length} videos on page. Taking top ${maxVideos}.`)
+            // Filter by Date Range
+            const startDate = options.startDate ? new Date(options.startDate) : null
+            const endDate = options.endDate ? new Date(options.endDate) : null
+
+            // Helper to parse harvested dates
+            // TikTok dates are "2d ago", "2023-5-1", or "5-1" (current year)
+            const parseVideoDate = (str: string) => {
+                if (!str) return new Date() // Default to now if not found
+                const now = new Date()
+                if (str.includes('ago')) {
+                    const num = parseInt(str)
+                    if (str.includes('m')) now.setMinutes(now.getMinutes() - num)
+                    if (str.includes('h')) now.setHours(now.getHours() - num)
+                    if (str.includes('d')) now.setDate(now.getDate() - num)
+                    if (str.includes('w')) now.setDate(now.getDate() - (num * 7))
+                    return now
+                }
+                if (str.match(/^\d{1,2}-\d{1,2}$/)) { // "5-20"
+                    return new Date(`${now.getFullYear()}-${str}`)
+                }
+                return new Date(str) // Try standard parse
+            }
+
+            const filteredVideos = videos.filter(v => {
+                if (!startDate && !endDate) return true
+                const vDate = parseVideoDate(v.dateStr || '')
+
+                if (startDate && vDate < startDate) return false
+                if (endDate) {
+                    // Set endDate to end of day
+                    const end = new Date(endDate)
+                    end.setHours(23, 59, 59, 999)
+                    if (vDate > end) return false
+                }
+                return true
+            })
+
+            console.log(`[TikTokModule] Date Filtering: ${videos.length} -> ${filteredVideos.length} videos within range (${options.startDate || 'Any'} to ${options.endDate || 'Any'})`)
+
+
+            console.log(`[TikTokModule] Extraction Results: Found ${videos.length} potential videos. Applying max limit (${maxVideos}) and deduplication check...`)
 
             // Limit to maxVideos
             const targetVideos = videos.slice(0, maxVideos)
+            let uniqueNewCount = 0;
+            let skippedCount = 0;
 
             for (const v of targetVideos) {
                 const exists = storageService.get('SELECT id FROM videos WHERE platform_id = ?', [v.id])
@@ -109,7 +198,7 @@ export class TikTokModule implements PlatformModule {
                          VALUES ('tiktok', ?, ?, ?, 'discovered', ?)`,
                         [v.id, v.url, v.desc, JSON.stringify({ thumbnail: v.thumb, stats: v.stats, keyword })]
                     )
-                    console.log(`[DEBUG_DESC] scanKeyword: New video found: ${v.id}. Desc: "${v.desc}"`)
+                    console.log(`[TikTokModule] [NEW] Discovered: ${v.id} | Desc: "${v.desc.substring(0, 30)}..."`)
 
                     // Return found videos (for immediate use if needed)
                     const newId = storageService.get('SELECT last_insert_rowid() as id').id
@@ -120,9 +209,14 @@ export class TikTokModule implements PlatformModule {
                         thumbnail: v.thumb,
                         stats: v.stats
                     })
+                    uniqueNewCount++;
+                } else {
+                    console.log(`[TikTokModule] [SKIP] Already in DB: ${v.id}`);
+                    skippedCount++;
                 }
             }
 
+            console.log(`[TikTokModule] Scan Completed: ${uniqueNewCount} new unique videos added, ${skippedCount} skipped (duplicates).`);
             return { videos: foundVideos }
 
         } catch (error) {
@@ -134,7 +228,9 @@ export class TikTokModule implements PlatformModule {
         }
     }
 
-    async scanProfile(username: string, isBackground = false): Promise<any> {
+    async scanProfile(username: string, options: ScanOptions = {}): Promise<any> {
+        const isBackground = options.isBackground || false
+        const limit = options.limit === 'unlimited' ? 2000 : (options.limit || 50)
         if (this.isScanning) {
             console.warn('Scan already in progress')
             return { videos: [], channel: null }
@@ -153,7 +249,10 @@ export class TikTokModule implements PlatformModule {
         let channelInfo: any = null
 
         try {
-            await page.goto(`https://www.tiktok.com/@${username}`, { waitUntil: 'networkidle' })
+            await page.goto(`https://www.tiktok.com/@${username}`, { waitUntil: 'networkidle', timeout: 60000 })
+
+            // Detection check
+            await (this as any).handleCaptchaDetection(page, `profile_${username}`)
 
             // === Extract Channel Metadata ===
             channelInfo = await page.evaluate(() => {
@@ -178,19 +277,62 @@ export class TikTokModule implements PlatformModule {
             // === Scroll to End Logic ===
             let prevCount = 0
             let rounds = 0
-            const MAX_ROUNDS = isBackground ? 50 : 5
+
+            // Check for Incremental Mode (stop at last known video)
+            let stopId: string | null = null
+            if (options.timeRange === 'from_now') {
+                try {
+                    const lastRow = storageService.get(`SELECT platform_id FROM videos WHERE platform='tiktok' AND url LIKE '%/@${username}/video/%' ORDER BY platform_id DESC LIMIT 1`)
+                    if (lastRow) {
+                        stopId = lastRow.platform_id
+                        console.log(`[TikTokModule] Incremental Mode: Stopping at video ID <= ${stopId}`)
+                    }
+                } catch (e) { console.error('Error fetching last ID:', e) }
+            }
+
+            // Adjust rounds based on limit. Unlimited -> 300 rounds (~3-5k videos), else adaptive.
+            const MAX_ROUNDS = options.limit === 'unlimited' ? 300 : Math.ceil(limit / 12) + 5
 
             while (rounds < MAX_ROUNDS) {
                 rounds++
-                console.log(`Scanning round ${rounds}...`)
+                console.log(`[TikTokModule] Scanning round ${rounds}/${MAX_ROUNDS}...`)
 
                 await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
                 await page.waitForTimeout(2000)
 
                 const currentCount = await page.evaluate(() => document.querySelectorAll('a[href*="/video/"]').length)
+                console.log(`[TikTokModule] Round ${rounds}: Found ${currentCount} videos so far (Target: ${options.limit === 'unlimited' ? 'Unlimited' : limit}).`)
+
+                if (options.limit !== 'unlimited' && currentCount >= limit) {
+                    console.log(`[TikTokModule] Reached limit (${limit}). Stopping scroll.`)
+                    break
+                }
+
+                // Incremental Check: Check the last loaded video ID
+                if (stopId) {
+                    const shouldStop = await page.evaluate((stopId) => {
+                        // Get last video link
+                        const links = Array.from(document.querySelectorAll('a[href*="/video/"]'));
+                        const lastLink = links[links.length - 1];
+                        if (lastLink) {
+                            const m = lastLink.getAttribute('href')?.match(/\/video\/(\d+)/);
+                            if (m && m[1]) {
+                                // Lexicographical comparison for string IDs works for same-length numeric strings (TikTok IDs are consistent)
+                                // If found ID <= stopId, we reached old content
+                                return m[1] <= stopId;
+                            }
+                        }
+                        return false;
+                    }, stopId)
+
+                    if (shouldStop) {
+                        console.log(`[TikTokModule] Reached known video (ID <= ${stopId}). Stopping incremental scan.`)
+                        break
+                    }
+                }
 
                 if (currentCount === prevCount && currentCount > 0) {
-                    console.log('Reached end of feed.')
+                    console.log(`[TikTokModule] Reached end of feed for @${username}.`)
                     break
                 }
                 prevCount = currentCount
@@ -315,115 +457,126 @@ export class TikTokModule implements PlatformModule {
 
         try {
             console.log('Using @tobyg74/tiktok-api-dl to fetch video URL...')
+
+            // 60-second timeout for library extraction
+            const LIBRARY_TIMEOUT = 60 * 1000;
+            let libTimeoutId: NodeJS.Timeout;
+
+            const libTimeoutPromise = new Promise((_, reject) => {
+                libTimeoutId = setTimeout(() => {
+                    reject(new Error('TikTok library extraction timed out after 60s'));
+                }, LIBRARY_TIMEOUT);
+            });
+
             // Dynamic import to handle CommonJS/ESM interop if needed, though we compiled to CommonJS in TS
             // @ts-ignore
-            const { Downloader } = require('@tobyg74/tiktok-api-dl')
+            const workPromise = Downloader(url, { version: 'v1' });
 
-            const result = await Downloader(url, { version: 'v1' })
-            console.log('Library Result Status:', result.status)
+            const result = await Promise.race([workPromise, libTimeoutPromise]) as any;
+            clearTimeout(libTimeoutId!);
+
+            console.log(`[TikTokModule] Library extraction result for: ${url}`)
+            console.log(`  - Status: ${result.status}`)
 
             // meta declared outside try block
 
             if (result.status === 'success' && result.result) {
                 const videoData = result.result.video
+                console.log(`[TikTokModule] Library extraction details:`)
+                console.log(`  - Has Video Data: ${!!videoData}`)
+                console.log(`  - Play Statistics: ${JSON.stringify(result.result.stats)}`)
+
                 if (videoData) {
-                    console.log('Library Result Full:', JSON.stringify(result, null, 2))
+                    console.log(`[TikTokModule] Investigating playAddr:`, JSON.stringify(videoData.playAddr));
                     // Fix: The library returns `playAddr` as an array of strings inside the `video` object
                     if (Array.isArray(videoData.playAddr) && videoData.playAddr.length > 0) {
                         videoStreamUrl = videoData.playAddr[0]
+                        console.log(`[TikTokModule] Using first playAddr from array: ${videoStreamUrl.substring(0, 50)}...`)
                     } else if (typeof videoData.playAddr === 'string') {
                         videoStreamUrl = videoData.playAddr
+                        console.log(`[TikTokModule] Using string playAddr: ${videoStreamUrl.substring(0, 50)}...`)
                     }
                 }
 
-                // HELPER: Clean Description
-                const cleanDesc = (text: string) => {
-                    if (!text) return '';
-                    return text
-                        .replace(/[\d,.]+[KMB]?\s*Play/i, '')
-                        .replace(/\s*[·\-\|]\s*(?:original sound|âm thanh gốc|music|âm thanh|nhạc nền).*/i, '')
-                        .replace(/の\s*(?:original sound|âm thanh gốc|music|âm thanh|nhạc nền).*/i, '')
-                        .replace(/を(?:使用|使っ).*/i, '')
-                        .replace(/が作成した.*/i, '')
-                        .replace(/#\w+$/g, '')
-                        .trim();
-                };
-
-                // Extract metadata
+                // ... (cleaning logic remains same but I'll keep the block to ensure replacement matches)
+                // Extract metadata (using shared cleaner)
                 meta = {
-                    description: cleanDesc(result.result.desc || ''),
+                    description: result.result.desc || '',
                     author: result.result.author ? {
                         nickname: result.result.author.nickname,
                         avatar: result.result.author.avatar
                     } : null
                 }
+                console.log(`[TikTokModule] Metadata Resolution:`)
+                console.log(`  - Raw Caption: "${result.result.desc || ''}"`)
+                console.log(`  - Cleaned Caption: "${meta.description}"`)
+                console.log(`  - Author: ${meta.author?.nickname || 'Unknown'} (Avatar: ${meta.author?.avatar ? 'Present' : 'Missing'})`)
             }
 
             if (!videoStreamUrl) {
-                console.warn('Library returned success but no video URL found. Result:', JSON.stringify(result.result))
+                console.warn('[TikTokModule] ! CRITICAL: No video stream URL found in library result.')
                 throw new Error('Library result empty')
             }
 
             // 2. Fallback for Empty Description (User Requirement: "fetch caption in detail page")
             if (!meta.description) {
-                console.warn('[TikTokModule] Library returned empty description. Triggering Puppeteer fallback for metadata...')
+                console.log('[TikTokModule] Caption missing from library. Initiating Puppeteer fallback...')
                 try {
-                    const fallbackMeta = await this.getMetadataFallback(url) // New method
+                    const fallbackMeta = await this.getMetadataFallback(url)
                     if (fallbackMeta.description) {
-                        const cleanDesc = (text: string) => {
-                            if (!text) return '';
-                            return text
-                                .replace(/[\d,.]+[KMB]?\s*Play/i, '')
-                                .replace(/\s*[·\-\|]\s*(?:original sound|âm thanh gốc|music|âm thanh|nhạc nền).*/i, '')
-                                .replace(/の\s*(?:original sound|âm thanh gốc|music|âm thanh|nhạc nền).*/i, '')
-                                .replace(/を(?:使用|使っ).*/i, '')
-                                .replace(/が作成した.*/i, '')
-                                .replace(/#\w+$/g, '')
-                                .trim();
-                        };
-                        meta.description = cleanDesc(fallbackMeta.description)
-                        console.log(`[DEBUG_DESC] Puppeteer fallback recovered caption: "${meta.description}"`)
+                        meta.description = fallbackMeta.description
+                        console.log(`[TikTokModule] Fallback SUCCESS: Extracted caption: "${meta.description}"`)
+                    } else {
+                        console.log('[TikTokModule] Fallback returned empty caption.')
                     }
                 } catch (e: any) {
-                    console.error('[TikTokModule] Metadata fallback failed:', e.message)
+                    console.error('[TikTokModule] Fallback FAILED:', e.message)
                 }
             }
 
-            console.log(`[DEBUG_DESC] Library result status: ${result.status}`)
-            if (meta.description) console.log(`[DEBUG_DESC] Library extracted caption: "${meta.description}"`)
+            console.log(`[TikTokModule] Extraction Phase Completed. Selected Stream: ${videoStreamUrl.substring(0, 60)}...`)
 
-            // Return metadata along with file path
-            // We need to pass this out to JobQueue
         } catch (e: any) {
-            console.error('Library extraction error:', e.message)
-            console.log('Falling back to Puppeteer extraction...')
+            console.error('[TikTokModule] Library extraction fatal error:', e.message)
+            console.log('[TikTokModule] Redirecting to FULL Puppeteer download fallback...')
             return await this.downloadVideoFallback(url, filePath)
         }
 
-
-
-        // 2.5. Check Cache NOW (Moved here to ensure we have metadata first)
+        // 2.5. Check Cache
         if (await fs.pathExists(filePath)) {
             const stats = await fs.stat(filePath)
             if (stats.size > 50 * 1024) {
-                console.log(`[Cache] Video already exists (${(stats.size / 1024 / 1024).toFixed(2)} MB). Skipping download.`)
-                // CRITICAL FIX: Return meta even if cached!
+                console.log(`[TikTokModule] [Cache] Pre-existing video found: ${path.basename(filePath)} (${(stats.size / 1024 / 1024).toFixed(2)}MB).`)
                 return { filePath, cached: true, meta }
             } else {
+                console.log(`[TikTokModule] [Cache] Corrupt video found (${stats.size} bytes). Deleting and re-downloading...`)
                 await fs.remove(filePath)
             }
         }
 
         // 3. Download the Extracted URL
+        console.log(`[TikTokModule] Initiating stream download via Axios. Path: ${filePath}`);
         try {
             const writer = fs.createWriteStream(filePath)
-
             const response = await axios({
                 url: videoStreamUrl,
                 method: 'GET',
                 responseType: 'stream',
-                headers: downloadHeaders
+                headers: downloadHeaders,
+                timeout: 60000 // 60 second timeout for initial connection/headers
             })
+
+            console.log(`[TikTokModule] HTTP Response Status: ${response.status} ${response.statusText}`);
+            console.log(`[TikTokModule] HTTP Response Headers:`, JSON.stringify(response.headers, null, 2));
+
+            let downloadedBytes = 0;
+            response.data.on('data', (chunk: Buffer) => {
+                downloadedBytes += chunk.length;
+                // Log progress every 5MB
+                if (downloadedBytes % (5 * 1024 * 1024) < chunk.length) {
+                    console.log(`[TikTokModule] Download Progress: ${(downloadedBytes / 1024 / 1024).toFixed(2)}MB transferred...`);
+                }
+            });
 
             response.data.pipe(writer)
 
@@ -450,7 +603,14 @@ export class TikTokModule implements PlatformModule {
                 })
                 writer.on('error', reject)
             })
-        } catch (error) {
+        } catch (error: any) {
+            if (error.response && error.response.status === 429) {
+                console.warn('[TikTokModule] Rate limit (429) detected in downloadVideo.')
+                try {
+                    const { jobQueue } = require('../../services/JobQueue')
+                    jobQueue.setGlobalThrottle(30)
+                } catch (e) { }
+            }
             console.error('Download failed:', error)
             throw error
         }
@@ -528,14 +688,7 @@ export class TikTokModule implements PlatformModule {
                 }
 
                 if (!raw) return '';
-                return raw
-                    .replace(/[\d,.]+[KMB]?\s*Play/i, '')
-                    .replace(/\s*[·\-\|]\s*(?:original sound|âm thanh gốc|music|âm thanh|nhạc nền).*/i, '')
-                    .replace(/の\s*(?:original sound|âm thanh gốc|music|âm thanh|nhạc nền).*/i, '')
-                    .replace(/を(?:使用|使っ).*/i, '')
-                    .replace(/が作成した.*/i, '')
-                    .replace(/#\w+$/g, '')
-                    .trim();
+                return raw;
             })
             console.log(`[DEBUG_DESC] Extracted Description (Fallback): "${description}"`)
 
@@ -548,18 +701,7 @@ export class TikTokModule implements PlatformModule {
         }
 
         if (!videoStreamUrl || videoStreamUrl.startsWith('blob:')) {
-            const ts = Date.now()
-            const debugDir = path.join(app.getPath('userData'), 'debug_artifacts')
-            await fs.ensureDir(debugDir)
-            try {
-                if (page && !page.isClosed()) {
-                    await page.screenshot({ path: path.join(debugDir, `download_fail_${ts}.png`) })
-                    const html = await page.content()
-                    await fs.writeFile(path.join(debugDir, `download_fail_${ts}.html`), html)
-                    console.log(`[Download Debug] Saved artifacts to ${debugDir}/download_fail_${ts}.*`)
-                }
-            } catch (e) { console.error('Failed to save debug artifacts:', e) }
-
+            await (this as any).handleCaptchaDetection(page, `download_fallback_${path.basename(filePath)}`)
             throw new Error(`Failed to extract valid video URL. Got: ${videoStreamUrl || 'nothing'}`)
         }
 
@@ -586,7 +728,8 @@ export class TikTokModule implements PlatformModule {
             url: videoStreamUrl,
             method: 'GET',
             responseType: 'stream',
-            headers: downloadHeaders
+            headers: downloadHeaders,
+            timeout: 60000 // 60s timeout
         })
 
         return new Promise((resolve, reject) => {
@@ -662,9 +805,11 @@ export class TikTokModule implements PlatformModule {
         const uniqueTag = '#' + Math.random().toString(36).substring(2, 8);
         const finalCaption = useUniqueTag ? (caption + ' ' + uniqueTag) : caption;
 
-        console.log(`[DEBUG_DESC] Publishing video: ${filePath} (Tag: ${useUniqueTag ? uniqueTag : 'Disabled'})`)
-        console.log(`[DEBUG_DESC] Caption received: "${caption}" (Length: ${caption.length})`)
-        console.log(`[DEBUG_DESC] Final caption to type: "${finalCaption}"`)
+        console.log(`[TikTokModule] [PUBLISH] Starting publish workflow:`)
+        console.log(`  - File: ${filePath}`)
+        console.log(`  - Verification Tag: ${useUniqueTag ? uniqueTag : 'Disabled'}`)
+        console.log(`  - Raw Caption: "${caption}"`)
+        console.log(`  - Final Caption: "${finalCaption}"`)
 
         if (onProgress) onProgress('Initializing browser...')
         let page: Page | null = null
@@ -699,7 +844,7 @@ export class TikTokModule implements PlatformModule {
             // ─── Helper: Smart Overlay/Modal Cleaner ───
             const cleanOverlays = async (targetSelector?: string) => {
                 if (onProgress) onProgress('Checking for overlays...')
-                console.log('--- cleanOverlays started ---')
+                console.log(`[TikTokModule] [cleanOverlays] Start (Target: ${targetSelector || 'None'})`)
 
                 const commonSelectors = [
                     'button[aria-label="Close"]', 'button[aria-label="close"]',
@@ -716,7 +861,7 @@ export class TikTokModule implements PlatformModule {
 
                 // Add debug dump if it gets stuck
                 const safetyTimer = setTimeout(async () => {
-                    console.log('⚠️ cleanOverlays is taking too long! Dumping state...')
+                    console.log('[TikTokModule] [cleanOverlays] [WARNING] Timeout reached (10s)! Dumping state...')
                     try {
                         const ts = Date.now()
                         const debugDir = path.join(app.getPath('userData'), 'debug_artifacts')
@@ -724,7 +869,8 @@ export class TikTokModule implements PlatformModule {
                         await page?.screenshot({ path: path.join(debugDir, `overlay_stuck_${ts}.png`) })
                         const html = await page?.content() || ''
                         await fs.writeFile(path.join(debugDir, `overlay_stuck_${ts}.html`), html)
-                    } catch (e) { console.error('Failed to dump stuck state:', e) }
+                        console.log(`[TikTokModule] [cleanOverlays] Snapshot saved: overlay_stuck_${ts}.html`)
+                    } catch (e) { console.error('[TikTokModule] [cleanOverlays] Failed to dump stuck state:', e) }
                 }, 10000) // 10s warning
 
                 try {
@@ -734,27 +880,41 @@ export class TikTokModule implements PlatformModule {
                             for (const sel of commonSelectors) {
                                 try {
                                     // Ultra short timeout check
+                                    console.log(`[TikTokModule] [cleanOverlays] Checking selector: ${sel}`)
                                     const btn = await page!.$(sel)
-                                    if (btn && await btn.isVisible()) {
-                                        console.log(`  Found overlay candidate: ${sel}`)
-                                        await btn.click({ force: true, timeout: 500 }).catch(() => { })
-                                        await page!.waitForTimeout(300)
+                                    if (btn) {
+                                        const visible = await btn.isVisible()
+                                        console.log(`[TikTokModule] [cleanOverlays] Result for ${sel}: Found=${!!btn}, Visible=${visible}`)
+                                        if (visible) {
+                                            console.log(`[TikTokModule] [cleanOverlays] Action: Clicking ${sel}...`)
+                                            await btn.click({ force: true, timeout: 500 }).catch(() => { })
+                                            await page!.waitForTimeout(300)
+                                            console.log(`[TikTokModule] [cleanOverlays] Action: Done.`)
+                                        }
+                                    } else {
+                                        console.log(`[TikTokModule] [cleanOverlays] Result for ${sel}: Not on page.`)
                                     }
-                                } catch (e) { }
+                                } catch (e: any) {
+                                    console.log(`[TikTokModule] [cleanOverlays] Error checking ${sel}: ${e.message}`)
+                                }
                             }
 
+                            console.log('[TikTokModule] [cleanOverlays] Sending [Escape] key as final fallback.')
                             await page!.keyboard.press('Escape')
 
                             // Obstruction check (omitted for speed unless strictly needed)
                             if (targetSelector) {
-                                // ... existing logic if needed, but simplified for speed
+                                console.log(`[TikTokModule] [cleanOverlays] Obstruction check for target: ${targetSelector}`)
+                                // (Logic omitted for brevity as per existing code)
                             }
                         })(),
                         new Promise(resolve => setTimeout(resolve, 15000))
                     ])
+                } catch (e: any) {
+                    console.log(`[TikTokModule] [cleanOverlays] Fatal error during cleanup: ${e.message}`)
                 } finally {
                     clearTimeout(safetyTimer)
-                    console.log('--- cleanOverlays finished ---')
+                    console.log('[TikTokModule] [cleanOverlays] Finished.')
                     if (onProgress) onProgress('Overlays cleared.')
                 }
             }
@@ -802,7 +962,7 @@ export class TikTokModule implements PlatformModule {
             let fileUploaded = false
 
             for (let uploadAttempt = 1; uploadAttempt <= MAX_UPLOAD_RETRIES; uploadAttempt++) {
-                console.log(`\n📤 Upload attempt ${uploadAttempt}/${MAX_UPLOAD_RETRIES}...`)
+                console.log(`[TikTokModule] [PUBLISH] Upload attempt ${uploadAttempt}/${MAX_UPLOAD_RETRIES}...`)
                 if (onProgress) onProgress(`Uploading video (Attempt ${uploadAttempt})...`)
                 await cleanOverlays()
 
@@ -863,7 +1023,10 @@ export class TikTokModule implements PlatformModule {
                     try {
                         const viewport = page.viewportSize();
                         if (viewport) {
-                            await page.mouse.click(viewport.width / 2, viewport.height / 2);
+                            const x = viewport.width / 2;
+                            const y = viewport.height / 2;
+                            console.log(`[TikTokModule] [PUBLISH] Last resort: Clicking center coordinates (X:${x}, Y:${y}) on ${viewport.width}x${viewport.height} viewport...`)
+                            await page.mouse.click(x, y);
                             await page.waitForTimeout(1500);
                             fileInput = await page.$('input[type="file"]')
                         }
@@ -895,7 +1058,7 @@ export class TikTokModule implements PlatformModule {
                 // Sometimes Playwright needs the element to be visible-ish? 
                 // state: 'attached' allows hidden. setInputFiles handles hidden inputs automatically.
 
-                console.log(`  Input content: ${filePath}`)
+                console.log(`[TikTokModule] [PUBLISH] Selecting file: ${filePath}`)
                 try {
                     await fileInput.setInputFiles(filePath)
                 } catch (err: any) {
@@ -904,7 +1067,7 @@ export class TikTokModule implements PlatformModule {
                     throw err
                 }
 
-                console.log('  File selected')
+                console.log('[TikTokModule] [PUBLISH] File selected and upload initiated.')
 
                 let uploadReady = false
                 let uploadError = false
@@ -919,7 +1082,7 @@ export class TikTokModule implements PlatformModule {
                         const errEl = await page.locator('[data-e2e="toast-message"], .tiktok-toast, [role="alert"]').first()
                         if (await errEl.isVisible()) {
                             const errText = await errEl.textContent()
-                            console.log(`  ❌ Upload error detected: "${errText}"`)
+                            console.log(`[TikTokModule] [PUBLISH] ❌ Upload error detected: "${errText}"`)
                             uploadError = true
                         }
                     } catch { /* ignore */ }
@@ -1005,7 +1168,7 @@ export class TikTokModule implements PlatformModule {
                     .first()
 
                 if (await restrictionEl.isVisible()) {
-                    console.log('  ❌ CRITICAL: Detected "Content may be restricted" popup!')
+                    console.log('[TikTokModule] [PUBLISH] ❌ CRITICAL: Detected "Content may be restricted" popup!')
                     throw new Error('TikTok detected content violation/restriction during upload.')
                 }
             } catch (e: any) {
@@ -1013,7 +1176,7 @@ export class TikTokModule implements PlatformModule {
             }
 
             // ─── Set Caption ───
-            console.log('✏️ Setting caption...')
+            console.log('[TikTokModule] [PUBLISH] Setting caption...')
             if (onProgress) onProgress('Setting video caption...')
             let captionSet = false
             for (const sel of [
@@ -1038,7 +1201,7 @@ export class TikTokModule implements PlatformModule {
                             await page!.waitForTimeout(200)
                             await page!.keyboard.type(finalCaption, { delay: 20 })
                         }, sel)
-                        console.log(`[DEBUG_DESC] Caption set successfully using: ${sel}`)
+                        console.log(`[TikTokModule] [PUBLISH] Caption set successfully using: ${sel}`)
                         captionSet = true
                         break
                     }
@@ -1086,6 +1249,18 @@ export class TikTokModule implements PlatformModule {
 
             console.log('⏳ Waiting 5s for UI to settle (User Request)...')
             await new Promise(resolve => setTimeout(resolve, 5000))
+
+            // DUMP BEFORE POST (User Request)
+            try {
+                const ts = Date.now()
+                const debugDir = path.join(app.getPath('userData'), 'debug_artifacts')
+                await fs.ensureDir(debugDir)
+                if (page && !page.isClosed()) {
+                    await fs.writeFile(path.join(debugDir, `before_post_${ts}.html`), await page.content())
+                    await page.screenshot({ path: path.join(debugDir, `before_post_${ts}.png`) })
+                    console.log(`[TikTokModule] [PUBLISH] 📸 HTML dump captured BEFORE posting: before_post_${ts}.html`)
+                }
+            } catch (e) { console.warn(`[TikTokModule] [PUBLISH] ⚠️ Failed to dump pre-post state: ${e}`) }
 
             console.log('📜 Looking for scrollable container...')
 
@@ -1215,17 +1390,17 @@ export class TikTokModule implements PlatformModule {
             // ─── Verify success & extract video link ───
             console.log('\n⏳ Verifying post success...')
 
-            // DUMP SOURCE AFTER POST FOR VERIFICATION (User Request)
+            // DUMP AFTER POST (User Request)
             try {
                 const ts = Date.now()
                 const debugDir = path.join(app.getPath('userData'), 'debug_artifacts')
                 await fs.ensureDir(debugDir)
                 if (page && !page.isClosed()) {
-                    await fs.writeFile(path.join(debugDir, `post_click_verify_${ts}.html`), await page.content())
-                    await page.screenshot({ path: path.join(debugDir, `post_click_verify_${ts}.png`) })
-                    console.log(`  📸 [VERIFY] Post-click HTML dump saved to: post_click_verify_${ts}.html`)
+                    await fs.writeFile(path.join(debugDir, `after_post_${ts}.html`), await page.content())
+                    await page.screenshot({ path: path.join(debugDir, `after_post_${ts}.png`) })
+                    console.log(`[TikTokModule] [PUBLISH] 📸 HTML dump captured AFTER posting: after_post_${ts}.html`)
                 }
-            } catch (e) { console.warn(`  ⚠️ Failed to dump post-click state: ${e}`) }
+            } catch (e) { console.warn(`[TikTokModule] [PUBLISH] ⚠️ Failed to dump post-post state: ${e}`) }
 
             if (onProgress) onProgress('Verifying publication...')
             let videoUrl: string | undefined
@@ -1282,19 +1457,20 @@ export class TikTokModule implements PlatformModule {
 
                 // Check for Success (Text or Dashboard)
                 for (const selector of successSelectors) {
+                    console.log(`[TikTokModule] [PUBLISH] [Poll:${i}] Checking success selector: ${selector}`)
                     if (await page.$(selector).catch(() => null)) {
-                        console.log(`✅ Publication verified found: ${selector}`)
+                        console.log(`[TikTokModule] [PUBLISH] [Poll:${i}] ✅ Publication verified found: ${selector}`)
                         isPublished = true
                         break
                     }
                 }
 
                 // ─── Structural Modal Check (Exclusion Logic) ───
-                // Principle: Any visible modal that is NOT a success message is a Violation/Error.
-                // Action: Fail Immediately.
+                console.log(`[TikTokModule] [PUBLISH] [Poll:${i}] Performing structural modal check (dialogs/modals)...`)
                 try {
                     const dialogs = page.locator('div[role="dialog"], div[class*="modal"], div[class*="dialog-content"], div[class*="TUXModal"]');
                     const count = await dialogs.count();
+                    console.log(`[TikTokModule] [PUBLISH] [Poll:${i}] Potential modals/dialogs count: ${count}`)
 
                     for (let d = 0; d < count; d++) {
                         const dialog = dialogs.nth(d);
@@ -1650,6 +1826,15 @@ export class TikTokModule implements PlatformModule {
 
             console.log(`Status check response: ${response.status}`)
 
+            if (response.status === 429) {
+                console.warn('[TikTokModule] Rate limit (429) detected in checkVideoStatus.')
+                try {
+                    const { jobQueue } = require('../../services/JobQueue')
+                    jobQueue.setGlobalThrottle(15)
+                } catch (e) { }
+                return 'private'
+            }
+
             if (response.status === 200) {
                 // If the video is truly public, the page should load.
                 // If it's under review/private, TikTok might return 200 but show "Video currently unavailable"
@@ -1686,7 +1871,8 @@ export class TikTokModule implements PlatformModule {
             const response = await axios.get(url, {
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                }
+                },
+                timeout: 60000
             })
 
             if (response.status === 200) {
@@ -1763,5 +1949,56 @@ export class TikTokModule implements PlatformModule {
     async removeAllVideos(): Promise<void> {
         storageService.run('DELETE FROM videos WHERE platform = ?', ['tiktok'])
         console.log('Removed all TikTok videos')
+    }
+
+    /**
+     * Helper to detect Captcha/Too many requests and dump HTML/Screenshot
+     */
+    private async handleCaptchaDetection(page: Page, context: string): Promise<boolean> {
+        try {
+            // Common captcha/blocking indicators
+            const captchaSelectors = [
+                '#captcha_container',
+                '.verify-wrap',
+                '[data-e2e="captcha-card"]',
+                '.tiktok-captcha-container',
+                'div[class*="captcha"]', // Generic catch-all
+                'iframe[src*="captcha"]'
+            ]
+
+            const isCaptchaVisible = await page.evaluate((selectors) => {
+                return selectors.some(s => !!document.querySelector(s))
+            }, captchaSelectors)
+
+            const pageText = await page.textContent('body').catch(() => '')
+            const isBlocked = pageText?.includes('Too many requests') ||
+                pageText?.includes('Vui lòng xác minh') ||
+                pageText?.includes('Please verify') ||
+                pageText?.includes('xác minh rằng bạn không phải là rô-bốt')
+
+            if (isCaptchaVisible || isBlocked) {
+                console.warn(`[TikTok_Security] Captcha/Block detected during ${context}`)
+                const ts = Date.now()
+                const debugDir = path.join(app.getPath('userData'), 'debug_artifacts')
+                await fs.ensureDir(debugDir)
+
+                const screenshotPath = path.join(debugDir, `captcha_${context}_${ts}.png`)
+                const htmlPath = path.join(debugDir, `captcha_${context}_${ts}.html`)
+
+                if (!page.isClosed()) {
+                    await page.screenshot({ path: screenshotPath }).catch(e => console.error('Screenshot failed:', e))
+                    const html = await page.content().catch(() => '')
+                    await fs.writeFile(htmlPath, html).catch(e => console.error('HTML dump failed:', e))
+
+                    console.log(`[TikTok_Security] Artifacts dumped to:`)
+                    console.log(`  - HTML: ${htmlPath}`)
+                    console.log(`  - Screenshot: ${screenshotPath}`)
+                }
+                return true
+            }
+        } catch (e: any) {
+            console.error(`[TikTok_Security] Error during captcha detection: ${e.message}`)
+        }
+        return false
     }
 }

@@ -67,7 +67,14 @@ export const TimelineItem: React.FC<Props> = ({ video, status, downloadJob, publ
                         {/* Title & Target */}
                         <div>
                             <div style={{ fontWeight: 700, fontSize: '14px', marginBottom: '4px' }}>
-                                {video.description || 'Untitled Video'}
+                                {(() => {
+                                    try {
+                                        const d = publishJob?.data_json ? JSON.parse(publishJob.data_json) : {}
+                                        return d.caption || video.description || 'Untitled Video'
+                                    } catch {
+                                        return video.description || 'Untitled Video'
+                                    }
+                                })()}
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
                                 <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>

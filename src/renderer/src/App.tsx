@@ -23,8 +23,10 @@ function App(): JSX.Element {
         const params = new URLSearchParams(window.location.search)
         const mode = params.get('mode')
         const id = params.get('id')
+        console.log('[App] Parsed params:', { mode, id, search: window.location.search })
 
         if (mode === 'scan') {
+            console.log('[App] Switching to SCAN mode')
             setViewMode('scan')
         } else if (mode === 'campaign-details' && id) {
             setViewMode('campaign-details')

@@ -59,7 +59,7 @@ test.describe('Campaign Full Flow & UI Verification (Electron)', () => {
             console.log('Opening Scanner Window...');
             const [scannerWindow] = await Promise.all([
                 electronApp.waitForEvent('window'),
-                mainWindow.click('text=Scan More Sources')
+                mainWindow.click('text=Scan Videos')
             ]);
 
             await scannerWindow.waitForLoadState('domcontentloaded');
@@ -114,7 +114,11 @@ test.describe('Campaign Full Flow & UI Verification (Electron)', () => {
             await mainWindow.waitForSelector('text=Video Editor', { timeout: 10000 });
             await mainWindow.click('button:has-text("Next")');
 
-            console.log('Step 4: Target');
+            console.log('Step 4: Schedule Preview');
+            await mainWindow.waitForSelector('text=Campaign Start Time', { timeout: 10000 });
+            await mainWindow.click('button:has-text("Next")');
+
+            console.log('Step 5: Target');
             // The account seeded in Step 1 should be visible here.
             // Component: AccountItem or similar
             const accountSelector = '.wizard-step div[style*="cursor: pointer"]';

@@ -5,6 +5,10 @@ import { LocalFFmpegProvider } from './providers/LocalFFmpegProvider'
 import { IntroImageEffect } from './effects/IntroImageEffect'
 import { TextOverlayEffect } from './effects/TextOverlayEffect'
 import { WatermarkEffect } from './effects/WatermarkEffect'
+import { MirrorEffect } from './effects/MirrorEffect'
+import { ColorAdjustmentEffect } from './effects/ColorAdjustmentEffect'
+import { SpeedAdjustmentEffect } from './effects/SpeedAdjustmentEffect'
+import { SubtleZoomEffect } from './effects/SubtleZoomEffect'
 
 /**
  * VideoEditEngine — Core orchestrator.
@@ -32,6 +36,10 @@ class VideoEditEngine {
         this.registerEffect(IntroImageEffect)
         this.registerEffect(TextOverlayEffect)
         this.registerEffect(WatermarkEffect)
+        this.registerEffect(MirrorEffect)
+        this.registerEffect(ColorAdjustmentEffect)
+        this.registerEffect(SpeedAdjustmentEffect)
+        this.registerEffect(SubtleZoomEffect)
 
         // Register built-in providers
         const localProvider = new LocalFFmpegProvider()

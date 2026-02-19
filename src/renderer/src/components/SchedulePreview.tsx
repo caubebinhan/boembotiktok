@@ -98,16 +98,7 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                 ...i,
                 time: new Date(i.time)
             }))
-            // Logic to re-align start time if needed
-            const firstItemTime = restored[0]?.time?.getTime()
-            const requestedTime = start.getTime()
-            if (firstItemTime && Math.abs(firstItemTime - requestedTime) > 60000) {
-                if (restored[0]) (restored[0] as any).isFixed = false
-                setItems(restored)
-                recalculateTimes(restored, start, schedule.interval || 15)
-            } else {
-                setItems(restored)
-            }
+            setItems(restored)
             return
         }
 
@@ -149,6 +140,13 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
 
         recalculateTimes(newItems, start, schedule.interval || 15)
     }, [savedVideos, sources, schedule.runAt, schedule.interval, captionTemplate])
+
+    // Helper to filter out past times for the selected date
+    const filterPassedTime = (time: Date) => {
+        const currentDate = new Date()
+        const selectedDate = new Date(time)
+        return currentDate.getTime() < selectedDate.getTime()
+    }
 
     // ... (Keep recalculateTimes, handlers, drag & drop) ...
     // Recalculate times based on order + start + interval + jitter + daily constraints
@@ -288,6 +286,7 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                         showTimeSelect timeIntervals={15}
                         dateFormat="yyyy-MM-dd HH:mm" timeFormat="HH:mm"
                         minDate={new Date()}
+                        filterTime={filterPassedTime}
                         className="form-control"
                         wrapperClassName="datepicker-wrapper"
                     />
@@ -343,6 +342,8 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                                             onChange={(date: Date | null) => handleManualTimeChange(index, date)}
                                             showTimeSelect timeIntervals={15}
                                             dateFormat="MM/dd HH:mm" timeFormat="HH:mm"
+                                            minDate={new Date()}
+                                            filterTime={filterPassedTime}
                                             className="form-control"
                                             // @ts-ignore
                                             onKeyDown={(e) => e.stopPropagation()}
@@ -415,7 +416,7 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                                                                         key={tag.code}
                                                                         className="btn btn-xs btn-ghost"
                                                                         style={{ fontSize: '9px', padding: '2px 4px', border: '1px solid var(--border-primary)', cursor: 'pointer' }}
-                                                                        onClick={() => handleCaptionChange(index, (item.customCaption !== undefined ? item.customCaption : generateCaption(captionTemplate || '', item.video, item.time)) + ' ' + tag.code)}
+                                                                        onClick={() => handleCaptionChange(index, (item.customCaption !== undefined ? item.customCaption : (captionTemplate || item.video?.description || '')) + ' ' + tag.code)}
                                                                         title={`Insert ${tag.code}`}
                                                                     >
                                                                         {tag.label}
@@ -425,7 +426,7 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                                                             <div style={{ display: 'flex', gap: '8px' }}>
                                                                 <textarea
                                                                     className="form-control"
-                                                                    value={item.customCaption !== undefined ? item.customCaption : generateCaption(captionTemplate || '', item.video, item.time)}
+                                                                    value={item.customCaption !== undefined ? item.customCaption : (captionTemplate || item.video?.description || '')}
                                                                     onChange={(e) => handleCaptionChange(index, e.target.value)}
                                                                     rows={3}
                                                                     style={{ width: '100%', fontSize: '12px', padding: '6px' }}
@@ -460,7 +461,7 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                                                         >
                                                             {item.customCaption !== undefined
                                                                 ? (item.customCaption || <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>(Empty caption)</span>)
-                                                                : generateCaption(captionTemplate || '', item.video, item.time)
+                                                                : (captionTemplate || item.video?.description || '')
                                                             }
                                                         </div>
                                                     )}

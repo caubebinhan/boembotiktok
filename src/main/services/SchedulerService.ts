@@ -56,7 +56,7 @@ class SchedulerService {
                     continue
                 }
 
-                console.log(`Scheduler: Triggering scheduled campaign ${campaign.name}`)
+                console.log(`[Scheduler] Triggering scheduled campaign ${campaign.name} (ID: ${campaign.id})`);
                 const result = await this.triggerCampaign(campaign.id, false)
 
                 // Advance RunAt for next cycle if successful
@@ -219,7 +219,13 @@ class SchedulerService {
 
                 if (item.type === 'post' && item.video) {
                     const v = item.video
-                    console.log(`[DEBUG_DESC] Scheduler: Creating DOWNLOAD job for ${v.id}. Description in config: "${v.description}"`);
+                    console.log(`[Scheduler] [Campaign ${id}] Creating DOWNLOAD job for ${v.id}.`);
+                    console.log(`[Scheduler] [Campaign ${id}] Job Data:`, JSON.stringify({
+                        url: v.url,
+                        id: v.id,
+                        captionTemplate: config.captionTemplate,
+                        customCaption: item.customCaption
+                    }, null, 2));
                     storageService.run(
                         `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'DOWNLOAD', 'pending', ?, ?)`,
                         [
@@ -268,6 +274,8 @@ class SchedulerService {
                             isPartialScan: true
                         }
 
+                        console.log(`[Scheduler] [Campaign ${id}] Creating SCAN job for source: ${sourceId}`);
+                        console.log(`[Scheduler] [Campaign ${id}] Scheduled for: ${scheduledFor}`);
                         storageService.run(
                             `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'SCAN', 'pending', ?, ?)`,
                             [id, scheduledFor, JSON.stringify(jobData)]

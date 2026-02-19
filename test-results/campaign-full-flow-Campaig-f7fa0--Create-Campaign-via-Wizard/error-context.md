@@ -50,7 +50,7 @@
   - generic [ref=e50]:
     - generic [ref=e51]:
       - generic [ref=e52]:
-        - generic [ref=e53]: 📝
+        - generic [ref=e53]: ✓
         - generic [ref=e54]: Details
       - generic [ref=e56]:
         - generic [ref=e57]: 📡
@@ -59,61 +59,24 @@
         - generic [ref=e61]: ✂️
         - generic [ref=e62]: Editor
       - generic [ref=e64]:
-        - generic [ref=e65]: 🎯
-        - generic [ref=e66]: Target
-    - generic [ref=e68]:
-      - 'heading "Step 1: Campaign Details & Schedule" [level=3] [ref=e69]'
-      - generic [ref=e71]:
-        - generic [ref=e72]: Campaign Name
-        - textbox "e.g. Morning Motivation" [ref=e73]: E2E Test Campaign 1771397231568
+        - generic [ref=e65]: 📅
+        - generic [ref=e66]: Schedule
+      - generic [ref=e68]:
+        - generic [ref=e69]: 🎯
+        - generic [ref=e70]: Target
+    - generic [ref=e72]:
       - generic [ref=e74]:
-        - text: Type
-        - generic [ref=e75]:
-          - generic [ref=e76] [cursor=pointer]:
-            - radio "One-Time Run Run once at a scheduled time" [checked] [active] [ref=e77]
-            - generic [ref=e78]:
-              - strong [ref=e79]: One-Time Run
-              - generic [ref=e80]: Run once at a scheduled time
-          - generic [ref=e81] [cursor=pointer]:
-            - radio "Scheduled (Recurring) Run automatically on schedule" [ref=e82]
-            - generic [ref=e83]:
-              - strong [ref=e84]: Scheduled (Recurring)
-              - generic [ref=e85]: Run automatically on schedule
-      - generic [ref=e87] [cursor=pointer]:
-        - 'checkbox "Advanced Verification (Unique Tag) Appends a unique 6-char tag to caption to 100% match the published video. Default: Off (Checks by recent upload time)" [ref=e88]'
-        - generic [ref=e89]:
-          - generic [ref=e90]: Advanced Verification (Unique Tag)
-          - generic [ref=e91]:
-            - text: Appends a unique 6-char tag to caption to 100% match the published video.
-            - text: "Default: Off (Checks by recent upload time)"
-      - generic [ref=e92]:
-        - heading "📝 Caption Template" [level=4] [ref=e93]
-        - paragraph [ref=e94]: Customize the caption for published videos. Leave empty to use the original description.
-        - generic [ref=e95]:
-          - button "Original Desc" [ref=e96] [cursor=pointer]
-          - button "No Hashtags" [ref=e97] [cursor=pointer]
-          - button "Time (HH:mm)" [ref=e98] [cursor=pointer]
-          - button "Date (YYYY-MM-DD)" [ref=e99] [cursor=pointer]
-          - button "Author" [ref=e100] [cursor=pointer]
-          - button "Tags" [ref=e101] [cursor=pointer]
-        - 'textbox "e.g. {original} - Reposted from {author} at {time} #fyp" [ref=e102]'
-      - generic [ref=e103]:
-        - heading "⏰ Start Time" [level=4] [ref=e104]
-        - generic [ref=e105]:
-          - generic [ref=e106] [cursor=pointer]:
-            - radio "🚀 Run Immediately Start processing right after saving" [ref=e107]
-            - generic [ref=e108]:
-              - strong [ref=e109]: 🚀 Run Immediately
-              - generic [ref=e110]: Start processing right after saving
-          - generic [ref=e111] [cursor=pointer]:
-            - radio "📅 Schedule Start Pick a specific date & time" [checked] [ref=e112]
-            - generic [ref=e113]:
-              - strong [ref=e114]: 📅 Schedule Start
-              - generic [ref=e115]: Pick a specific date & time
-        - generic [ref=e116]:
-          - text: First Run Time
-          - textbox "Select start time" [ref=e120]: 2026-02-18 15:48
-    - generic [ref=e121]:
-      - button "Cancel" [ref=e122] [cursor=pointer]
-      - button "Next →" [ref=e124] [cursor=pointer]
+        - 'heading "Step 2: Content Sources" [level=3] [ref=e75]'
+        - paragraph [ref=e76]: Select specific videos to process.
+      - generic [ref=e78]:
+        - generic [ref=e80]: Target Videos (0)
+        - generic [ref=e81]:
+          - generic [ref=e82]: 🎬
+          - heading "No Videos Selected" [level=4] [ref=e83]
+          - paragraph [ref=e84]: Scan specific videos to run once immediately.
+          - button "🎥 Scan Videos" [active] [ref=e85] [cursor=pointer]
+      - generic [ref=e86]: ⚠️ One-Time campaigns require at least 1 target video.
+    - generic [ref=e87]:
+      - button "Back" [ref=e88] [cursor=pointer]
+      - button "Next →" [disabled] [ref=e90]
 ```

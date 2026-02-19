@@ -202,6 +202,19 @@ export const CampaignsView: React.FC = () => {
                     <button className="btn btn-secondary" onClick={handleOpenScanner}>
                         🔍 Scanner Tool
                     </button>
+                    <button className="btn btn-ghost" onClick={async () => {
+                        // @ts-ignore
+                        window.api.invoke('logger:open-folder')
+                    }}>
+                        📂 Open Logs
+                    </button>
+                    <button className="btn btn-ghost" style={{ color: '#ff4d4d' }} onClick={() => {
+                        console.log('Triggering Sentry Error...');
+                        // @ts-ignore
+                        throw new Error('Sentry Test Error from Renderer');
+                    }}>
+                        💥 Sentry Error
+                    </button>
                     <button className="btn btn-primary" data-testid="wizard-new-campaign-btn" onClick={() => setWizardState({ isOpen: true })}>
                         + New Campaign
                     </button>
