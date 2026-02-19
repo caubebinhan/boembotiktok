@@ -83,12 +83,15 @@ const CampaignItem = memo(({
     const isProcessing = processingIds?.has(c.id);
     const isRunning = isProcessing || (c.queued_count || 0) > 0 || (c.preparing_count || 0) > 0 || (c.uploading_count || 0) > 0;
     const needsReview = c.status === 'needs_review';
+    const needsCaptcha = c.status === 'needs_captcha';
     const progress = useCampaignProgress(c);
 
     // Status badge config — recurrent campaign status priority:
     // Scanning > Waiting for Scan > Monitoring > Finished > Active/Paused
     let statusBadge = { label: '○ Paused', bg: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)' }
-    if (needsReview) {
+    if (needsCaptcha) {
+        statusBadge = { label: '⚠️ CAPTCHA Needed', bg: 'rgba(239,68,68,0.12)', color: '#ef4444' }
+    } else if (needsReview) {
         statusBadge = { label: '● Action Needed', bg: 'rgba(245,158,11,0.12)', color: '#f59e0b' }
     } else if (progress.isScanning) {
         statusBadge = { label: '🔍 Scanning...', bg: 'rgba(59,130,246,0.12)', color: '#60a5fa' }
@@ -237,6 +240,13 @@ const CampaignItem = memo(({
                                 onClick={(e) => { e.stopPropagation(); onSelect(c) }}
                                 style={{ padding: '4px 8px', fontSize: '12px' }}>
                                 🗓️ Schedule Preview
+                            </button>
+                        ) : needsCaptcha ? (
+                            <button className="btn btn-primary btn-sm"
+                                onClick={(e) => { e.stopPropagation(); onRun && onRun(c.id) }}
+                                title="Click to open browser and solve CAPTCHA"
+                                style={{ padding: '4px 8px', fontSize: '12px', background: '#dc2626', borderColor: '#dc2626' }}>
+                                🔓 Solve & Run
                             </button>
                         ) : (
                             onRun ? (

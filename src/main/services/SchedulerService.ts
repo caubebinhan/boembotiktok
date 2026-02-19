@@ -43,7 +43,9 @@ class SchedulerService {
                         continue
                     }
                 } else {
-                    console.log(`  > No schedule or runAt found.`)
+                    // No runAt set — campaign needs manual trigger or runAt to be configured
+                    console.log(`  > No schedule.runAt found. Skipping (requires manual trigger or scheduler config).`)
+                    continue
                 }
 
                 // Check if there's already a pending/running job for this campaign
@@ -87,6 +89,12 @@ class SchedulerService {
         console.log(`Scheduler: Manual trigger for campaign ${id} (ignoreSchedule=${ignoreSchedule})`)
         const campaign = campaignService.getCampaign(id)
         if (!campaign) return { success: false, error: 'Campaign not found' }
+
+        if (campaign.status === 'needs_captcha') {
+            await campaignService.updateStatus(id, 'active')
+            // Refresh campaign object
+            campaign.status = 'active'
+        }
 
         let config: any = {}
         try { config = campaign.config_json ? JSON.parse(campaign.config_json) : {} } catch { }

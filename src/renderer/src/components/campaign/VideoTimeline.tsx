@@ -144,7 +144,8 @@ export const VideoTimeline: React.FC<Props> = ({ videos, jobs, onAction, campaig
             const data = scanData.status || 'Scanning...'
             statusDisplay = { label: `🔍 ${data}`, color: '#f59e0b' }
         } else if (scanJob?.status === 'pending') {
-            statusDisplay = { label: '⏳ Scan Queued', color: '#f59e0b' }
+            const scheduledFor = scanJob.scheduled_for ? new Date(scanJob.scheduled_for).toLocaleString() : ''
+            statusDisplay = { label: `⏳ Scan Scheduled${scheduledFor ? ': ' + scheduledFor : ''}`, color: '#f59e0b' }
         } else if (scanData.isMonitoring) {
             statusDisplay = { label: '📡 Monitoring', color: '#8b5cf6' }
         } else if (campaign?.status === 'active') {

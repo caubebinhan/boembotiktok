@@ -65,8 +65,8 @@ app.whenReady().then(async () => {
         await storageService.init()
         await logger.init() // Initialize Logger
         logger.redirectConsole() // Capture all console.log/err to file
-        // Initialize browser service (headless by default for background tasks, user can toggle)
-        await browserService.init(true)
+        // Initialize browser service (visible by default for CAPTCHA solving during scans)
+        await browserService.init(false)
 
         // Module Manager
         await moduleManager.loadModule(new TikTokModule())
@@ -269,6 +269,51 @@ app.whenReady().then(async () => {
                     w.webContents.send('campaign-updated')
                 }
             })
+        })
+
+        ipcMain.handle('open-campaign-wizard', async (_event, initialData?: any) => {
+            const encodedData = initialData
+                ? `&initialData=${encodeURIComponent(JSON.stringify(initialData))}`
+                : ''
+
+            const win = new BrowserWindow({
+                width: 1100,
+                height: 820,
+                show: false,
+                autoHideMenuBar: true,
+                title: 'New Campaign',
+                webPreferences: {
+                    preload: join(__dirname, '../preload/index.js'),
+                    sandbox: false
+                }
+            })
+
+            if (!app.isPackaged && process.env['ELECTRON_RENDERER_URL']) {
+                win.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/index.html?mode=campaign-wizard${encodedData}`)
+            } else {
+                win.loadFile(join(__dirname, '../renderer/index.html'), {
+                    search: `?mode=campaign-wizard${encodedData}`
+                })
+            }
+
+            win.once('ready-to-show', () => win.show())
+        })
+
+        ipcMain.handle('wizard:close', async (event) => {
+            const win = BrowserWindow.fromWebContents(event.sender)
+            win?.close()
+        })
+
+        ipcMain.handle('wizard:close-and-notify', async (event) => {
+            const win = BrowserWindow.fromWebContents(event.sender)
+            // Notify all other windows to refresh
+            const allWindows = BrowserWindow.getAllWindows()
+            for (const w of allWindows) {
+                if (w !== win) {
+                    w.webContents.send('campaigns-updated')
+                }
+            }
+            win?.close()
         })
 
         ipcMain.handle('open-path', async (_event, path) => {

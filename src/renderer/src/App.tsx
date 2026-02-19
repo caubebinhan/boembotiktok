@@ -7,6 +7,7 @@ import { ScheduleView } from './views/ScheduleView'
 import { StatsView } from './views/StatsView'
 import { SettingsView } from './views/SettingsView'
 import { CampaignDetailsWindow } from './views/CampaignDetailsWindow'
+import { CampaignWizardWindow } from './views/CampaignWizardWindow'
 import { DebugConsole } from './components/DebugConsole'
 import { RescheduleModal } from './components/RescheduleModal'
 
@@ -14,7 +15,7 @@ import { ScannerApp } from './ScannerApp'
 
 function App(): JSX.Element {
     const [activeTab, setActiveTab] = useState<'campaigns' | 'accounts' | 'resources' | 'schedule' | 'stats' | 'settings'>('campaigns')
-    const [viewMode, setViewMode] = useState<'scan' | 'normal' | 'campaign-details'>('normal')
+    const [viewMode, setViewMode] = useState<'scan' | 'normal' | 'campaign-details' | 'campaign-wizard'>('normal')
     const [campaignId, setCampaignId] = useState<number | null>(null)
     const [missedJobs, setMissedJobs] = useState<any[]>([])
     const [showRecoveryModal, setShowRecoveryModal] = useState(false)
@@ -31,6 +32,8 @@ function App(): JSX.Element {
         } else if (mode === 'campaign-details' && id) {
             setViewMode('campaign-details')
             setCampaignId(Number(id))
+        } else if (mode === 'campaign-wizard') {
+            setViewMode('campaign-wizard')
         }
     }, [])
 
@@ -67,6 +70,10 @@ function App(): JSX.Element {
 
     if (viewMode === 'campaign-details' && campaignId) {
         return <CampaignDetailsWindow id={campaignId} />
+    }
+
+    if (viewMode === 'campaign-wizard') {
+        return <CampaignWizardWindow />
     }
 
     // Default App Layout

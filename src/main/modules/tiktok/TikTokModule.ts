@@ -62,7 +62,7 @@ export class TikTokModule implements PlatformModule {
         console.log(`Starting keyword scan for: ${keyword} (Max: ${maxVideos})`)
 
         if (!browserService.isConnected()) {
-            await browserService.init(true)
+            await browserService.init(false) // Headless: false for manual CAPTCHA solving
         }
 
         const page = await browserService.newPage()
@@ -241,7 +241,8 @@ export class TikTokModule implements PlatformModule {
             console.log(`[TikTokModule] Scan Completed: ${uniqueNewCount} new unique videos added, ${skippedCount} skipped (duplicates).`);
             return { videos: foundVideos }
 
-        } catch (error) {
+        } catch (error: any) {
+            if (error.message === 'CAPTCHA_REQUIRED') throw error;
             Sentry.captureException(error, { tags: { module: 'tiktok', operation: 'scanKeyword', keyword } })
             console.error('Error scanning keyword:', error)
             return { videos: [] }
@@ -263,7 +264,7 @@ export class TikTokModule implements PlatformModule {
         fileLogger.log(`Starting scan for: ${username} (Background: ${isBackground})`)
 
         if (!browserService.isConnected()) {
-            await browserService.init(true)
+            await browserService.init(false) // Headless: false for manual CAPTCHA solving
         }
 
         const page = await browserService.newPage()
@@ -310,10 +311,13 @@ export class TikTokModule implements PlatformModule {
                     fileLogger.log('CAPTCHA DETECTED! Waiting 30s for user to solve...')
 
                     // Wait for CAPTCHA to disappear
-                    await page.waitForFunction(() => !document.querySelector('.captcha-verify-container') && !document.querySelector('#captcha_container'), { timeout: 30000 }).catch(() => {
+                    try {
+                        await page.waitForFunction(() => !document.querySelector('.captcha-verify-container') && !document.querySelector('#captcha_container'), { timeout: 30000 })
+                    } catch (e) {
                         console.log('CAPTCHA wait timeout - proceeding hoping best')
                         fileLogger.log('CAPTCHA wait timeout')
-                    })
+                        throw new Error('CAPTCHA_FAILED: User did not solve CAPTCHA in time')
+                    }
 
                     // Re-wait for content
                     try {
@@ -401,7 +405,8 @@ export class TikTokModule implements PlatformModule {
                 // We need to sample the last video to see its date
                 if (startDate) {
                     const lastVideoDate = await page.evaluate(() => {
-                        const anchors = Array.from(document.querySelectorAll('a[href*="/video/"]'));
+                        // Support both video and photo links for date checking
+                        const anchors = Array.from(document.querySelectorAll('a[href*="/video/"], a[href*="/photo/"]'));
                         const lastAnchor = anchors[anchors.length - 1];
                         if (!lastAnchor) return null;
 
@@ -414,30 +419,34 @@ export class TikTokModule implements PlatformModule {
                             if (isPinned) return null; // If last is pinned, we barely started? Unlikely in standard feed
                         }
 
-                        const m = (lastAnchor as HTMLAnchorElement).href.match(/\/video\/(\d+)/);
+                        const m = (lastAnchor as HTMLAnchorElement).href.match(/\/(?:video|photo)\/(\d+)/);
                         return m ? m[1] : null;
                     });
 
                     if (lastVideoDate) {
                         const date = getDateFromVideoId(lastVideoDate);
+                        console.log(`[TikTokModule] Last video date: ${date.toISOString()} vs Start: ${startDate.toISOString()}`)
                         if (date < startDate) {
                             console.log(`[TikTokModule] Reached date ${date.toISOString()} which is older than start date ${startDate.toISOString()}. Stopping.`);
                             break;
                         }
                     }
+                } else {
+                    console.log('[TikTokModule] No startDate limit. Continuing scan...')
                 }
 
                 prevCount = currentCount
             }
 
             // === Extract Data ===
+            let duplicatesCount = 0
             const videos = await page.evaluate(() => {
 
                 const anchors = Array.from(document.querySelectorAll('a'))
                 return anchors
-                    .filter(a => a.href.includes('/video/'))
+                    .filter(a => a.href.includes('/video/') || a.href.includes('/photo/'))
                     .map(a => {
-                        const m = a.href.match(/\/video\/(\d+)/)
+                        const m = a.href.match(/\/(?:video|photo)\/(\d+)/)
                         const container = a.closest('[data-e2e="user-post-item"]') ||
                             a.closest('div[class*="DivItemContainer"]') ||
                             a.parentElement
@@ -485,8 +494,31 @@ export class TikTokModule implements PlatformModule {
                     await fs.writeFile(dumpPath, html)
                     console.log(`[TikTokModule] ZERO VIDEOS FOUND. Dumped HTML to: ${dumpPath}`)
                     fileLogger.log(`[TikTokModule] ZERO VIDEOS FOUND. Dumped HTML to: ${dumpPath}`)
-                } catch (e) {
-                    console.error('Failed to dump HTML:', e)
+
+                    // Check for "Empty Profile" indicators
+                    const isEmptyProfile = await page.evaluate(() => {
+                        const text = document.body.innerText.toLowerCase()
+                        return text.includes('no content') ||
+                            text.includes('user has not published') ||
+                            text.includes('no videos yet') ||
+                            text.includes('private account')
+                    })
+
+                    if (!isEmptyProfile) {
+                        console.log('[TikTokModule] 0 videos and NOT empty profile -> Assuming CAPTCHA/Block. Throwing CAPTCHA_REQUIRED.')
+                        fileLogger.log('[TikTokModule] 0 videos and NOT empty profile -> Assuming CAPTCHA/Block. Throwing CAPTCHA_REQUIRED.')
+
+                        // Force a screenshot for debugging if possible (optional)
+
+                        throw new Error('CAPTCHA_REQUIRED')
+                    } else {
+                        console.log('[TikTokModule] Verified as EMPTY profile. Returning 0 videos.')
+                        fileLogger.log('[TikTokModule] Verified as EMPTY profile. Returning 0 videos.')
+                    }
+
+                } catch (e: any) {
+                    if (e.message === 'CAPTCHA_REQUIRED') throw e
+                    console.error('Failed to dump HTML or check empty state:', e)
                 }
             }
 
@@ -528,12 +560,14 @@ export class TikTokModule implements PlatformModule {
                             posted_at: postedAt.toISOString()
                         })
                     }
+                } else {
+                    duplicatesCount++
                 }
             }
+            return { videos: foundVideos, channel: channelInfo, duplicatesCount }
 
-            return { videos: foundVideos, channel: channelInfo }
-
-        } catch (error) {
+        } catch (error: any) {
+            if (error.message === 'CAPTCHA_REQUIRED') throw error;
             Sentry.captureException(error, { tags: { module: 'tiktok', operation: 'scanProfile', username } })
             console.error('Error scanning profile:', error)
             return { videos: [], channel: null }
@@ -2098,6 +2132,32 @@ export class TikTokModule implements PlatformModule {
 
             if (isCaptchaVisible || isBlocked) {
                 console.warn(`[TikTok_Security] Captcha/Block detected during ${context}`)
+
+                // Wait for user to solve (120s)
+                console.log(`[TikTok_Security] Waiting 120s for user resolution...`)
+                const timeout = 120000
+                const start = Date.now()
+
+                while (Date.now() - start < timeout) {
+                    await page.waitForTimeout(2000)
+
+                    if (page.isClosed()) throw new Error('Browser closed by user')
+
+                    const stillVisible = await page.evaluate((selectors) => {
+                        return selectors.some(s => !!document.querySelector(s))
+                    }, captchaSelectors)
+
+                    const currentText = await page.textContent('body').catch(() => '')
+                    const stillBlocked = currentText?.includes('Too many requests') ||
+                        currentText?.includes('Vui lòng xác minh') ||
+                        currentText?.includes('Please verify')
+
+                    if (!stillVisible && !stillBlocked) {
+                        console.log(`[TikTok_Security] CAPTCHA resolved by user! Resuming...`)
+                        return false
+                    }
+                }
+
                 const ts = Date.now()
                 const debugDir = path.join(app.getPath('userData'), 'debug_artifacts')
                 await fs.ensureDir(debugDir)
@@ -2114,7 +2174,8 @@ export class TikTokModule implements PlatformModule {
                     console.log(`  - HTML: ${htmlPath}`)
                     console.log(`  - Screenshot: ${screenshotPath}`)
                 }
-                return true
+
+                throw new Error('CAPTCHA_REQUIRED')
             }
         } catch (e: any) {
             console.error(`[TikTok_Security] Error during captcha detection: ${e.message}`)

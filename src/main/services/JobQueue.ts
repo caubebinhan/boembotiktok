@@ -443,7 +443,11 @@ class JobQueue {
                 } catch (e) { }
             }
 
-            storageService.run("UPDATE jobs SET status = ?, error_message = ? WHERE id = ?", [`Failed: ${error.message.substring(0, 50)}`, error.message, job.id])
+            if (error.message && error.message.includes('CAPTCHA')) {
+                storageService.run("UPDATE jobs SET status = 'scan_failed_captcha', error_message = ? WHERE id = ?", [error.message, job.id])
+            } else {
+                storageService.run("UPDATE jobs SET status = ?, error_message = ? WHERE id = ?", [`Failed: ${error.message.substring(0, 50)}`, error.message, job.id])
+            }
 
             try {
                 const campaign = storageService.get('SELECT name FROM campaigns WHERE id = ?', [job.campaign_id])
@@ -530,7 +534,18 @@ class JobQueue {
                     }
                     console.log(`[SCAN_DEBUG]   scanOptions:`, JSON.stringify({ limit: scanOptions.limit, timeRange: scanOptions.timeRange, startDate: scanOptions.startDate, endDate: scanOptions.endDate, isBackground: scanOptions.isBackground }))
 
-                    const result = await tiktok.scanProfile(ch.name, scanOptions) || { videos: [] }
+                    let result
+                    try {
+                        result = await tiktok.scanProfile(ch.name, scanOptions) || { videos: [] }
+                    } catch (err: any) {
+                        if (err.message && (err.message.includes('CAPTCHA') || err.message === 'CAPTCHA_REQUIRED')) {
+                            this.updateJobData(job.id, { ...data, status: `Scan Failed: CAPTCHA Required` })
+                            // Mark campaign as needing captcha
+                            await campaignService.updateStatus(job.campaign_id, 'needs_captcha')
+                            throw err // Rethrow to mark job as failed
+                        }
+                        throw err
+                    }
                     let newVideos = result.videos || []
                     console.log(`[SCAN_DEBUG]   scanProfile returned ${newVideos.length} videos`)
                     if (newVideos.length > 0) {
@@ -555,7 +570,8 @@ class JobQueue {
 
                     allVideos.push(...newVideos)
                     scannedCount += newVideos.length
-                    this.updateJobData(job.id, { ...data, status: `Scanned @${ch.name}: found ${newVideos.length} videos`, scannedCount })
+                    const dupMsg = result.duplicatesCount ? ` (${result.duplicatesCount} existing)` : ''
+                    this.updateJobData(job.id, { ...data, status: `Scanned @${ch.name}: found ${newVideos.length} new videos${dupMsg}`, scannedCount })
                 }
             }
 
@@ -580,7 +596,18 @@ class JobQueue {
                         }
                     }
 
-                    const result = await tiktok.scanKeyword(kw.name, scanOptions) || { videos: [] }
+                    let result
+                    try {
+                        result = await tiktok.scanKeyword(kw.name, scanOptions) || { videos: [] }
+                    } catch (err: any) {
+                        if (err.message && (err.message.includes('CAPTCHA') || err.message === 'CAPTCHA_REQUIRED')) {
+                            this.updateJobData(job.id, { ...data, status: `Scan Failed: CAPTCHA Required` })
+                            // Mark campaign as needing captcha
+                            await campaignService.updateStatus(job.campaign_id, 'needs_captcha')
+                            throw err
+                        }
+                        throw err
+                    }
                     const newVideos = result.videos || []
 
                     // Attach source info

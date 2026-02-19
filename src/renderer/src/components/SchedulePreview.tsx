@@ -308,6 +308,22 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                 </div>
             </div>
 
+            {/* Timing Summary */}
+            <div style={{ marginBottom: '16px', padding: '12px', background: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.2)', borderRadius: '8px', display: 'flex', gap: '20px', fontSize: '13px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <span style={{ fontWeight: 600, color: 'var(--accent-primary)' }}>First Scan:</span>
+                    <span>{items.find(i => i.type === 'scan')?.time.toLocaleString() || 'N/A'}</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <span style={{ fontWeight: 600, color: '#10b981' }}>First Upload:</span>
+                    <span>{items.find(i => i.type === 'post')?.time.toLocaleString() || 'N/A'}</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <span style={{ fontWeight: 600, color: 'var(--text-muted)' }}>Total Items:</span>
+                    <span>{items.length} actions</span>
+                </div>
+            </div>
+
             {/* Source Configuration Section */}
             <div style={{ marginBottom: '20px', background: 'var(--bg-secondary)', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-primary)' }}>
                 <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '10px', textTransform: 'uppercase' }}>

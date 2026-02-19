@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react'
 import { CampaignList } from '../components/CampaignList'
-import { CampaignWizard } from '../components/CampaignWizard'
 import { TodaySchedule } from '../components/TodaySchedule'
 import { RescheduleModal } from '../components/RescheduleModal'
 import { useAppDispatch, useAppSelector } from '../store/hooks'
@@ -20,7 +19,6 @@ export const CampaignsView: React.FC = () => {
     const dispatch = useAppDispatch()
     const campaigns = useAppSelector(selectCampaigns)
     const processingIds = useAppSelector(selectProcessingIds)
-    const [wizardState, setWizardState] = useState<{ isOpen: boolean, initialData?: any }>({ isOpen: false })
     const [activeTab, setActiveTab] = useState<'all' | 'today'>('all')
     const [rescheduleTarget, setRescheduleTarget] = useState<{ campaign: any, missedJobs: any[] } | null>(null)
 
@@ -37,43 +35,10 @@ export const CampaignsView: React.FC = () => {
         }
     }, [dispatch])
 
-    const handleCreateCampaign = React.useCallback(async (data: any, runNow: boolean) => {
-        try {
-            let cron = ''
-            if (data.type === 'scheduled' && data.schedule) {
-                const interval = Math.max(1, Number(data.schedule.interval) || 60)
-                cron = `*/${interval} * * * *`
-            }
+    const handleCreateCampaign = React.useCallback(async (_data: any, _runNow: boolean) => {
+        // No-op: wizard runs in its own window and sends IPC to create campaign
+    }, [])
 
-            const config = {
-                sources: data.sourceData?.channels || data.sourceData?.keywords ? {
-                    channels: data.sourceData.channels || [],
-                    keywords: data.sourceData.keywords || []
-                } : { channels: [], keywords: [] },
-                videos: data.sourceData?.videos || [],
-                postOrder: data.postOrder || 'newest',
-                editPipeline: data.editPipeline,
-                targetAccounts: data.targetAccounts,
-                schedule: data.schedule,
-                executionOrder: data.executionOrder,
-                captionTemplate: data.captionTemplate,
-                autoSchedule: data.autoSchedule,
-                advancedVerification: data.advancedVerification
-            }
-
-            // @ts-ignore
-            const result = await window.api.invoke('create-campaign', data.name, data.type, cron, config)
-
-            if (result && result.lastInsertId) {
-                dispatch(triggerCampaign({ id: result.lastInsertId, runNow }))
-            }
-
-            setWizardState({ isOpen: false })
-            dispatch(fetchCampaigns())
-        } catch (err) {
-            console.error('Failed to create campaign:', err)
-        }
-    }, [dispatch])
 
     const handleToggleStatus = React.useCallback(async (id: number, currentStatus: string) => {
         dispatch(toggleCampaignStatus({ id, currentStatus }))
@@ -98,7 +63,8 @@ export const CampaignsView: React.FC = () => {
                 // @ts-ignore
                 const details = await window.api.invoke('get-campaign-details', campaign.id)
                 if (details) {
-                    setWizardState({ isOpen: true, initialData: details })
+                    // @ts-ignore
+                    await window.api.invoke('open-campaign-wizard', details)
                 }
             } catch (e) {
                 console.error('Failed to open review wizard:', e)
@@ -142,7 +108,8 @@ export const CampaignsView: React.FC = () => {
             // @ts-ignore
             const details = await window.api.invoke('get-campaign-details', id)
             if (details) {
-                setWizardState({ isOpen: true, initialData: details })
+                // @ts-ignore
+                await window.api.invoke('open-campaign-wizard', details)
             }
         } catch (e) {
             console.error('Failed to prepare clone:', e)
@@ -191,7 +158,10 @@ export const CampaignsView: React.FC = () => {
                     }}>
                         💥 Sentry Error
                     </button>
-                    <button className="btn btn-primary" data-testid="wizard-new-campaign-btn" onClick={() => setWizardState({ isOpen: true })}>
+                    <button className="btn btn-primary" data-testid="wizard-new-campaign-btn" onClick={async () => {
+                        // @ts-ignore
+                        await window.api.invoke('open-campaign-wizard')
+                    }}>
                         + New Campaign
                     </button>
                 </div>
@@ -216,7 +186,10 @@ export const CampaignsView: React.FC = () => {
                 {activeTab === 'all' ? (
                     <CampaignList
                         campaigns={campaigns as any}
-                        onCreate={() => setWizardState({ isOpen: true })}
+                        onCreate={async () => {
+                            // @ts-ignore
+                            await window.api.invoke('open-campaign-wizard')
+                        }}
                         onToggleStatus={handleToggleStatus}
                         onSelect={handleSelectCampaign}
                         onDelete={handleDelete}
@@ -230,13 +203,6 @@ export const CampaignsView: React.FC = () => {
                 )}
             </div>
 
-            {wizardState.isOpen && (
-                <CampaignWizard
-                    onClose={() => setWizardState({ isOpen: false })}
-                    onSave={handleCreateCampaign}
-                    initialData={wizardState.initialData}
-                />
-            )}
             {rescheduleTarget && (
                 <RescheduleModal
                     missedJobs={rescheduleTarget.missedJobs}

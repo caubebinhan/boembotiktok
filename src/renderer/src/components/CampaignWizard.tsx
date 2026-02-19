@@ -1381,13 +1381,13 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                     </button>
                     <div style={{ display: 'flex', gap: '10px' }}>
                         {step === 5 && (
-                            <button className="btn btn-emerald" onClick={() => handleSave(buildSaveData(), true)} disabled={isSaving}>
-                                {isSaving ? '🚀 Starting...' : '🚀 Save & Run Now'}
+                            <button className="btn btn-emerald" onClick={() => handleSave(buildSaveData(), true)} disabled={isSaving} title="Ignores schedule and runs immediately">
+                                {isSaving ? '🚀 Starting...' : '🚀 Save & Execute Immediately'}
                             </button>
                         )}
                         {step === 5 ? (
                             <button className="btn btn-primary" onClick={() => handleSave(buildSaveData(), false)} disabled={!canAdvance() || isSaving}>
-                                {isSaving ? '💾 Saving...' : '💾 Save & Close'}
+                                {isSaving ? '💾 Saving...' : '💾 Save & Schedule'}
                             </button>
                         ) : (
                             <button className="btn btn-primary" onClick={handleNext} disabled={!canAdvance()}>

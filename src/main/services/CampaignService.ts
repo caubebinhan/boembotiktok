@@ -54,7 +54,7 @@ class CampaignService {
         )
     }
 
-    updateStatus(id: number, status: 'active' | 'paused') {
+    updateStatus(id: number, status: 'active' | 'paused' | 'needs_captcha' | 'finished') {
         console.log(`[CampaignService] Updating status of campaign #${id} to: ${status}`);
         return storageService.run('UPDATE campaigns SET status = ? WHERE id = ?', [status, id])
     }
