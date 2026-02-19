@@ -1412,6 +1412,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                             }}
                             onIntervalChange={(val) => setFormData(prev => ({ ...prev, schedule: { ...prev.schedule, interval: val } }))}
                             onSourcesChange={(newSources) => setSources(newSources)}
+                            onWindowChange={(start, end) => setFormData(prev => ({ ...prev, schedule: { ...prev.schedule, startTime: start, endTime: end } }))}
                         />
                     )}
                     {step === 5 && renderStep4_Target()}

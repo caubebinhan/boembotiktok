@@ -22,7 +22,6 @@ interface SchedulePreviewProps {
     onIntervalChange?: (interval: number) => void
     onSourcesChange?: (sources: any[]) => void
     onWindowChange?: (start: string, end: string) => void // NEW PROP
-    onWindowChange?: (start: string, end: string) => void // NEW PROP
 }
 
 export interface TimelineItem {
@@ -68,7 +67,7 @@ const generateCaption = (template: string, video: any, time: Date): string => {
     return caption
 }
 
-export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, savedVideos, schedule, initialItems, captionTemplate, onScheduleChange, onStartTimeChange, onIntervalChange, onSourcesChange }) => {
+export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, savedVideos, schedule, initialItems, captionTemplate, onScheduleChange, onStartTimeChange, onIntervalChange, onSourcesChange, onWindowChange }) => {
     // ... (keep existing state setup) ...
     const [items, setItems] = useState<TimelineItem[]>([])
     const [startTime, setStartTime] = useState<Date>(new Date())

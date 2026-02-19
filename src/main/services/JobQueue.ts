@@ -464,6 +464,27 @@ class JobQueue {
         }
     }
 
+    private getNextValidTime(baseTime: Date, dailyStartStr: string = '07:00', dailyEndStr: string = '23:00'): Date {
+        const [startH, startM] = dailyStartStr.split(':').map(Number)
+        const [endH, endM] = dailyEndStr.split(':').map(Number)
+        const startMins = startH * 60 + startM
+        const endMins = endH * 60 + endM
+
+        // Clone
+        let d = new Date(baseTime)
+        const currentMins = d.getHours() * 60 + d.getMinutes()
+
+        if (currentMins < startMins) {
+            // Too early: Move to Start Time today
+            d.setHours(startH, startM, 0, 0)
+        } else if (currentMins >= endMins) {
+            // Too late: Move to Start Time tomorrow
+            d.setDate(d.getDate() + 1)
+            d.setHours(startH, startM, 0, 0)
+        }
+        return d
+    }
+
     private async handleScan(job: any, data: any, tiktok: TikTokModule) {
         console.log(`[SCAN_DEBUG] ========== SCAN START (Job #${job.id}) ==========`)
         console.log(`[SCAN_DEBUG] Full data.sources:`, JSON.stringify(data.sources, null, 2))
@@ -474,6 +495,11 @@ class JobQueue {
         // 1. Get scheduling params
         const intervalMinutes = data.intervalMinutes || 15
         let scheduleTime = data.nextScheduleTime ? new Date(data.nextScheduleTime) : new Date()
+
+        // Enforce Daily Window (Default 7-23 if not set)
+        const schedule = data.schedule || {}
+        scheduleTime = this.getNextValidTime(scheduleTime, schedule.startTime, schedule.endTime)
+
         const targetAccounts = data.targetAccounts || []
 
         // Load account cookies for authenticated scanning
@@ -754,7 +780,10 @@ class JobQueue {
                 newlyScheduled++
                 totalScheduled++
                 if (isMonitoring) monitoredCount++
+
+                // Advance time and check window
                 scheduleTime = new Date(scheduleTime.getTime() + intervalMinutes * 60000)
+                scheduleTime = this.getNextValidTime(scheduleTime, schedule.startTime, schedule.endTime)
             } else {
                 // Manual Review Needed
                 console.log(`[JobQueue] [SCAN] Video ${v.id} requires manual approval (autoSchedule=false). Saving to metadata.`)
@@ -774,7 +803,7 @@ class JobQueue {
         storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [JSON.stringify(result), job.id])
         this.updateJobData(job.id, {
             ...data,
-            status: `Scan complete: Scheduled ${newlyScheduled} videos. (Total: ${totalScheduled})`,
+            status: `Scanned (Found ${newlyScheduled} new videos). Queued for download.`,
             scannedCount,
             totalScheduled,
             monitoredCount
