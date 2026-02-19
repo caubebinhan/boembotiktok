@@ -310,13 +310,22 @@ export class TikTokModule implements PlatformModule {
                     console.log('CAPTCHA DETECTED! Waiting 30s for user to solve...')
                     fileLogger.log('CAPTCHA DETECTED! Waiting 30s for user to solve...')
 
-                    // Wait for CAPTCHA to disappear
+                    // Wait for CAPTCHA to disappear (up to 5 minutes)
                     try {
-                        await page.waitForFunction(() => !document.querySelector('.captcha-verify-container') && !document.querySelector('#captcha_container'), { timeout: 30000 })
+                        const WAIT_TIME = 300000; // 5 minutes
+                        console.log(`[TikTokModule] Waiting up to ${WAIT_TIME / 1000}s for CAPTCHA resolution...`);
+
+                        await page.waitForFunction(() => {
+                            const hasCaptcha = !!(document.querySelector('.captcha-verify-container') || document.querySelector('#captcha_container') || document.querySelector('.captcha_verify_container'));
+                            return !hasCaptcha;
+                        }, { timeout: WAIT_TIME, polling: 1000 });
+
+                        console.log('[TikTokModule] CAPTCHA resolved! Resuming...');
+                        fileLogger.log('[TikTokModule] CAPTCHA resolved! Resuming...');
                     } catch (e) {
                         console.log('CAPTCHA wait timeout - proceeding hoping best')
                         fileLogger.log('CAPTCHA wait timeout')
-                        throw new Error('CAPTCHA_FAILED: User did not solve CAPTCHA in time')
+                        throw new Error('CAPTCHA_FAILED: User did not solve CAPTCHA in time (5 mins)')
                     }
 
                     // Re-wait for content
@@ -415,8 +424,12 @@ export class TikTokModule implements PlatformModule {
                         // Pinned logic check:
                         const container = lastAnchor.closest('[data-e2e="user-post-item"]');
                         if (container) {
-                            const isPinned = !!container.querySelector('[data-e2e="video-card-badge"]'); // Top/Pinned badge
-                            if (isPinned) return null; // If last is pinned, we barely started? Unlikely in standard feed
+                            const badge = container.querySelector('[data-e2e="video-card-badge"]');
+                            const isPinned = !!badge;
+                            if (isPinned) {
+                                console.log('[TikTokModule_Browser] Last video is PINNED. Ignoring date check for this specific video.');
+                                return null;
+                            }
                         }
 
                         const m = (lastAnchor as HTMLAnchorElement).href.match(/\/(?:video|photo)\/(\d+)/);
@@ -441,12 +454,21 @@ export class TikTokModule implements PlatformModule {
             // === Extract Data ===
             let duplicatesCount = 0
             const videos = await page.evaluate(() => {
-
                 const anchors = Array.from(document.querySelectorAll('a'))
-                return anchors
-                    .filter(a => a.href.includes('/video/') || a.href.includes('/photo/'))
+                console.log(`[TikTokModule_Browser] Total anchors found: ${anchors.length}`)
+
+                const potentiallyValid = anchors.filter(a => a.href.includes('/video/') || a.href.includes('/photo/'))
+                console.log(`[TikTokModule_Browser] Anchors with /video/ or /photo/: ${potentiallyValid.length}`)
+
+                if (potentiallyValid.length > 0) {
+                    console.log(`[TikTokModule_Browser] First 3 hrefs: ${potentiallyValid.slice(0, 3).map(a => a.href).join(', ')}`)
+                }
+
+                return potentiallyValid
                     .map(a => {
                         const m = a.href.match(/\/(?:video|photo)\/(\d+)/)
+                        if (!m) console.log(`[TikTokModule_Browser] HREF regex failed for: ${a.href}`)
+
                         const container = a.closest('[data-e2e="user-post-item"]') ||
                             a.closest('div[class*="DivItemContainer"]') ||
                             a.parentElement
