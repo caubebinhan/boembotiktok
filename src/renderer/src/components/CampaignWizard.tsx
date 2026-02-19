@@ -197,6 +197,26 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
 
     const handleSave = async (data: any, runNowOverride: boolean) => {
         console.log('[Wizard_Action] handleSave started', { data, runNowOverride });
+
+        // Stale Time Check: If scheduled start time is in the past (e.g. user took too long to fill form),
+        // prompt to bump it to the future or cancel.
+        if (!runNowOverride && data.type === 'scheduled' && data.schedule?.runAt) {
+            const runAt = new Date(data.schedule.runAt)
+            if (runAt.getTime() <= Date.now()) {
+                const newTime = new Date(Date.now() + 60000) // Now + 1 min
+                const confirmUpdate = window.confirm(
+                    `The scheduled start time (${runAt.toLocaleTimeString()}) has passed while you were editing.\n\n` +
+                    `Do you want to update it to start in 1 minute (${newTime.toLocaleTimeString()})?`
+                )
+                if (confirmUpdate) {
+                    data.schedule.runAt = newTime.toISOString()
+                } else {
+                    // User cancelled, abort save to let them fix it manually
+                    return
+                }
+            }
+        }
+
         setIsSaving(true)
         try {
             // @ts-ignore
@@ -279,7 +299,8 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                     return [...prev, {
                         name: results.value,
                         type: results.type,
-                        videoCount: results.videos?.length || 0
+                        videoCount: results.videos?.length || 0,
+                        autoSchedule: true
                     }]
                 })
             }
@@ -363,6 +384,13 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
     }
     const handleBack = () => {
         console.log(`[Wizard_Action] handleBack from step ${step} to ${step - 1}`);
+        // If going back from the schedule preview step (4) or beyond,
+        // clear the cached executionOrder so SchedulePreview rebuilds from the
+        // updated Step 1 values (startTime, endTime, interval, runAt) when
+        // the user navigates forward again.
+        if (step >= 4) {
+            setFormData(prev => ({ ...prev, executionOrder: [] }))
+        }
         setStep(s => s - 1)
     }
 
@@ -1324,7 +1352,16 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 })),
                 videos: savedVideos
             },
-            executionOrder: formData.executionOrder
+            executionOrder: formData.executionOrder.map(item => {
+                // Ensure time is saved as Local ISO String to respect Computer Time
+                if (item.time instanceof Date) {
+                    const d = item.time;
+                    const offset = d.getTimezoneOffset() * 60000;
+                    const localISO = new Date(d.getTime() - offset).toISOString().slice(0, -1);
+                    return { ...item, time: localISO };
+                }
+                return item;
+            })
         };
         console.log('[Wizard_Data] Final Build Data:', data);
         return data;
@@ -1367,7 +1404,12 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                                     time: i.time // Ensure time is explicitly saved
                                 }))
                             }))}
-                            onStartTimeChange={(date) => setFormData({ ...formData, schedule: { ...formData.schedule, runAt: date.toISOString() } })}
+                            onStartTimeChange={(date) => {
+                                // Convert to Local ISO String (YYYY-MM-DDTHH:mm:ss.ms) to respect Computer Time (NO UTC conversion)
+                                const offset = date.getTimezoneOffset() * 60000;
+                                const localISO = new Date(date.getTime() - offset).toISOString().slice(0, -1);
+                                setFormData({ ...formData, schedule: { ...formData.schedule, runAt: localISO } })
+                            }}
                             onIntervalChange={(val) => setFormData(prev => ({ ...prev, schedule: { ...prev.schedule, interval: val } }))}
                             onSourcesChange={(newSources) => setSources(newSources)}
                         />

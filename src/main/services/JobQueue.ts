@@ -476,7 +476,30 @@ class JobQueue {
         let scheduleTime = data.nextScheduleTime ? new Date(data.nextScheduleTime) : new Date()
         const targetAccounts = data.targetAccounts || []
 
-        // Track Lifecycle State
+        // Load account cookies for authenticated scanning
+        let accountCookies: any[] = []
+        console.log(`[SCAN_DEBUG] targetAccounts raw value:`, JSON.stringify(targetAccounts), `(type: ${typeof targetAccounts[0]})`)
+        if (targetAccounts.length > 0) {
+            try {
+                const accountId = Number(targetAccounts[0])
+                console.log(`[SCAN_DEBUG] Looking up cookies for account id=${accountId}`)
+                // Use the same method publishVideo uses
+                accountCookies = publishAccountService.getAccountCookies(accountId)
+                if (accountCookies.length > 0) {
+                    console.log(`[SCAN_DEBUG] ✅ Loaded ${accountCookies.length} cookies for account id=${accountId}`)
+                } else {
+                    // Fallback: try raw SQL for debugging
+                    const rawRow = storageService.get('SELECT id, username, length(cookies_json) as clen FROM publish_accounts WHERE id = ?', [accountId])
+                    console.log(`[SCAN_DEBUG] ❌ No cookies from service. Raw DB row:`, JSON.stringify(rawRow))
+                    const allAccounts = storageService.all('SELECT id, username, length(cookies_json) as clen FROM publish_accounts')
+                    console.log(`[SCAN_DEBUG] All publish_accounts:`, JSON.stringify(allAccounts))
+                }
+            } catch (e) {
+                console.warn('[SCAN_DEBUG] Failed to load account cookies:', e)
+            }
+        } else {
+            console.log('[SCAN_DEBUG] ⚠️ targetAccounts is empty — no account selected for this campaign')
+        }
         const isMonitoring = data.isMonitoring || false // Are we in the future monitoring loop?
         let totalScheduled = data.totalScheduled || 0
         let monitoredCount = data.monitoredCount || 0
@@ -528,6 +551,7 @@ class JobQueue {
                         startDate: ch.startDate,
                         endDate: ch.endDate,
                         isBackground: true, // Critical: scanProfile only returns videos when isBackground=true
+                        cookies: accountCookies.length > 0 ? accountCookies : undefined,
                         onProgress: (p) => {
                             this.updateJobData(job.id, { ...data, status: `Scanning @${ch.name}: ${p}`, scannedCount })
                         }
@@ -591,6 +615,7 @@ class JobQueue {
                         startDate: kw.startDate,
                         endDate: kw.endDate,
                         isBackground: true,
+                        cookies: accountCookies.length > 0 ? accountCookies : undefined,
                         onProgress: (p) => {
                             this.updateJobData(job.id, { ...data, status: `Scanning keyword "${kw.name}": ${p}`, scannedCount })
                         }

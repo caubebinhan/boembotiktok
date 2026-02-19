@@ -21,6 +21,8 @@ interface SchedulePreviewProps {
     onStartTimeChange?: (date: Date) => void
     onIntervalChange?: (interval: number) => void
     onSourcesChange?: (sources: any[]) => void
+    onWindowChange?: (start: string, end: string) => void // NEW PROP
+    onWindowChange?: (start: string, end: string) => void // NEW PROP
 }
 
 export interface TimelineItem {
@@ -140,7 +142,7 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
         })
 
         recalculateTimes(newItems, start, schedule.interval || 15)
-    }, [savedVideos, sources, schedule.runAt, schedule.interval, captionTemplate])
+    }, [savedVideos, sources, schedule.runAt, schedule.interval, captionTemplate, (schedule as any).startTime, (schedule as any).endTime])
 
     // Helper to filter out past times for the selected date
     const filterPassedTime = (time: Date) => {
@@ -291,6 +293,7 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                         className="form-control"
                         wrapperClassName="datepicker-wrapper"
                     />
+
                 </div>
                 <div>
                     <label style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Gap between actions</label>
@@ -304,6 +307,34 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({ sources, saved
                             style={{ width: '80px', padding: '6px' }}
                         />
                         <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>minutes</span>
+                    </div>
+                </div>
+                <div>
+                    <label style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Daily Window</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                        <input
+                            type="time"
+                            value={(schedule as any).startTime || '07:00'}
+                            onChange={(e) => {
+                                const newStart = e.target.value;
+                                const currentEnd = (schedule as any).endTime || '23:00';
+                                onWindowChange?.(newStart, currentEnd);
+                            }}
+                            className="form-control"
+                            style={{ width: '80px', padding: '4px', fontSize: '12px' }}
+                        />
+                        <span style={{ color: 'var(--text-muted)' }}>-</span>
+                        <input
+                            type="time"
+                            value={(schedule as any).endTime || '23:00'}
+                            onChange={(e) => {
+                                const newEnd = e.target.value;
+                                const currentStart = (schedule as any).startTime || '07:00';
+                                onWindowChange?.(currentStart, newEnd);
+                            }}
+                            className="form-control"
+                            style={{ width: '80px', padding: '4px', fontSize: '12px' }}
+                        />
                     </div>
                 </div>
             </div>

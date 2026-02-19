@@ -376,7 +376,7 @@ class SchedulerService {
                     `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'SCAN', 'pending', ?, ?)`,
                     [
                         id,
-                        hasVideos ? scheduleTime.toISOString().replace('T', ' ').slice(0, 19) : null,
+                        scheduleTime.toISOString().replace('T', ' ').slice(0, 19),
                         JSON.stringify(jobData)
                     ]
                 )

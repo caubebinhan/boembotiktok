@@ -20,6 +20,7 @@ export interface ScanOptions {
     startDate?: string // ISO date string
     endDate?: string   // ISO date string
     onProgress?: (progress: string) => void
+    cookies?: any[]    // Account cookies for authenticated scan
 }
 
 // Helper to get date from TikTok Snowflake ID
@@ -67,6 +68,25 @@ export class TikTokModule implements PlatformModule {
 
         const page = await browserService.newPage()
         if (!page) return { videos: [] }
+
+        // Restore account session cookies if provided (for authenticated scans)
+        if (options.cookies && options.cookies.length > 0) {
+            try {
+                const sanitized = options.cookies.map((c: any) => {
+                    if (c.sameSite === 'no_restriction' || c.sameSite === 'unspecified') c.sameSite = 'None'
+                    if (c.sameSite === 'lax') c.sameSite = 'Lax'
+                    if (c.sameSite === 'strict') c.sameSite = 'Strict'
+                    if (c.sameSite === 'None') c.secure = true
+                    return c
+                })
+                await page.context().addCookies(sanitized)
+                console.log(`[scanKeyword] Restored ${sanitized.length} account cookies for authenticated scan`)
+            } catch (e) {
+                console.warn('[scanKeyword] Failed to set cookies, proceeding without auth:', e)
+            }
+        } else {
+            console.log('[scanKeyword] No account cookies provided, scanning as guest')
+        }
 
         const foundVideos: any[] = []
 
@@ -270,13 +290,133 @@ export class TikTokModule implements PlatformModule {
         const page = await browserService.newPage()
         if (!page) return { videos: [], channel: null }
 
+        // Restore account session cookies if provided (for authenticated scans)
+        if (options.cookies && options.cookies.length > 0) {
+            try {
+                const sanitized = options.cookies.map((c: any) => {
+                    if (c.sameSite === 'no_restriction' || c.sameSite === 'unspecified') c.sameSite = 'None'
+                    if (c.sameSite === 'lax') c.sameSite = 'Lax'
+                    if (c.sameSite === 'strict') c.sameSite = 'Strict'
+                    if (c.sameSite === 'None') c.secure = true
+                    return c
+                })
+                await page.context().addCookies(sanitized)
+                console.log(`[scanProfile] Restored ${sanitized.length} account cookies for authenticated scan`)
+            } catch (e) {
+                console.warn('[scanProfile] Failed to set cookies, proceeding without auth:', e)
+            }
+        } else {
+            console.log('[scanProfile] No account cookies provided, scanning as guest')
+        }
+
         const foundVideos: any[] = []
         let channelInfo: any = null
 
         try {
             await page.goto(`https://www.tiktok.com/@${username}`, { waitUntil: 'networkidle', timeout: 60000 })
 
-            // Detection check
+            // ─── DEBUG DUMP: HTML + Screenshot ───
+            try {
+                const debugDir = path.join(app.getPath('userData'), 'scan_debug')
+                await fs.ensureDir(debugDir)
+                const ts = new Date().toISOString().replace(/[:.]/g, '-')
+                const screenshotPath = path.join(debugDir, `scan_${username}_${ts}.png`)
+                const htmlPath = path.join(debugDir, `scan_${username}_${ts}.html`)
+                const logPath = path.join(debugDir, `scan_${username}_${ts}.log`)
+
+                await page.screenshot({ path: screenshotPath, fullPage: true })
+                const html = await page.content()
+                await fs.writeFile(htmlPath, html, 'utf8')
+
+                const currentUrl = page.url()
+                const logContent = [
+                    `[${new Date().toISOString()}] scanProfile: @${username}`,
+                    `URL: ${currentUrl}`,
+                    `Cookies provided: ${options.cookies?.length || 0}`,
+                    `Screenshot: ${screenshotPath}`,
+                    `HTML: ${htmlPath}`,
+                ].join('\n')
+                await fs.writeFile(logPath, logContent, 'utf8')
+                console.log(`[scanProfile] Debug dump saved: ${debugDir}/scan_${username}_${ts}.*`)
+                fileLogger.log(`[scanProfile] Debug saved at ${debugDir}`)
+            } catch (dumpErr) {
+                console.warn('[scanProfile] Debug dump failed:', dumpErr)
+            }
+
+            // ─── CAPTCHA: Check immediately after navigation ───
+            const CAPTCHA_WAIT = 300000 // 5 minutes
+            // Only check specific captcha container elements (not CSS class names which appear in style tags)
+            const captchaCheck = async (): Promise<boolean> => {
+                return page.evaluate(() => {
+                    const containers = [
+                        document.querySelector('.captcha-verify-container'),
+                        document.querySelector('#captcha_container'),
+                        document.querySelector('.captcha_verify_container'),
+                    ]
+                    // Only count as CAPTCHA if the element is visible (has dimensions)
+                    return containers.some(el => {
+                        if (!el) return false
+                        const rect = (el as HTMLElement).getBoundingClientRect()
+                        return rect.width > 0 && rect.height > 0
+                    })
+                })
+            }
+
+            const waitForCaptcha = async (label: string) => {
+                console.log(`[scanProfile] ${label}: CAPTCHA detected! Waiting up to 5 min for user to solve...`)
+                fileLogger.log(`[scanProfile] ${label}: CAPTCHA detected — waiting for user.`)
+
+                // Take screenshot so user can see what CAPTCHA looks like
+                try {
+                    const debugDir = path.join(app.getPath('userData'), 'scan_debug')
+                    const ts = new Date().toISOString().replace(/[:.]/g, '-')
+                    await page.screenshot({ path: path.join(debugDir, `captcha_${username}_${ts}.png`), fullPage: false })
+                } catch { }
+
+                try {
+                    await page.waitForFunction(() => {
+                        const containers = [
+                            document.querySelector('.captcha-verify-container'),
+                            document.querySelector('#captcha_container'),
+                            document.querySelector('.captcha_verify_container'),
+                        ]
+                        return !containers.some(el => {
+                            if (!el) return false
+                            const rect = (el as HTMLElement).getBoundingClientRect()
+                            return rect.width > 0 && rect.height > 0
+                        })
+                    }, { timeout: CAPTCHA_WAIT, polling: 1000 })
+                    console.log(`[scanProfile] ${label}: CAPTCHA resolved! Waiting for content to load...`)
+                    fileLogger.log(`[scanProfile] ${label}: CAPTCHA resolved. Waiting for content.`)
+
+                    // Wait for content to appear naturally (TikTok often just hides the captcha overlay)
+                    try {
+                        await page.waitForSelector('[data-e2e="user-post-item"]', { timeout: 15000 })
+                        console.log(`[scanProfile] Content detected!`)
+                    } catch (e) {
+                        console.log(`[scanProfile] Content did not appear after 15s. Reloading page as fallback...`)
+                        await page.reload({ waitUntil: 'domcontentloaded' })
+                        await page.waitForTimeout(5000)
+                    }
+
+                    // Post-CAPTCHA screenshot
+                    try {
+                        const debugDir = path.join(app.getPath('userData'), 'scan_debug')
+                        const ts2 = new Date().toISOString().replace(/[:.]/g, '-')
+                        await page.screenshot({ path: path.join(debugDir, `after_captcha_${username}_${ts2}.png`), fullPage: true })
+                        console.log(`[scanProfile] Post-CAPTCHA screenshot saved`)
+                    } catch { }
+
+                } catch {
+                    throw new Error('CAPTCHA_FAILED: User did not solve CAPTCHA in time (5 mins)')
+                }
+            }
+
+            if (await captchaCheck()) {
+                await waitForCaptcha('Initial')
+            }
+
+            // Detection check (secondary via handleCaptchaDetection)
             await (this as any).handleCaptchaDetection(page, `profile_${username}`)
 
             // === Extract Channel Metadata ===
@@ -299,41 +439,23 @@ export class TikTokModule implements PlatformModule {
                 )
             }
 
+            // Adaptive Selectors
+            const CONTENT_SELECTORS = [
+                '[data-e2e="user-post-item"]',
+                '[data-e2e="search_top-item"]',
+                'div[class*="DivItemContainer"]',
+                '.tiktok-feed-item',
+                'a[href*="/video/"]'
+            ].join(',')
+
             try {
                 // Initial wait for content
-                await page.waitForSelector('[data-e2e="user-post-item"]', { timeout: 10000 })
+                await page.waitForSelector(CONTENT_SELECTORS, { timeout: 15000 })
             } catch (e) {
-                console.log('Timeout waiting for video selector, checking for CAPTCHA...')
-                // CAPTCHA Handling
-                const isCaptcha = await page.$('.captcha-verify-container, #captcha_container')
-                if (isCaptcha) {
-                    console.log('CAPTCHA DETECTED! Waiting 30s for user to solve...')
-                    fileLogger.log('CAPTCHA DETECTED! Waiting 30s for user to solve...')
-
-                    // Wait for CAPTCHA to disappear (up to 5 minutes)
-                    try {
-                        const WAIT_TIME = 300000; // 5 minutes
-                        console.log(`[TikTokModule] Waiting up to ${WAIT_TIME / 1000}s for CAPTCHA resolution...`);
-
-                        await page.waitForFunction(() => {
-                            const hasCaptcha = !!(document.querySelector('.captcha-verify-container') || document.querySelector('#captcha_container') || document.querySelector('.captcha_verify_container'));
-                            return !hasCaptcha;
-                        }, { timeout: WAIT_TIME, polling: 1000 });
-
-                        console.log('[TikTokModule] CAPTCHA resolved! Resuming...');
-                        fileLogger.log('[TikTokModule] CAPTCHA resolved! Resuming...');
-                    } catch (e) {
-                        console.log('CAPTCHA wait timeout - proceeding hoping best')
-                        fileLogger.log('CAPTCHA wait timeout')
-                        throw new Error('CAPTCHA_FAILED: User did not solve CAPTCHA in time (5 mins)')
-                    }
-
-                    // Re-wait for content
-                    try {
-                        await page.waitForSelector('[data-e2e="user-post-item"]', { timeout: 10000 })
-                    } catch (e2) {
-                        console.log('Still no content after CAPTCHA wait')
-                    }
+                console.log('Timeout waiting for video selector, checking for CAPTCHA (secondary)...')
+                if (await captchaCheck()) {
+                    await waitForCaptcha('Secondary')
+                    await page.waitForSelector(CONTENT_SELECTORS, { timeout: 15000 }).catch(() => { })
                 } else {
                     console.log('No CAPTCHA found. Possible empty profile or layout change.')
                 }
@@ -342,6 +464,7 @@ export class TikTokModule implements PlatformModule {
             // === Scroll to End Logic ===
             let prevCount = 0
             let rounds = 0
+            let zeroCountRetries = 0 // Safety break for 0 items
 
             // Check for Incremental Mode (stop at last known video)
             let stopId: string | null = null
@@ -371,143 +494,181 @@ export class TikTokModule implements PlatformModule {
                 await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
                 await page.waitForTimeout(2000)
 
-                const currentCount = await page.evaluate(() => document.querySelectorAll('a[href*="/video/"]').length)
-                console.log(`[TikTokModule] Round ${rounds}: Found ${currentCount} videos so far (Target: ${options.limit === 'unlimited' ? 'Unlimited' : limit}).`)
-                if (options.onProgress) {
-                    options.onProgress(`Scanning round ${rounds}: found ${currentCount} videos so far...`)
+                // === ROBUST SCAN LOGIC (Ported from VideoPicker) ===
+                const scannedBatch = await page.evaluate(() => {
+                    const results: any[] = [];
+                    const anchors = Array.from(document.querySelectorAll('a'));
+                    // Filter for video links (exclude search results if any)
+                    const videoLinks = anchors.filter(a => a.href.includes('/video/') && !a.href.includes('/search'));
+
+                    const seen = new Set();
+
+                    videoLinks.forEach(link => {
+                        const href = link.getAttribute('href') || '';
+                        const idMatch = href.match(/\/video\/(\d+)/);
+
+                        // Strict ID check
+                        if (idMatch && idMatch[1] && !seen.has(idMatch[1])) {
+                            seen.add(idMatch[1]);
+                            const id = idMatch[1];
+                            const platformId = id;
+
+                            // Try to find container for stats/thumb (VideoPicker Logic)
+                            const container = link.closest('[data-e2e="user-post-item"]') ||
+                                link.closest('div[class*="DivItemContainer"]') ||
+                                link.parentElement;
+
+                            // Scrape Stats
+                            let views = '0';
+                            let likes = '0'; // Try to get likes if possible
+                            let comments = '0';
+
+                            if (container) {
+                                // Views
+                                const viewsEl = container.querySelector('[data-e2e="video-views"]');
+                                if (viewsEl) {
+                                    views = viewsEl.textContent || '0';
+                                } else {
+                                    // Robust: "1.2M Play" or just "1.2M"
+                                    const text = container.textContent || '';
+                                    const viewMatch = text.match(/(\d+(\.\d+)?[KMB]?)\s*Play/);
+                                    if (viewMatch) views = viewMatch[1];
+                                    else {
+                                        const simpleMatch = text.match(/(\d+(\.\d+)?[KMB]?)/);
+                                        if (simpleMatch) views = simpleMatch[0];
+                                    }
+                                }
+
+                                // Likes
+                                const likesEl = container.querySelector('[data-e2e="video-likes"]');
+                                if (likesEl) likes = likesEl.textContent || '0';
+                            }
+
+                            // Thumbnail
+                            let thumb = '';
+                            const img = link.querySelector('img');
+                            if (img) thumb = (img as HTMLImageElement).src;
+                            if (!thumb && container) {
+                                const style = window.getComputedStyle(container);
+                                const bg = style.backgroundImage;
+                                if (bg && bg.startsWith('url(')) {
+                                    thumb = bg.slice(5, -2).replace(/['"]/g, '');
+                                }
+                            }
+                            // Fallback for thumbnail: try to get the 'poster' if it's a video element playing
+                            if (!thumb && container) {
+                                const videoEl = container.querySelector('video');
+                                if (videoEl) thumb = videoEl.poster;
+                            }
+
+                            // Is Pinned?
+                            let isPinned = false;
+                            if (container) {
+                                const badge = container.querySelector('[data-e2e="video-card-badge"]');
+                                isPinned = !!(badge && (badge.textContent?.toLowerCase().includes('pinned') || badge.textContent?.toLowerCase().includes('top')));
+                            }
+
+                            results.push({
+                                id: platformId, // Critical: JobQueue expects 'id' to be string (Platform ID) for sorting
+                                platform_id: platformId,
+                                url: (link as HTMLAnchorElement).href,
+                                desc: '', // User requested empty desc
+                                thumb: thumb,
+                                stats: { views, likes, comments },
+                                isPinned: isPinned
+                            });
+                        }
+                    });
+                    return results;
+                });
+
+                const currentCount = scannedBatch.length // Total visible unique videos on page
+
+                // Add new to foundVideos
+                let newInRound = 0
+                for (const v of scannedBatch) {
+                    if (!foundVideos.some(fv => fv.platform_id === v.platform_id)) {
+                        foundVideos.push(v)
+                        newInRound++
+                    }
                 }
 
-                if (options.limit !== 'unlimited' && currentCount >= limit) {
+                console.log(`[TikTokModule] Round ${rounds}: Found ${newInRound} new videos (Total: ${foundVideos.length}).`)
+                if (options.onProgress) {
+                    options.onProgress(`Scanning round ${rounds}: found ${foundVideos.length} videos so far...`)
+                }
+
+                if (options.limit !== 'unlimited' && foundVideos.length >= limit) {
                     console.log(`[TikTokModule] Reached limit (${limit}). Stopping scroll.`)
                     break
                 }
 
+                // BREAK if no NEW videos found after multiple rounds
+                // Wait, previous logic was "currentCount === prevCount".
+                // videoLinks.filter returns ALL links on page.
+                // So scannedBatch.length is the total count.
+                if (currentCount === prevCount && newInRound === 0) {
+                    // Verify if truly stuck or just end of feed
+                    if (currentCount > 0) {
+                        console.log(`[TikTokModule] Reached end of feed for @${username}.`)
+                        break
+                    }
+                }
+
+                // BREAK if 0 videos found after multiple rounds (Empty Profile or Load Failure)
+                if (currentCount === 0) {
+                    zeroCountRetries++
+                    if (zeroCountRetries >= 3) {
+                        console.log('[TikTokModule] No videos found after 3 scroll attempts. Stopping.')
+                        break
+                    }
+                } else {
+                    zeroCountRetries = 0 // Reset if we found something
+                }
+
+
                 // Incremental Check: Check the last loaded video ID
                 if (stopId) {
-                    const shouldStop = await page.evaluate((stopId) => {
-                        // Get last video link
-                        const links = Array.from(document.querySelectorAll('a[href*="/video/"]'));
-                        const lastLink = links[links.length - 1];
-                        if (lastLink) {
-                            const m = lastLink.getAttribute('href')?.match(/\/video\/(\d+)/);
-                            if (m && m[1]) {
-                                // Lexicographical comparison for string IDs works for same-length numeric strings (TikTok IDs are consistent)
-                                // If found ID <= stopId, we reached old content
-                                return m[1] <= stopId;
-                            }
-                        }
-                        return false;
-                    }, stopId)
-
-                    if (shouldStop) {
+                    // Check if *any* of the found videos are <= stopId
+                    // Since foundVideos is accumulated, check the last batch
+                    const lastBatch = scannedBatch[scannedBatch.length - 1]; // Oldest on page typically at bottom?
+                    // Actually TikTok adds to bottom.
+                    if (lastBatch && lastBatch.platform_id <= stopId) {
                         console.log(`[TikTokModule] Reached known video (ID <= ${stopId}). Stopping incremental scan.`)
                         break
                     }
                 }
 
-                if (currentCount === prevCount && currentCount > 0) {
-                    console.log(`[TikTokModule] Reached end of feed for @${username}.`)
-                    break
-                }
-
-                // Date-Check Break Logic (Stop if we scrolled past startDate)
-                // We need to sample the last video to see its date
+                // Date Check
                 if (startDate) {
-                    const lastVideoDate = await page.evaluate(() => {
-                        // Support both video and photo links for date checking
-                        const anchors = Array.from(document.querySelectorAll('a[href*="/video/"], a[href*="/photo/"]'));
-                        const lastAnchor = anchors[anchors.length - 1];
-                        if (!lastAnchor) return null;
-
-                        // Check if pinned (closest container has pin/top label?)
-                        // Pinned videos stay at top, so checking the LAST video is safe
-                        // Pinned logic check:
-                        const container = lastAnchor.closest('[data-e2e="user-post-item"]');
-                        if (container) {
-                            const badge = container.querySelector('[data-e2e="video-card-badge"]');
-                            const isPinned = !!badge;
-                            if (isPinned) {
-                                console.log('[TikTokModule_Browser] Last video is PINNED. Ignoring date check for this specific video.');
-                                return null;
-                            }
-                        }
-
-                        const m = (lastAnchor as HTMLAnchorElement).href.match(/\/(?:video|photo)\/(\d+)/);
-                        return m ? m[1] : null;
-                    });
-
-                    if (lastVideoDate) {
-                        const date = getDateFromVideoId(lastVideoDate);
-                        console.log(`[TikTokModule] Last video date: ${date.toISOString()} vs Start: ${startDate.toISOString()}`)
+                    // Check last video date
+                    const lastV = scannedBatch[scannedBatch.length - 1];
+                    if (lastV && !lastV.isPinned) {
+                        const date = getDateFromVideoId(lastV.platform_id);
                         if (date < startDate) {
-                            console.log(`[TikTokModule] Reached date ${date.toISOString()} which is older than start date ${startDate.toISOString()}. Stopping.`);
-                            break;
+                            console.log(`[TikTokModule] Reached date ${date.toISOString()} < ${startDate.toISOString()}. Stopping.`)
+                            break
                         }
                     }
-                } else {
-                    console.log('[TikTokModule] No startDate limit. Continuing scan...')
                 }
 
                 prevCount = currentCount
             }
 
-            // === Extract Data ===
+            // === Post-Scan Processing ===
+            // Use foundVideos which was populated during the scan loop
             let duplicatesCount = 0
-            const videos = await page.evaluate(() => {
-                const anchors = Array.from(document.querySelectorAll('a'))
-                console.log(`[TikTokModule_Browser] Total anchors found: ${anchors.length}`)
+            const videos = foundVideos.map(v => ({
+                id: v.platform_id,
+                url: v.url,
+                desc: v.desc,
+                thumb: v.thumb,
+                stats: v.stats,
+                isPinned: v.isPinned
+            }));
 
-                const potentiallyValid = anchors.filter(a => a.href.includes('/video/') || a.href.includes('/photo/'))
-                console.log(`[TikTokModule_Browser] Anchors with /video/ or /photo/: ${potentiallyValid.length}`)
-
-                if (potentiallyValid.length > 0) {
-                    console.log(`[TikTokModule_Browser] First 3 hrefs: ${potentiallyValid.slice(0, 3).map(a => a.href).join(', ')}`)
-                }
-
-                return potentiallyValid
-                    .map(a => {
-                        const m = a.href.match(/\/(?:video|photo)\/(\d+)/)
-                        if (!m) console.log(`[TikTokModule_Browser] HREF regex failed for: ${a.href}`)
-
-                        const container = a.closest('[data-e2e="user-post-item"]') ||
-                            a.closest('div[class*="DivItemContainer"]') ||
-                            a.parentElement
-
-                        const viewsText = container ? container.textContent?.match(/(\d+(\.\d+)?[KMB]?)/)?.[0] : ''
-
-                        // Description Extraction
-                        let description = '';
-                        const descEl = container?.querySelector('[data-e2e="user-post-item-desc"]') ||
-                            container?.querySelector('[data-e2e="search-card-video-caption"]')
-
-                        if (descEl && descEl.textContent) {
-                            description = descEl.textContent;
-                        } else {
-                            const img = a.querySelector('img');
-                            description = (img && img.alt) ? img.alt : (a.textContent || '');
-                        }
-
-                        const isPinned = !!(container?.querySelector('[data-e2e="video-card-badge"]')?.textContent?.toLowerCase().includes('pinned') ||
-                            container?.querySelector('[data-e2e="video-card-badge"]')?.textContent?.toLowerCase().includes('top'));
-
-                        return {
-                            id: m ? m[1] : '',
-                            url: a.href,
-                            desc: '', // User requested empty desc during scan
-                            thumb: a.querySelector('img')?.src || '',
-                            stats: {
-                                views: viewsText || '0',
-                                likes: '0',
-                                comments: '0'
-                            },
-                            isPinned
-                        }
-                    })
-                    .filter(v => v.id)
-            })
-
-            console.log(`Found ${videos.length} videos on page`)
-            fileLogger.log(`Found ${videos.length} videos on page for @${username}`)
+            console.log(`[TikTokModule] Scan complete. Found ${videos.length} videos total.`)
+            fileLogger.log(`[TikTokModule] Scan complete. Found ${videos.length} videos total for @${username}`)
 
             if (videos.length === 0) {
                 const dumpPath = path.join(app.getPath('userData'), `scan_dump_${username}_${Date.now()}.html`)
@@ -527,12 +688,69 @@ export class TikTokModule implements PlatformModule {
                     })
 
                     if (!isEmptyProfile) {
-                        console.log('[TikTokModule] 0 videos and NOT empty profile -> Assuming CAPTCHA/Block. Throwing CAPTCHA_REQUIRED.')
-                        fileLogger.log('[TikTokModule] 0 videos and NOT empty profile -> Assuming CAPTCHA/Block. Throwing CAPTCHA_REQUIRED.')
+                        console.log('[TikTokModule] 0 videos from DOM. Attempting HTML Fallback Extraction...')
+                        fileLogger.log('[TikTokModule] 0 videos from DOM. Attempting HTML Fallback Extraction...')
 
-                        // Force a screenshot for debugging if possible (optional)
+                        // Fallback 1: Regex on raw HTML
+                        const html = await page.content()
+                        const regex = /href=["'](?:https:\/\/www\.tiktok\.com)?\/@[\w.-]+\/video\/(\d+)["']/g
+                        const regexMatches = [...html.matchAll(regex)]
 
-                        throw new Error('CAPTCHA_REQUIRED')
+                        console.log(`[TikTokModule] Fallback Regex found ${regexMatches.length} matches`)
+
+                        regexMatches.forEach(m => {
+                            const vid = m[1]
+                            const vUrl = `https://www.tiktok.com/@${username}/video/${vid}`
+                            // Check for duplicates in foundVideos
+                            if (!foundVideos.some(fv => fv.platform_id === vid)) {
+                                // Basic mock data since we only have ID
+                                const mockVideo = {
+                                    id: vid,
+                                    url: vUrl,
+                                    desc: 'Extracted via Fallback',
+                                    thumb: '',
+                                    stats: { views: '0', likes: '0', comments: '0' },
+                                    isPinned: false
+                                }
+                                // Add to discovered list (the loop below will process it)
+                                videos.push(mockVideo)
+                            }
+                        })
+
+                        // Fallback 2: Try parsing SIGI_STATE ( hydration data )
+                        try {
+                            const sigiScript = await page.evaluate(() => {
+                                const el = document.getElementById('SIGI_STATE') || document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__')
+                                return el ? el.textContent : null
+                            })
+                            if (sigiScript) {
+                                const data = JSON.parse(sigiScript)
+                                // Structure varies, try to find 'ItemModule' or 'UserModule'
+                                const items = data.ItemModule || data.itemList || {}
+                                Object.values(items).forEach((item: any) => {
+                                    if (item && item.id && !foundVideos.some(fv => fv.platform_id === item.id)) {
+                                        videos.push({
+                                            id: item.id,
+                                            url: `https://www.tiktok.com/@${item.author}/video/${item.id}`,
+                                            desc: item.desc || '',
+                                            thumb: item.video?.cover || '',
+                                            stats: {
+                                                views: item.stats?.playCount || '0',
+                                                likes: item.stats?.diggCount || '0',
+                                                comments: item.stats?.commentCount || '0'
+                                            },
+                                            isPinned: false
+                                        })
+                                    }
+                                })
+                                console.log(`[TikTokModule] SIGI_STATE extraction added ${videos.length} videos`)
+                            }
+                        } catch (e) { console.warn('SIGI_STATE extraction failed', e) }
+
+                        if (videos.length === 0) {
+                            console.log('[TikTokModule] Still 0 videos after fallback. Throwing CAPTCHA_REQUIRED.')
+                            throw new Error('CAPTCHA_REQUIRED')
+                        }
                     } else {
                         console.log('[TikTokModule] Verified as EMPTY profile. Returning 0 videos.')
                         fileLogger.log('[TikTokModule] Verified as EMPTY profile. Returning 0 videos.')
@@ -571,17 +789,9 @@ export class TikTokModule implements PlatformModule {
                     )
                     console.log(`[DEBUG_DESC] scanProfile: New video found: ${v.id} (${postedAt.toISOString()}). Desc: "${v.desc}"`)
 
-                    if (isBackground) {
-                        const newId = storageService.get('SELECT last_insert_rowid() as id').id
-                        foundVideos.push({
-                            id: newId,
-                            url: v.url,
-                            platform_id: v.id,
-                            thumbnail: v.thumb,
-                            stats: v.stats,
-                            posted_at: postedAt.toISOString()
-                        })
-                    }
+                    // Removed harmful foundVideos.push logic here.
+                    // foundVideos is already populated in the scan loop with correct 'id' (String).
+                    // Pushing DB IDs (Number) causes JobQueue sort to crash.
                 } else {
                     duplicatesCount++
                 }
