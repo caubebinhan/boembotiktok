@@ -34,7 +34,7 @@ interface SourceEntry {
 interface CampaignFormData {
     id?: number
     name: string
-    type: 'one_time' | 'scheduled'
+    type: 'scan_video' | 'scan_channel_keyword'
     editPipeline: any
     targetAccounts: string[]
     captionTemplate: string
@@ -66,7 +66,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
             const config = typeof initialData.config_json === 'string' ? JSON.parse(initialData.config_json) : initialData.config_json || {}
             return {
                 name: initialData.name + ' (Copy)',
-                type: initialData.type === 'scan_all' ? 'scheduled' : (initialData.type || 'scheduled'),
+                type: initialData.type === 'scan_channel_keyword' || initialData.type === 'scan_all' || initialData.type === 'scheduled' ? 'scan_channel_keyword' : 'scan_video',
                 editPipeline: config.editPipeline || { effects: [] },
                 targetAccounts: config.targetAccounts || [],
                 captionTemplate: config.captionTemplate || '',
@@ -87,7 +87,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         }
         return {
             name: '',
-            type: 'one_time' as 'one_time' | 'scheduled',
+            type: 'scan_video' as 'scan_video' | 'scan_channel_keyword',
             editPipeline: { effects: [] as any[] },
             targetAccounts: [] as string[],
             captionTemplate: '',
@@ -183,7 +183,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
         setFormData(prev => ({
             ...prev,
             name: initialData.name + (initialData.id ? ' (Copy)' : ''), // Append copy only if cloning existing
-            type: initialData.type === 'scan_all' ? 'scheduled' : (initialData.type || 'scheduled'),
+            type: initialData.type === 'scan_channel_keyword' || initialData.type === 'scan_all' || initialData.type === 'scheduled' ? 'scan_channel_keyword' : 'scan_video',
             editPipeline: config.editPipeline || { effects: [] },
             targetAccounts: config.targetAccounts || [],
             postOrder: config.postOrder || 'newest',
@@ -279,7 +279,8 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                     return [...prev, {
                         name: results.value,
                         type: results.type,
-                        videoCount: results.videos?.length || 0
+                        videoCount: results.videos?.length || 0,
+                        autoSchedule: true
                     }]
                 })
             }
@@ -379,12 +380,12 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
     const canAdvance = (): boolean => {
         const res = ((): boolean => {
             if (step === 1 && !formData.name.trim()) return false
-            if (step === 1 && formData.type === 'one_time' && !runNow && !formData.schedule.runAt) return false
-            if (step === 1 && formData.type === 'scheduled' && formData.schedule.days.length === 0) return false
+            if (step === 1 && formData.type === 'scan_video' && !runNow && !formData.schedule.runAt) return false
+            if (step === 1 && formData.type === 'scan_channel_keyword' && formData.schedule.days.length === 0) return false
 
             // Step 2 Validation
             if (step === 2) {
-                if (formData.type === 'one_time') {
+                if (formData.type === 'scan_video') {
                     return savedVideos.length >= 1
                 }
                 if (sources.length === 0 && savedVideos.length === 0) return false
@@ -462,27 +463,27 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
             <div className="form-group">
                 <label>Campaign Type</label>
                 <div className="radio-group" style={{ display: 'flex', gap: '20px' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '15px', background: formData.type === 'one_time' ? 'rgba(255,255,255,0.05)' : 'transparent', borderRadius: '8px', cursor: 'pointer', border: formData.type === 'one_time' ? '1px solid var(--accent-primary)' : '1px solid transparent' }}>
-                        <input type="radio" checked={formData.type === 'one_time'} onChange={() => {
-                            console.log('[Wizard_Input] Campaign Type: one_time (Clearing Sources)');
-                            setFormData({ ...formData, type: 'one_time' });
-                            setSources([]); // Clear sources when switching to one_time
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '15px', background: formData.type === 'scan_video' ? 'rgba(255,255,255,0.05)' : 'transparent', borderRadius: '8px', cursor: 'pointer', border: formData.type === 'scan_video' ? '1px solid var(--accent-primary)' : '1px solid transparent' }}>
+                        <input type="radio" checked={formData.type === 'scan_video'} onChange={() => {
+                            console.log('[Wizard_Input] Campaign Type: scan_video (Clearing Sources)');
+                            setFormData({ ...formData, type: 'scan_video' });
+                            setSources([]); // Clear sources when switching to scan_video
                         }} />
                         <div>
-                            <strong>One-Time Run</strong>
-                            <div style={{ fontSize: '10px', color: 'gray' }}>Run once at a scheduled time</div>
+                            <strong>Scan Video Mode</strong>
+                            <div style={{ fontSize: '10px', color: 'gray' }}>Select specific videos to process</div>
                         </div>
                     </label>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '15px', background: formData.type === 'scheduled' ? 'rgba(255,255,255,0.05)' : 'transparent', borderRadius: '8px', cursor: 'pointer', border: formData.type === 'scheduled' ? '1px solid var(--accent-primary)' : '1px solid transparent' }}>
-                        <input type="radio" checked={formData.type === 'scheduled'} onChange={() => {
-                            console.log('[Wizard_Input] Campaign Type: scheduled (Clearing Selected Videos)');
-                            setFormData({ ...formData, type: 'scheduled' });
-                            setSavedVideos([]); // Clear videos when switching to scheduled
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '15px', background: formData.type === 'scan_channel_keyword' ? 'rgba(255,255,255,0.05)' : 'transparent', borderRadius: '8px', cursor: 'pointer', border: formData.type === 'scan_channel_keyword' ? '1px solid var(--accent-primary)' : '1px solid transparent' }}>
+                        <input type="radio" checked={formData.type === 'scan_channel_keyword'} onChange={() => {
+                            console.log('[Wizard_Input] Campaign Type: scan_channel_keyword (Clearing Selected Videos)');
+                            setFormData({ ...formData, type: 'scan_channel_keyword' });
+                            setSavedVideos([]); // Clear videos when switching to scan_channel_keyword
                             setVideoCount(0);
                         }} />
                         <div>
-                            <strong data-testid="type-scheduled">Scheduled Scan</strong>
-                            <div style={{ fontSize: '10px', color: 'gray' }}>Automatically scan periodically</div>
+                            <strong data-testid="type-scheduled">Scan Channel/Keyword Mode</strong>
+                            <div style={{ fontSize: '10px', color: 'gray' }}>Automatically monitor streams/channels</div>
                         </div>
                     </label>
                 </div>
@@ -656,7 +657,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 )}
             </div>
 
-            {formData.type === 'scheduled' && (
+            {formData.type === 'scan_channel_keyword' && (
                 <>
                     <div className="schedule-ui card" style={{ padding: '20px', marginTop: '16px', borderTop: 'none' }}>
                         <h4 style={{ marginTop: 0 }}>🔄 Recurring Interval</h4>
@@ -853,8 +854,8 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
     ]
 
     const renderStep2_Source = () => {
-        const isOneTime = formData.type === 'one_time'
-        const isScheduled = formData.type === 'scheduled'
+        const isOneTime = formData.type === 'scan_video'
+        const isScheduled = formData.type === 'scan_channel_keyword'
 
         return (
             <div className="wizard-step" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -1101,7 +1102,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                 </div>
 
                 {/* Validation Warning */}
-                {formData.type === 'one_time' && savedVideos.length === 0 && (
+                {formData.type === 'scan_video' && savedVideos.length === 0 && (
                     <div style={{ marginTop: '10px', padding: '8px 12px', background: 'rgba(244, 67, 54, 0.1)', border: '1px solid rgba(244, 67, 54, 0.2)', borderRadius: '6px', color: '#f44336', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                         ⚠️ One-Time campaigns require at least 1 target video.
                     </div>
@@ -1113,7 +1114,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
     // ─── Step 3: Video Editor (for scheduled) or Step 4 (for one_time) ────────────────────────────────────
     const renderStep_Editor = () => (
         <div className="wizard-step" style={{ height: '400px' }}>
-            <h3>{formData.type === 'scheduled' ? 'Step 3' : 'Step 3'}: Video Editor</h3>
+            <h3>{formData.type === 'scan_channel_keyword' ? 'Step 3' : 'Step 3'}: Video Editor</h3>
             <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginBottom: '15px' }}>
                 Add effects to process your videos before publishing. Effects are applied in order.
             </p>
@@ -1191,7 +1192,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                     <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Schedule</div>
                     <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--accent-teal)' }}>
                         <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--accent-teal)' }}>
-                            {formData.type === 'one_time'
+                            {formData.type === 'scan_video'
                                 ? (runNow ? '🚀 Run Immediately' : (() => {
                                     try {
                                         return formData.schedule.runAt ? `📅 ${new Date(formData.schedule.runAt).toLocaleString()}` : 'Not set'

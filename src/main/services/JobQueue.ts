@@ -79,6 +79,22 @@ class JobQueue {
             console.error('[JobQueue] [Recovery] Error during startup recovery:', e)
         }
 
+        // 0.5. Pause all active campaigns on startup
+        try {
+            console.log('[JobQueue] [Startup] Pausing all active campaigns...');
+            const pauseRes = storageService.run(
+                "UPDATE campaigns SET status = 'paused', paused_at_startup = 1 WHERE status = 'active'"
+            )
+            if (pauseRes && pauseRes.changes > 0) {
+                storageService.run(
+                    "UPDATE jobs SET status = 'paused' WHERE status IN ('queued', 'scheduled', 'download_retry', 'edit_retry', 'publish_retry') AND campaign_id IN (SELECT id FROM campaigns WHERE paused_at_startup = 1)"
+                )
+                console.log(`[JobQueue] [Startup] Paused ${pauseRes.changes} active campaigns.`);
+            }
+        } catch (e) {
+            console.error('[JobQueue] [Startup] Error pausing campaigns:', e)
+        }
+
         // 1. Check for missed scheduled jobs (pending and in the past)
         try {
             console.log('[JobQueue] Checking for missed scheduled jobs...')
@@ -87,7 +103,7 @@ class JobQueue {
                 SELECT j.id, j.scheduled_for, j.campaign_id, c.config_json 
                 FROM jobs j
                 JOIN campaigns c ON j.campaign_id = c.id
-                WHERE j.status = 'pending' 
+                WHERE j.status IN ('queued', 'scheduled')
                 AND (j.scheduled_for IS NULL OR j.scheduled_for <= ?)
                 ORDER BY j.scheduled_for ASC
             `, [nowIso])
@@ -118,6 +134,11 @@ class JobQueue {
                             `UPDATE jobs SET status = 'missed' WHERE id IN (${placeholders})`,
                             ids
                         )
+                        // Also mark the campaign as having missed jobs
+                        storageService.run(
+                            `UPDATE campaigns SET has_missed_jobs = 1, missed_jobs_count = (SELECT COUNT(*) FROM jobs WHERE campaign_id = ? AND status = 'missed') WHERE id = ?`,
+                            [id, id]
+                        )
                     }
                 }
             }
@@ -139,7 +160,7 @@ class JobQueue {
         const nowIso = new Date().toISOString()
         return storageService.getAll(`
             SELECT * FROM jobs 
-            WHERE status = 'pending' 
+            WHERE status IN ('queued', 'scheduled')
             AND (scheduled_for IS NULL OR scheduled_for <= ?)
             ORDER BY scheduled_for ASC
         `, [nowIso])
@@ -150,7 +171,7 @@ class JobQueue {
         return storageService.getAll(`
             SELECT * FROM jobs 
             WHERE campaign_id = ? 
-            AND (status = 'missed' OR (status = 'pending' AND scheduled_for <= ?))
+            AND (status = 'missed' OR (status IN ('queued', 'scheduled') AND scheduled_for <= ?))
             ORDER BY scheduled_for ASC
         `, [campaignId, nowIso])
     }
@@ -162,10 +183,10 @@ class JobQueue {
         for (const item of rescheduleItems) {
             try {
                 if (item.scheduled_for) {
-                    storageService.run("UPDATE jobs SET scheduled_for = ?, status = 'pending' WHERE id = ?", [item.scheduled_for, item.id])
+                    storageService.run("UPDATE jobs SET scheduled_for = ?, status = 'scheduled' WHERE id = ?", [item.scheduled_for, item.id])
                 } else {
-                    // If no time provided, just set to pending (run now)
-                    storageService.run("UPDATE jobs SET status = 'pending' WHERE id = ?", [item.id])
+                    // If no time provided, just set to queued (run now)
+                    storageService.run("UPDATE jobs SET status = 'queued' WHERE id = ?", [item.id])
                 }
             } catch (e) {
                 console.error(`[JobQueue] Failed to reschedule job ${item.id}`, e)
@@ -192,9 +213,9 @@ class JobQueue {
     }
 
     async shiftCampaignSchedule(campaignId: number) {
-        // 1. Get all pending/missed jobs ordered by time
+        // 1. Get all queued/scheduled/missed jobs ordered by time
         const jobs = storageService.getAll(
-            `SELECT id, scheduled_for FROM jobs WHERE campaign_id = ? AND status IN ('pending', 'missed') ORDER BY scheduled_for ASC`,
+            `SELECT id, scheduled_for FROM jobs WHERE campaign_id = ? AND status IN ('queued', 'scheduled', 'missed') ORDER BY scheduled_for ASC`,
             [campaignId]
         )
 
@@ -232,7 +253,7 @@ class JobQueue {
         try {
             // Use storageService.run in a loop since we don't have transaction exposed
             updates.forEach(u => {
-                storageService.run("UPDATE jobs SET scheduled_for = ?, status = 'pending' WHERE id = ?", [u.scheduled_for, u.id])
+                storageService.run("UPDATE jobs SET scheduled_for = ?, status = 'scheduled' WHERE id = ?", [u.scheduled_for, u.id])
             })
         } catch (e) {
             console.error('[JobQueue] Failed to shift schedule:', e)
@@ -244,9 +265,9 @@ class JobQueue {
         // Use the shift logic to preserve gaps
         await this.shiftCampaignSchedule(campaignId)
 
-        // Ensure strictly all 'missed' are set to 'pending' (shiftCampaignSchedule does this for the ones it touches, but just in case)
+        // Ensure strictly all 'missed' are set to 'scheduled' (shiftCampaignSchedule does this for the ones it touches, but just in case)
         const res = storageService.run(
-            `UPDATE jobs SET status = 'pending' WHERE campaign_id = ? AND status = 'missed'`,
+            `UPDATE jobs SET status = 'scheduled' WHERE campaign_id = ? AND status = 'missed'`,
             [campaignId]
         )
         return res.changes
@@ -255,16 +276,20 @@ class JobQueue {
     async pauseCampaign(campaignId: number) {
         console.log(`[JobQueue] Pausing campaign ${campaignId}...`)
         const res = storageService.run(
-            `UPDATE jobs SET status = 'paused' WHERE campaign_id = ? AND status IN ('pending', 'missed')`,
+            `UPDATE jobs SET status = 'paused' WHERE campaign_id = ? AND status IN ('queued', 'scheduled', 'missed')`,
             [campaignId]
         )
         return res.changes
     }
 
     async resumeCampaign(campaignId: number) {
-        console.log(`[JobQueue] Resuming campaign ${campaignId} (setting paused to pending)...`)
+        console.log(`[JobQueue] Resuming campaign ${campaignId} (setting paused to queued)...`)
         const res = storageService.run(
-            `UPDATE jobs SET status = 'pending' WHERE campaign_id = ? AND status = 'paused'`,
+            `UPDATE jobs SET status = 'queued' WHERE campaign_id = ? AND status = 'paused' AND scheduled_for IS NULL`,
+            [campaignId]
+        )
+        storageService.run(
+            `UPDATE jobs SET status = 'scheduled' WHERE campaign_id = ? AND status = 'paused' AND scheduled_for IS NOT NULL`,
             [campaignId]
         )
         return res.changes
@@ -326,12 +351,12 @@ class JobQueue {
                 return
             }
 
-            // SMART SELECTION: Priority DESC, then PUBLISH first, then Oldest Scheduled
+            // SMART SELECTION: Priority DESC, then EXECUTE first, then Oldest Scheduled
             const jobs = storageService.all(`
                 SELECT * FROM jobs 
-                WHERE status = 'pending'
+                WHERE status IN ('queued', 'scheduled', 'download_retry', 'edit_retry', 'publish_retry')
                 AND (scheduled_for IS NULL OR scheduled_for <= ?)
-                ORDER BY priority DESC, (CASE WHEN type = 'PUBLISH' THEN 0 ELSE 1 END) ASC, scheduled_for ASC 
+                ORDER BY priority DESC, (CASE WHEN type = 'EXECUTE' THEN 0 ELSE 1 END) ASC, scheduled_for ASC 
                 LIMIT ?
             `, [nowIso, needed])
 
@@ -361,8 +386,16 @@ class JobQueue {
     }
 
     async executeJob(job: any) {
+        // Determine initial processing status
+        let initialStatus = 'running'
+        if (job.type === 'EXECUTE') {
+            if (job.status === 'download_retry' || job.status === 'download_failed' || job.status === 'queued' || job.status === 'scheduled') initialStatus = 'downloading'
+            else if (job.status === 'edit_retry' || job.status === 'edit_failed' || job.status === 'downloaded') initialStatus = 'editing'
+            else if (job.status === 'publish_retry' || job.status === 'publish_failed' || job.status === 'edited') initialStatus = 'publishing'
+        }
+
         // Mark running
-        storageService.run("UPDATE jobs SET status = 'running', started_at = CURRENT_TIMESTAMP WHERE id = ?", [job.id])
+        storageService.run("UPDATE jobs SET status = ?, started_at = CURRENT_TIMESTAMP WHERE id = ?", [initialStatus, job.id])
         this.broadcastUpdate()
 
         try {
@@ -390,12 +423,9 @@ class JobQueue {
                 if (job.type === 'SCAN') {
                     console.log(`[JobQueue] [Execute] Handing off to SCAN logic...`);
                     await this.handleScan(job, data, tiktok)
-                } else if (job.type === 'DOWNLOAD') {
-                    console.log(`[JobQueue] [Execute] Handing off to DOWNLOAD logic...`);
-                    await this.handleDownload(job, data, tiktok)
-                } else if (job.type === 'PUBLISH') {
-                    console.log(`[JobQueue] [Execute] Handing off to PUBLISH logic...`);
-                    publishResult = await this.handlePublish(job, data, tiktok)
+                } else if (job.type === 'EXECUTE') {
+                    console.log(`[JobQueue] [Execute] Handing off to EXECUTE logic...`);
+                    publishResult = await this.handleExecutePipeline(job, data, tiktok)
                 }
                 return publishResult;
             })();
@@ -411,10 +441,13 @@ class JobQueue {
 
             // Mark completed or uploaded based on result
             let finalStatus = 'completed'
-            // If it was a publish job and it's reviewing/private, mark as 'uploaded' instead of 'completed'
-            if (job.type === 'PUBLISH' && publishResult && (publishResult.isReviewing || publishResult.warning)) {
+            // If it was a publish job and it's reviewing/private, mark as 'uploaded' instead of 'published'
+            if (job.type === 'EXECUTE' && publishResult && (publishResult.isReviewing || publishResult.warning)) {
                 finalStatus = 'uploaded'
                 console.log(`[JobQueue] Job #${job.id} uploaded but under review/verification failed. Status: ${finalStatus}`)
+            } else if (job.type === 'EXECUTE') {
+                finalStatus = 'published'
+                console.log(`[JobQueue] Job #${job.id} marked as PUBLISHED.`)
             } else {
                 console.log(`[JobQueue] Job #${job.id} marked as COMPLETED.`)
             }
@@ -444,9 +477,16 @@ class JobQueue {
             }
 
             if (error.message && error.message.includes('CAPTCHA')) {
-                storageService.run("UPDATE jobs SET status = 'scan_failed_captcha', error_message = ? WHERE id = ?", [error.message, job.id])
+                storageService.run("UPDATE jobs SET status = 'publish_failed', error_message = ? WHERE id = ?", [error.message, job.id])
             } else {
-                storageService.run("UPDATE jobs SET status = ?, error_message = ? WHERE id = ?", [`Failed: ${error.message.substring(0, 50)}`, error.message, job.id])
+                // If it's an EXECUTE job we should ideally mark it with *_failed depending on where it failed, but the handleExecutePipeline will do that internally and re-throw.
+                // We just update the message here without touching the status if it already contains '_failed'
+                const currentStatus = storageService.get("SELECT status FROM jobs WHERE id = ?", [job.id]).status
+                if (!currentStatus.includes('_failed')) {
+                    storageService.run("UPDATE jobs SET status = 'failed', error_message = ? WHERE id = ?", [error.message, job.id])
+                } else {
+                    storageService.run("UPDATE jobs SET error_message = ? WHERE id = ?", [error.message, job.id])
+                }
             }
 
             try {
@@ -706,8 +746,14 @@ class JobQueue {
             const isAutoSchedule = sourceOfVideo.autoSchedule !== false;
 
             if (isAutoSchedule) {
+                // Determine target account via round robin if multiple exist
+                let targetAccount = targetAccounts[0]; // fallback
+                if (targetAccounts && targetAccounts.length > 0) {
+                    targetAccount = targetAccounts[totalScheduled % targetAccounts.length];
+                }
+
                 storageService.run(
-                    `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'DOWNLOAD', 'pending', ?, ?)`,
+                    `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'EXECUTE', 'queued', ?, ?)`,
                     [
                         job.campaign_id,
                         scheduleTime.toISOString().replace('T', ' ').slice(0, 19),
@@ -715,14 +761,14 @@ class JobQueue {
                             url: v.url,
                             platform_id: v.platform_id || v.id,
                             video_id: v.id,
-                            targetAccounts,
+                            targetAccount,
                             description: v.desc || v.description,
                             thumbnail: v.thumbnail || v.cover || '',
                             videoStats: v.stats || { views: 0, likes: 0 },
                             source: v.source,
                             editPipeline: data.editPipeline,
                             advancedVerification: data.advancedVerification,
-                            status: `Queued: Download`
+                            status: `Queued`
                         })
                     ]
                 )
@@ -808,330 +854,203 @@ class JobQueue {
     }
 
 
-    private async handleDownload(job: any, data: any, tiktok: TikTokModule) {
-        this.updateJobData(job.id, { ...data, status: 'Downloading video...' })
+    private async handleExecutePipeline(job: any, data: any, tiktok: TikTokModule) {
+        let finalPath = data.video_path || '';
+        let publishResult: any = null;
 
-        // 1. Download video
-        console.log(`[JobQueue] [DOWNLOAD] Initiating download for URL: ${data.url} (Platform ID: ${data.platform_id})`)
-        const { filePath, cached, meta } = await tiktok.downloadVideo(data.url, data.platform_id)
-        console.log(`[JobQueue] [DOWNLOAD] Download result: Cached=${cached}, MetaLoaded=${!!meta}, Path=${filePath}`)
+        // Step 1: Download
+        if (job.status === 'download_retry' || job.status === 'download_failed' || job.status === 'downloading') {
+            this.updateJobData(job.id, { ...data, status: 'Downloading video...' })
+            console.log(`[JobQueue] [DOWNLOAD] Initiating download for URL: ${data.url} (Platform ID: ${data.platform_id})`)
 
-        if (cached) {
-            console.log(`[JobQueue] [DOWNLOAD] Skipping physical download (Cache Hit).`)
-            this.updateJobData(job.id, { ...data, status: 'Video already cached. Skipping download.' })
-            // Small delay to let user see message
-            await new Promise(r => setTimeout(r, 1000))
-        }
-
-        let finalPath = filePath
-
-        // 2. Check campaign for edit pipeline
-        const campaign = storageService.get('SELECT * FROM campaigns WHERE id = ?', [job.campaign_id])
-        if (campaign && campaign.config_json) {
-            const config = JSON.parse(campaign.config_json)
-
-            // Use VideoEditEngine if pipeline has effects
-            if (config.editPipeline && config.editPipeline.effects && config.editPipeline.effects.length > 0) {
-                this.updateJobData(job.id, { ...data, status: 'Processing video (AI editing)...' })
-                const { videoEditEngine } = require('./video-edit/VideoEditEngine')
-                const processedPath = filePath.replace('.mp4', '_edited.mp4')
-                await videoEditEngine.render(filePath, config.editPipeline, processedPath)
-                finalPath = processedPath
-            }
-        }
-
-        // 3. Update video record (including valid caption from library)
-        // CRITICAL FIX: Update data.description from meta IMMEDIATELY, regardless of DB state
-        if (meta && meta.description) {
-            console.log(`[DEBUG_DESC] JobQueue received new caption from TikTokModule: "${meta.description}"`)
-            data.description = meta.description
-        }
-
-        let video = storageService.get("SELECT id, metadata, description FROM videos WHERE platform_id = ?", [data.platform_id])
-
-        // CRITICAL FIX: If video doesn't exist (because handleScan didn't insert it), create it now!
-        if (!video) {
-            console.log(`[DEBUG_DESC] Video record missing for ${data.platform_id}. Creating new record...`)
             try {
-                const now = new Date().toISOString()
-                const initialMeta = {
-                    author: meta ? meta.author : null,
-                    stats: data.videoStats
-                }
-                storageService.run(
-                    `INSERT INTO videos (platform, platform_id, url, description, status, metadata, created_at)
-            VALUES ('tiktok', ?, ?, ?, 'downloading', ?, ?)`,
-                    [
-                        data.platform_id,
-                        data.url,
-                        data.description || '', // Use the description we just updated from meta
-                        JSON.stringify(initialMeta),
-                        now
-                    ]
-                )
-                // Fetch the newly created video so we can update it below (or just proceed)
-                video = storageService.get("SELECT id, metadata, description FROM videos WHERE platform_id = ?", [data.platform_id])
-            } catch (e: any) {
-                console.error(`[JobQueue] Failed to create video record:`, e)
-            }
-        }
+                const { filePath, cached, meta } = await tiktok.downloadVideo(data.url, data.platform_id)
 
-        if (video) {
-            let dbMeta = {}
-            try { dbMeta = JSON.parse(video.metadata || '{}') } catch (e) { }
-
-            // Merge new metadata if available
-            if (meta) {
-                if (meta.description) {
-                    const oldDesc = video.description || ''
-                    const newDesc = meta.description
-                    // Update if different, OR if old description was likely a placeholder
-                    const isPlaceholder = oldDesc === 'No description' || oldDesc === ''
-
-                    // Force update if we have a better description (even if it's just cleaned)
-                    // and ensure we NEVER save "No description" back to DB
-                    if (newDesc && newDesc !== 'No description') {
-                        if (newDesc !== oldDesc || isPlaceholder) {
-                            console.log(`[DEBUG_DESC] Updating video caption in DB.`)
-                            storageService.run("UPDATE videos SET description = ? WHERE id = ?", [newDesc, video.id])
-                            data.description = newDesc
-                        }
-                    }
-                }
-                if (meta.author) {
-                    dbMeta = { ...dbMeta, author: meta.author }
-                    storageService.run("UPDATE videos SET metadata = ? WHERE id = ?", [JSON.stringify(dbMeta), video.id])
-                }
-            }
-
-            storageService.run("UPDATE videos SET local_path = ?, status = 'downloaded' WHERE id = ?", [finalPath, video.id])
-        }
-
-        // 4. Create PUBLISH job with video info
-        if (data.targetAccounts && data.targetAccounts.length > 0) {
-            this.updateJobData(job.id, { ...data, status: 'Scheduling publication...' })
-
-            // Critical Safeguard: Ensure no "No description" leaks to publish job
-            const originalDescription = (data.description === 'No description' ? '' : data.description) || ''
-            let captionPattern = originalDescription // Default to just original description
-
-            // 1. Determine Pattern (Custom Override OR Campaign Template)
-            if (data.customCaption !== undefined && data.customCaption !== null) {
-                console.log(`[JobQueue] Using custom caption pattern: "${data.customCaption}"`)
-                captionPattern = data.customCaption
-            } else {
-                // Fetch Campaign Config for Template
-                const campaign = storageService.get('SELECT config_json FROM campaigns WHERE id = ?', [job.campaign_id])
-                if (campaign && campaign.config_json) {
+                // CRITICAL FIX: If video doesn't exist (because handleScan didn't insert it), create it now!
+                let video = storageService.get("SELECT id, metadata, description FROM videos WHERE platform_id = ?", [data.platform_id])
+                if (!video) {
+                    console.log(`[DEBUG_DESC] Video record missing for ${data.platform_id}. Creating new record...`)
                     try {
-                        const config = JSON.parse(campaign.config_json)
-                        console.log(`[JobQueue] Campaign config loaded. Template: "${config.captionTemplate}"`)
-                        if (config.captionTemplate) {
-                            captionPattern = config.captionTemplate
+                        const now = new Date().toISOString()
+                        const initialMeta = {
+                            author: meta ? meta.author : null,
+                            stats: data.videoStats
                         }
-                    } catch (e) {
-                        console.error('Failed to load campaign config for caption:', e)
+                        storageService.run(
+                            `INSERT INTO videos (platform, platform_id, url, description, status, metadata, created_at)
+                            VALUES ('tiktok', ?, ?, ?, 'downloading', ?, ?)`,
+                            [
+                                data.platform_id,
+                                data.url,
+                                data.description || '', // Use the description we just updated from meta
+                                JSON.stringify(initialMeta),
+                                now
+                            ]
+                        )
+                        video = storageService.get("SELECT id, metadata, description FROM videos WHERE platform_id = ?", [data.platform_id])
+                    } catch (e: any) {
+                        console.error(`[JobQueue] Failed to create video record:`, e)
                     }
-                } else {
-                    console.log(`[JobQueue] No campaign config found or empty. Using default pattern (original).`)
                 }
+
+                if (video) {
+                    let dbMeta = {}
+                    try { dbMeta = JSON.parse(video.metadata || '{}') } catch (e) { }
+
+                    // Merge new metadata if available
+                    if (meta) {
+                        if (meta.description) {
+                            const oldDesc = video.description || ''
+                            const newDesc = meta.description
+                            const isPlaceholder = oldDesc === 'No description' || oldDesc === ''
+
+                            if (newDesc && newDesc !== 'No description') {
+                                if (newDesc !== oldDesc || isPlaceholder) {
+                                    console.log(`[DEBUG_DESC] Updating video caption in DB.`)
+                                    storageService.run("UPDATE videos SET description = ? WHERE id = ?", [newDesc, video.id])
+                                    data.description = newDesc // Update job data's description
+                                }
+                            }
+                        }
+                        if (meta.author) {
+                            dbMeta = { ...dbMeta, author: meta.author }
+                            storageService.run("UPDATE videos SET metadata = ? WHERE id = ?", [JSON.stringify(dbMeta), video.id])
+                        }
+                    }
+                    storageService.run("UPDATE videos SET local_path = ?, status = 'downloaded' WHERE id = ?", [filePath, video.id])
+                }
+
+                finalPath = filePath
+                data.video_path = filePath
+
+                storageService.run("UPDATE jobs SET status = 'downloaded', data_json = ? WHERE id = ?", [JSON.stringify(data), job.id])
+                job.status = 'downloaded' // advance state
+            } catch (e: any) {
+                storageService.run("UPDATE jobs SET status = 'download_failed' WHERE id = ?", [job.id])
+                throw e
             }
+        }
 
-            console.log(`[JobQueue] [DOWNLOAD #${job.id}] Resolving caption. Pattern: "${captionPattern}", Original: "${originalDescription.substring(0, 30)}..."`)
+        // Step 2: Edit
+        if (job.status === 'edit_retry' || job.status === 'edit_failed' || job.status === 'downloaded' || job.status === 'editing') {
+            this.updateJobData(job.id, { ...data, status: 'Processing video (AI editing)...' })
 
-            // 2. Generate Final Caption using Pattern
-            const finalCaption = CaptionGenerator.generate(captionPattern, {
-                original: originalDescription,
-                time: new Date(), // Or use scheduleTime if we knew it
-                author: meta ? meta.author : 'user'
-            })
-            console.log(`[JobQueue] [DOWNLOAD] Caption Generation Outcome:`)
-            console.log(`  - Pattern Input: "${captionPattern}"`)
-            console.log(`  - Original Source: "${originalDescription.substring(0, 50)}..."`)
-            console.log(`  - FINAL OUTPUT: "${finalCaption}"`)
+            try {
+                const campaign = storageService.get('SELECT * FROM campaigns WHERE id = ?', [job.campaign_id])
+                if (campaign && campaign.config_json) {
+                    const config = JSON.parse(campaign.config_json)
+                    if (config.editPipeline && config.editPipeline.effects && config.editPipeline.effects.length > 0) {
+                        const { videoEditEngine } = require('./video-edit/VideoEditEngine')
+                        const processedPath = finalPath.replace('.mp4', '_edited.mp4')
+                        await videoEditEngine.render(finalPath, config.editPipeline, processedPath)
+                        finalPath = processedPath
+                        data.video_path = finalPath
+                    }
+                }
+                storageService.run("UPDATE jobs SET status = 'edited', data_json = ? WHERE id = ?", [JSON.stringify(data), job.id])
+                job.status = 'edited'
+            } catch (e: any) {
+                storageService.run("UPDATE jobs SET status = 'edit_failed' WHERE id = ?", [job.id])
+                throw e
+            }
+        }
 
-            console.log(`[JobQueue] [DOWNLOAD #${job.id}] Creating PUBLISH jobs for accounts: ${data.targetAccounts.join(', ')}`)
-            for (const accId of data.targetAccounts) {
-                // Get account info for display
-                const acc = storageService.get('SELECT username, display_name FROM publish_accounts WHERE id = ?', [accId])
-                storageService.run(
-                    `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'PUBLISH', 'pending', datetime('now'), ?)`,
-                    [
-                        job.campaign_id,
-                        JSON.stringify({
-                            video_path: finalPath,
-                            platform_id: data.platform_id,
-                            account_id: accId,
-                            account_name: acc?.display_name || acc?.username || 'Unknown',
-                            account_username: acc?.username || '',
-                            caption: finalCaption,
-                            thumbnail: data.thumbnail || '',
-                            videoStats: data.videoStats || {},
-                            advancedVerification: data.advancedVerification,
-                            status: 'Queued: Publish'
-                        })
-                    ]
+        // Step 3: Publish
+        if (job.status === 'publish_retry' || job.status === 'publish_failed' || job.status === 'edited' || job.status === 'publishing') {
+            this.updateJobData(job.id, { ...data, status: 'Preparing publication...' })
+
+            try {
+                let accountId = data.targetAccount
+                const acc = storageService.get('SELECT username, display_name FROM publish_accounts WHERE id = ?', [accountId])
+
+                let captionPattern = data.customCaption // Use customCaption if present
+                if (captionPattern === undefined || captionPattern === null) {
+                    // Fallback to campaign template if no custom caption
+                    const campaign = storageService.get('SELECT config_json FROM campaigns WHERE id = ?', [job.campaign_id])
+                    if (campaign && campaign.config_json) {
+                        const config = JSON.parse(campaign.config_json)
+                        if (config.captionTemplate) captionPattern = config.captionTemplate
+                    }
+                }
+                // If still no pattern, use original description
+                if (captionPattern === undefined || captionPattern === null) {
+                    captionPattern = data.description || ''
+                }
+
+                // Ensure no "No description" leaks
+                const originalDescription = (data.description === 'No description' ? '' : data.description) || ''
+
+                const finalCaption = CaptionGenerator.generate(captionPattern, {
+                    original: originalDescription,
+                    time: new Date(),
+                    author: data.source?.name || 'user'
+                })
+
+                const cookies = publishAccountService.getAccountCookies(Number(accountId))
+                if (!cookies || cookies.length === 0) throw new Error(`No valid cookies for account ${accountId}.`)
+
+                this.updateJobData(job.id, { ...data, status: `Publishing to @${acc?.username || 'account'}...` })
+
+                const result = await tiktok.publishVideo(
+                    finalPath,
+                    finalCaption,
+                    cookies,
+                    (msg) => this.updateJobData(job.id, { ...data, status: msg }),
+                    { advancedVerification: data.advancedVerification, username: acc?.username }
                 )
-            }
-        }
 
-        // Store result path for "Open Folder" feature
-        storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [JSON.stringify({ video_path: finalPath, folder_path: require('path').dirname(finalPath) }), job.id])
-    }
+                if (!result.success) {
+                    if (result.debugArtifacts) {
+                        storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [
+                            JSON.stringify({ error: result.error, debugArtifacts: result.debugArtifacts }), job.id
+                        ])
+                    }
+                    throw new Error(result.error || 'Upload failed')
+                }
 
-    private async handlePublish(job: any, data: any, tiktok: TikTokModule) {
-        let { video_path, account_id, caption, account_name } = data
-
-        // Setup dedicated job logger
-        const jobLogPath = require('path').join(require('electron').app.getPath('userData'), 'logs', `job_${job.id}_publish.log`)
-        require('fs').mkdirSync(require('path').dirname(jobLogPath), { recursive: true })
-
-        const log = (msg: string) => {
-            const line = `[${new Date().toISOString()}] ${msg}\n`
-            console.log(`[Job ${job.id}] ${msg}`)
-            try { require('fs').appendFileSync(jobLogPath, line) } catch (e) { }
-        }
-
-        log(`Starting Publish Job for Account: ${account_name || 'Unknown'}`)
-        this.updateJobData(job.id, { ...data, status: `Publishing to @${account_name || 'account'}...` })
-
-        // 1. Load account cookies
-        log(`Loading cookies for account ID ${account_id}...`)
-        const cookies = publishAccountService.getAccountCookies(Number(account_id))
-        if (!cookies || cookies.length === 0) {
-            throw new Error(`No valid cookies for account ${account_id}. Please re-login.`)
-        }
-
-        // 2. Verify video file exists
-        const fs = require('fs')
-        if (!fs.existsSync(video_path)) {
-            throw new Error(`Video file not found: ${video_path}`)
-        }
-
-        // 3. Publish using TikTok module with Progress Callback
-        this.updateJobData(job.id, { ...data, status: `Initializing upload...` })
-
-        // Final Fallback for empty caption
-        if (!caption || caption === 'No description') {
-            const videoRec = storageService.get("SELECT description FROM videos WHERE platform_id = ?", [data.video_id || data.platform_id])
-            if (videoRec && videoRec.description && videoRec.description !== 'No description') {
-                log(`Caption was empty, using fallback from DB: "${videoRec.description}"`)
-                caption = videoRec.description
-            } else {
-                caption = '' // Force empty if still "No description"
-            }
-        }
-
-        log(`Invoking TikTokModule.publishVideo`)
-        log(`  - Video Absolute Path: ${require('path').resolve(video_path)}`)
-        log(`  - Video Stats (Input): ${JSON.stringify(data.videoStats || {})}`)
-        log(`  - Caption (Original): "${data.caption.substring(0, 50)}..."`)
-        log(`  - Caption (Final Passed to Module): "${caption}"`)
-        log(`  - AdvancedVerification Toggle: ${data.advancedVerification}`)
-
-        const result = await tiktok.publishVideo(
-            video_path,
-            caption || '',
-            cookies,
-            (msg) => {
-                log(`Progress: ${msg}`)
-                this.updateJobData(job.id, { ...data, status: msg })
-            },
-            { advancedVerification: data.advancedVerification, username: data.account_username }
-        )
-
-        if (!result.success) {
-            log(`❌ Publish Failed: ${result.error}`)
-            // Ensure artifacts are saved with absolute paths
-            const res = result as any;
-            if (res.debugArtifacts) {
-                log(`[CRITICAL] Saving debug artifacts to database...`)
-                log(`  Screenshot: ${res.debugArtifacts.screenshot}`)
-                storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [
+                publishResult = result
+                // record success
+                storageService.run("UPDATE jobs SET result_json = ?, metadata = ? WHERE id = ?", [
                     JSON.stringify({
-                        video_path,
-                        account: account_name,
-                        error: result.error,
-                        debugArtifacts: res.debugArtifacts,
-                        logPath: jobLogPath, // Added log path
-                        failed_at: new Date().toISOString()
+                        account: acc?.username,
+                        video_path: finalPath,
+                        video_url: result.videoUrl,
+                        video_id: result.videoId,
+                        published_at: new Date().toISOString(),
+                        is_reviewing: result.isReviewing
                     }),
+                    JSON.stringify({ publish_url: result.videoUrl, publish_id: result.videoId }),
                     job.id
                 ])
+
+                // Update video status in DB
+                if (data.platform_id) {
+                    storageService.run("UPDATE videos SET status = 'published' WHERE platform_id = ?", [data.platform_id])
+                }
+
+                if (result.isReviewing && result.videoId) {
+                    this.startBackgroundStatusCheck(result.videoId, job.id, acc?.username)
+                }
+            } catch (e: any) {
+                storageService.run("UPDATE jobs SET status = 'publish_failed' WHERE id = ?", [job.id])
+                throw e
             }
-            throw new Error(result.error || 'Upload failed (unknown error)')
         }
 
-        // Handle Partial Success (Uploaded but Verification Failed)
-        if (!result.videoId) {
-            console.warn(`[JobQueue] Published but unverified (No ID).`)
-            this.updateJobData(job.id, { ...data, status: `Published (Unverified - Check manually)` })
-
-            // Mark as published anyway since we confirmed the "Post" success message
-            if (data.platform_id) {
-                storageService.run("UPDATE videos SET status = 'published' WHERE platform_id = ?", [data.platform_id])
-            }
-
-            // Store result without ID
-            storageService.run("UPDATE jobs SET result_json = ? WHERE id = ?", [
-                JSON.stringify({
-                    account: account_name,
-                    video_path,
-                    published_at: new Date().toISOString(),
-                    warning: 'Verification failed'
-                }),
-                job.id
-            ])
-            return;
-        }
-
-        if (result.isReviewing && result.videoId) {
-            // Update video status to 'reviewing'
-            if (data.platform_id) {
-                storageService.run("UPDATE videos SET status = 'reviewing', platform_id = ? WHERE platform_id = ?", [result.videoId, data.platform_id])
-            }
-
-            // Start background polling (10 mins, every 30s)
-            this.startBackgroundStatusCheck(result.videoId, job.id, data.account_username || account_name)
-
-            this.updateJobData(job.id, { ...data, status: `In Review (Polling started)...` })
-        } else {
-            // Mark video as published in DB
-            if (data.platform_id) {
-                storageService.run("UPDATE videos SET status = 'published' WHERE platform_id = ?", [data.platform_id])
-            }
-            this.updateJobData(job.id, { ...data, status: `Published to @${account_name}` })
-        }
-
-        // Store result with video URL & ID
-        // Store result with video URL & ID
-        storageService.run("UPDATE jobs SET result_json = ?, metadata = ? WHERE id = ?", [
-            JSON.stringify({
-                account: account_name,
-                video_path,
-                video_url: result.videoUrl,
-                video_id: result.videoId,
-                published_at: new Date().toISOString(),
-                is_reviewing: result.isReviewing
-            }),
-            JSON.stringify({
-                publish_url: result.videoUrl,
-                publish_id: result.videoId
-            }),
-            job.id
-        ])
+        return publishResult
     }
+
 
     private checkCampaignCompletion(campaignId: number) {
         try {
-            // Check for any pending or running jobs (SCAN, DOWNLOAD, PUBLISH)
-            const pendingJobs = storageService.get(
-                "SELECT COUNT(*) as count FROM jobs WHERE campaign_id = ? AND status IN ('pending', 'running')",
+            // Check for any pending or running jobs (SCAN, EXECUTE)
+            const activeJobs = storageService.get(
+                "SELECT COUNT(*) as count FROM jobs WHERE campaign_id = ? AND status IN ('queued', 'scheduled', 'downloading', 'edited', 'editing', 'publishing', 'running', 'pending')",
                 [campaignId]
             ).count
 
-            if (pendingJobs > 0) {
-                console.log(`[CampaignCheck] ID: ${campaignId} has ${pendingJobs} pending/running jobs. Skipping.`)
+            if (activeJobs > 0) {
+                console.log(`[CampaignCheck] ID: ${campaignId} has ${activeJobs} active/queued jobs. Skipping.`)
                 return
             }
 
@@ -1141,15 +1060,15 @@ class JobQueue {
             const config = JSON.parse(campaign.config_json || '{}')
             const hasSources = (config.sources?.channels?.length > 0) || (config.sources?.keywords?.length > 0)
 
-            // Safety: If campaign has sources, require at least 1 completed PUBLISH job
-            // to avoid marking as finished before the pipeline (Scan → Download → Publish) runs.
+            // Safety: If campaign has sources, require at least 1 completed EXECUTE job
+            // to avoid marking as finished before the pipeline runs.
             if (hasSources) {
                 const completedPublish = storageService.get(
-                    "SELECT COUNT(*) as count FROM jobs WHERE campaign_id = ? AND type = 'PUBLISH' AND status IN ('completed', 'uploaded')",
+                    "SELECT COUNT(*) as count FROM jobs WHERE campaign_id = ? AND type = 'EXECUTE' AND status IN ('published', 'uploaded', 'completed')",
                     [campaignId]
                 ).count
                 if (completedPublish === 0) {
-                    console.log(`[CampaignCheck] ID: ${campaignId} No completed publish jobs yet. Waiting for pipeline to finish.`)
+                    console.log(`[CampaignCheck] ID: ${campaignId} No completed EXECUTE jobs yet. Waiting for pipeline to finish.`)
                     return
                 }
             }

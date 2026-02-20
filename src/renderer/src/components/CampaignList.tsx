@@ -12,6 +12,7 @@ interface Props {
     onPause?: (id: number) => void
     onClone?: (id: number) => void
     onReschedule?: (id: number) => void
+    onResumeAll?: () => void
     processingIds?: Set<number>
 }
 
@@ -103,6 +104,12 @@ const CampaignItem = memo(({
         statusBadge = { label: '✅ Finished', bg: 'rgba(34,197,94,0.12)', color: '#4ade80' }
     } else if (c.status === 'active') {
         statusBadge = { label: '● Active', bg: 'rgba(74,222,128,0.12)', color: '#4ade80' }
+    } else if (c.status === 'paused') {
+        if ((c as any).paused_at_startup) {
+            statusBadge = { label: '⏸ Auto-Paused', bg: 'rgba(234,179,8,0.12)', color: '#eab308' }
+        } else {
+            statusBadge = { label: '⏸ Paused', bg: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)' }
+        }
     }
 
     return (
@@ -168,9 +175,9 @@ const CampaignItem = memo(({
                         )}
                         {statusBadge.label}
                     </span>
-                    {(c.missed_count || 0) > 0 ? (
-                        <span className="badge badge-error" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            ⚠️ Missed ({c.missed_count})
+                    {((c as any).missed_jobs_count || 0) > 0 ? (
+                        <span className="badge badge-error" style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(239,68,68,0.12)', color: '#ef4444' }}>
+                            ⚠️ Missed ({(c as any).missed_jobs_count})
                         </span>
                     ) : null}
                 </div>
@@ -235,7 +242,15 @@ const CampaignItem = memo(({
                             ⏸ Pause
                         </button>
                     ) : (
-                        needsReview ? (
+                        c.status === 'paused' ? (
+                            <button
+                                className="btn btn-secondary btn-sm"
+                                onClick={(e) => { e.stopPropagation(); onToggleStatus(c.id, c.status); }}
+                                style={{ padding: '4px 8px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', color: '#4ade80', borderColor: '#4ade80' }}
+                            >
+                                ▶ Resume
+                            </button>
+                        ) : needsReview ? (
                             <button className="btn btn-primary btn-sm"
                                 onClick={(e) => { e.stopPropagation(); onSelect(c) }}
                                 style={{ padding: '4px 8px', fontSize: '12px' }}>
@@ -299,8 +314,12 @@ export const CampaignList: React.FC<Props> = ({
     onRun,
     onPause,
     onClone,
+    onReschedule,
+    onResumeAll,
     processingIds
 }) => {
+    const hasPausedCampaigns = campaigns.some(c => c.status === 'paused')
+
     return (
         <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-primary)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -310,9 +329,16 @@ export const CampaignList: React.FC<Props> = ({
                         ({campaigns.length})
                     </span>
                 </div>
-                <button className="btn btn-primary btn-sm" onClick={onCreate}>
-                    + New
-                </button>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                    {hasPausedCampaigns && onResumeAll && (
+                        <button className="btn btn-secondary btn-sm" onClick={onResumeAll} style={{ color: '#4ade80', borderColor: '#4ade80' }}>
+                            ▶ Resume All
+                        </button>
+                    )}
+                    <button className="btn btn-primary btn-sm" onClick={onCreate}>
+                        + New
+                    </button>
+                </div>
             </div>
 
             <div style={{ flex: 1, overflowY: 'auto', padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>

@@ -23,6 +23,9 @@ export interface CampaignData {
     scan_pending_count?: number
     scanned_count?: number
     total_recent?: number
+    has_missed_jobs?: boolean
+    missed_jobs_count?: number
+    paused_at_startup?: boolean
 }
 
 interface CampaignState {
@@ -253,7 +256,10 @@ export const selectCampaignProgress = (state: SliceRoot, campaignId: number) => 
         totalScanned,
         channelCount,
         keywordCount,
-        hasSources
+        hasSources,
+        hasMissedJobs: !!c.has_missed_jobs,
+        missedJobsCount: c.missed_jobs_count || 0,
+        pausedAtStartup: !!c.paused_at_startup
     }
 }
 

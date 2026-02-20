@@ -50,7 +50,7 @@ class SchedulerService {
 
                 // Check if there's already a pending/running job for this campaign
                 const existingJob = storageService.get(
-                    "SELECT id, status, scheduled_for FROM jobs WHERE campaign_id = ? AND status IN ('pending', 'running') LIMIT 1",
+                    "SELECT id, status, scheduled_for FROM jobs WHERE campaign_id = ? AND status IN ('queued', 'scheduled', 'downloading', 'editing', 'publishing', 'running') LIMIT 1",
                     [campaign.id]
                 )
                 if (existingJob) {
@@ -113,7 +113,8 @@ class SchedulerService {
         // If it's a scheduled check, we abort if anything is pending or running.
 
         const runningJob = storageService.get(
-            "SELECT id FROM jobs WHERE campaign_id = ? AND status = 'running' LIMIT 1",
+            // Anything currently active
+            "SELECT id FROM jobs WHERE campaign_id = ? AND status IN ('running', 'downloading', 'editing', 'publishing') LIMIT 1",
             [id]
         )
         if (runningJob) {
@@ -122,7 +123,8 @@ class SchedulerService {
         }
 
         const pendingJob = storageService.get(
-            "SELECT id, scheduled_for FROM jobs WHERE campaign_id = ? AND status = 'pending' ORDER BY scheduled_for ASC LIMIT 1",
+            // include queued and scheduled
+            "SELECT id, scheduled_for FROM jobs WHERE campaign_id = ? AND status IN ('queued', 'scheduled') ORDER BY scheduled_for ASC LIMIT 1",
             [id]
         )
 
@@ -235,7 +237,7 @@ class SchedulerService {
                         customCaption: item.customCaption
                     }, null, 2));
                     storageService.run(
-                        `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'DOWNLOAD', 'pending', ?, ?)`,
+                        `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'EXECUTE', 'queued', ?, ?)`,
                         [
                             id,
                             itemTime.toISOString(),
@@ -287,7 +289,7 @@ class SchedulerService {
                         console.log(`[Scheduler] [Campaign ${id}] Creating SCAN job for source: ${sourceId}`);
                         console.log(`[Scheduler] [Campaign ${id}] Scheduled for: ${scheduledFor}`);
                         storageService.run(
-                            `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'SCAN', 'pending', ?, ?)`,
+                            `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'SCAN', 'queued', ?, ?)`,
                             [id, scheduledFor, JSON.stringify(jobData)]
                         )
                     }
@@ -304,10 +306,10 @@ class SchedulerService {
                             advancedVerification: config.advancedVerification
                         }
 
-                        const type = item.type === 'download' ? 'DOWNLOAD' : 'PUBLISH'
+                        const type = 'EXECUTE'
 
                         storageService.run(
-                            `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, ?, 'pending', ?, ?)`,
+                            `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, ?, 'queued', ?, ?)`,
                             [id, type, scheduledFor, JSON.stringify(jobData)]
                         )
                     }
@@ -335,7 +337,7 @@ class SchedulerService {
                 console.log(`Scheduler: Scheduling ${config.videos.length} single videos starting at ${scheduleTime.toISOString()}`)
                 for (const v of config.videos) {
                     storageService.run(
-                        `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'DOWNLOAD', 'pending', ?, ?)`,
+                        `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'EXECUTE', 'queued', ?, ?)`,
                         [
                             id,
                             scheduleTime.toISOString().replace('T', ' ').slice(0, 19),
@@ -373,7 +375,7 @@ class SchedulerService {
                 }
 
                 storageService.run(
-                    `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'SCAN', 'pending', ?, ?)`,
+                    `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'SCAN', 'queued', ?, ?)`,
                     [
                         id,
                         hasVideos ? scheduleTime.toISOString().replace('T', ' ').slice(0, 19) : null,

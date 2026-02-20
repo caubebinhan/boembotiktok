@@ -425,18 +425,35 @@ app.whenReady().then(async () => {
         })
 
         ipcMain.handle('job:retry', async (_event: any, jobId: number) => {
+            const job = storageService.get("SELECT status FROM jobs WHERE id = ?", [jobId])
+            if (!job) return { success: false }
+
+            let retryStatus = 'queued'
+            if (job.status === 'download_failed') retryStatus = 'download_retry'
+            else if (job.status === 'edit_failed') retryStatus = 'edit_retry'
+            else if (job.status === 'publish_failed' || job.status === 'scan_failed_captcha') retryStatus = 'publish_retry'
+
             storageService.run(
-                "UPDATE jobs SET status = 'pending', error_message = NULL, started_at = NULL, completed_at = NULL, scheduled_for = datetime('now') WHERE id = ? AND status = 'failed'",
-                [jobId]
+                "UPDATE jobs SET status = ?, error_message = NULL, started_at = NULL, completed_at = NULL, scheduled_for = datetime('now') WHERE id = ?",
+                [retryStatus, jobId]
             )
             return { success: true }
         })
 
         ipcMain.handle('job:retry-all', async (_event: any, campaignId: number) => {
-            storageService.run(
-                "UPDATE jobs SET status = 'pending', error_message = NULL, started_at = NULL, completed_at = NULL, scheduled_for = datetime('now') WHERE campaign_id = ? AND status = 'failed'",
-                [campaignId]
-            )
+            const failedJobs = storageService.getAll("SELECT id, status FROM jobs WHERE campaign_id = ? AND status LIKE '%failed%'", [campaignId])
+
+            for (const job of failedJobs) {
+                let retryStatus = 'queued'
+                if (job.status === 'download_failed') retryStatus = 'download_retry'
+                else if (job.status === 'edit_failed') retryStatus = 'edit_retry'
+                else if (job.status === 'publish_failed' || job.status === 'scan_failed_captcha') retryStatus = 'publish_retry'
+
+                storageService.run(
+                    "UPDATE jobs SET status = ?, error_message = NULL, started_at = NULL, completed_at = NULL, scheduled_for = datetime('now') WHERE id = ?",
+                    [retryStatus, job.id]
+                )
+            }
             return { success: true }
         })
 

@@ -181,6 +181,12 @@ class StorageService {
                 // We might already have 'type' or 'platform', let's ensure we have what we need
             } catch (e) { /* ignore */ }
 
+            // Refactor Campaign Spec fields
+            try { this.db.run("ALTER TABLE campaigns ADD COLUMN has_missed_jobs BOOLEAN DEFAULT 0") } catch (e) { /* ignore */ }
+            try { this.db.run("ALTER TABLE campaigns ADD COLUMN missed_jobs_count INTEGER DEFAULT 0") } catch (e) { /* ignore */ }
+            try { this.db.run("ALTER TABLE campaigns ADD COLUMN paused_at_startup BOOLEAN DEFAULT 0") } catch (e) { /* ignore */ }
+            try { this.db.run("ALTER TABLE campaigns ADD COLUMN scan_state_json TEXT") } catch (e) { /* ignore */ }
+
             // Individual column migrations to prevent one failure blocking others
             try { this.db.run("ALTER TABLE jobs ADD COLUMN data_json TEXT") } catch (e) { /* ignore */ }
             try { this.db.run("ALTER TABLE jobs ADD COLUMN result_json TEXT") } catch (e) { /* ignore */ }

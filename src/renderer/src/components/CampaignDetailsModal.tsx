@@ -346,6 +346,41 @@ export const CampaignDetailsModal: React.FC<CampaignDetailsModalProps> = ({ camp
                                                                             </button>
                                                                         )}
 
+                                                                        {/* Retry Buttons for Failed Jobs */}
+                                                                        {job.status === 'download_failed' && (
+                                                                            <button
+                                                                                className="btn-xs btn-primary"
+                                                                                onClick={async () => {
+                                                                                    await (window as any).api.invoke('job:retry', job.id);
+                                                                                    loadJobs();
+                                                                                }}
+                                                                            >
+                                                                                🔄 Retry Download
+                                                                            </button>
+                                                                        )}
+                                                                        {job.status === 'edit_failed' && (
+                                                                            <button
+                                                                                className="btn-xs btn-primary"
+                                                                                onClick={async () => {
+                                                                                    await (window as any).api.invoke('job:retry', job.id);
+                                                                                    loadJobs();
+                                                                                }}
+                                                                            >
+                                                                                🔄 Retry Edit
+                                                                            </button>
+                                                                        )}
+                                                                        {(job.status === 'publish_failed' || job.status === 'failed') && (
+                                                                            <button
+                                                                                className="btn-xs btn-primary"
+                                                                                onClick={async () => {
+                                                                                    await (window as any).api.invoke('job:retry', job.id);
+                                                                                    loadJobs();
+                                                                                }}
+                                                                            >
+                                                                                🔄 Retry Publish
+                                                                            </button>
+                                                                        )}
+
                                                                         {/* Debug Buttons for Failed Jobs */}
                                                                         {(res.screenshot_path || res?.debugArtifacts?.screenshot) && (
                                                                             <button
