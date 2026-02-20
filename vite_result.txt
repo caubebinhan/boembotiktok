@@ -1,0 +1,21 @@
+SUCCESS
+[36mvite v5.4.21 [32mbuilding SSR bundle for production...[36m[39m
+transforming...
+[32m✓[39m 48 modules transformed.
+rendering chunks...
+[2mout/main/[22m[36mindex.js  [39m[1m[2m300.50 kB[22m[1m[22m
+[32m✓ built in 640ms[39m
+[36mvite v5.4.21 [32mbuilding SSR bundle for production...[36m[39m
+transforming...
+[32m✓[39m 1 modules transformed.
+rendering chunks...
+[2mout/preload/[22m[36mindex.js  [39m[1m[2m0.84 kB[22m[1m[22m
+[32m✓ built in 12ms[39m
+[36mvite v5.4.21 [32mbuilding for production...[36m[39m
+transforming...
+[32m✓[39m 2365 modules transformed.
+rendering chunks...
+[2m../../out/renderer/[22m[32mindex.html                 [39m[1m[2m    0.42 kB[22m[1m[22m
+[2m../../out/renderer/[22m[35massets/index-w0XjAhRX.css  [39m[1m[2m   50.24 kB[22m[1m[22m
+[2m../../out/renderer/[22m[36massets/index-CwdTX5E_.js   [39m[1m[33m1,240.95 kB[39m[22m
+[32m✓ built in 9.03s[39m

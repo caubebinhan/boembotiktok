@@ -50,39 +50,33 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
                 }
 
                 // Group jobs by video to determine final status per video
-                const videoJobMap = new Map<string, { download?: any, publish?: any }>()
-                jobList.forEach(job => {
-                    let vid = null
-                    try {
-                        const d = JSON.parse(job.data_json || '{}')
-                        vid = d.platform_id || d.video_id || d.video?.id
-                        if (vid) uniqueVideos.add(vid)
-                    } catch { }
-                    if (!vid) return
+                const videoLatestJob = new Map<string, any>()
 
-                    const current = videoJobMap.get(vid) || {}
-                    if (job.type === 'DOWNLOAD') current.download = job
-                    if (job.type === 'PUBLISH') {
-                        if (!current.publish || job.id > current.publish.id) {
-                            current.publish = job
+                jobList.forEach(job => {
+                    if (job.type !== 'EXECUTE') return
+
+                    try {
+                        const data = JSON.parse(job.data_json || '{}')
+                        const vid = data.platform_id || data.video_id || data.video?.id
+                        if (!vid) return
+
+                        // Keep only LATEST job (highest ID = most recent)
+                        if (!videoLatestJob.has(vid) || job.id > videoLatestJob.get(vid).id) {
+                            videoLatestJob.set(vid, job)
                         }
-                    }
-                    videoJobMap.set(vid, current)
+                    } catch { }
                 })
 
-                newStats.scanned = uniqueVideos.size
+                newStats.scanned = videoLatestJob.size
 
-                videoJobMap.forEach(({ publish, download }) => {
-                    const job = publish || download
-                    if (!job) return
-
+                videoLatestJob.forEach((job) => {
                     const status = job.status?.toLowerCase() || ''
-                    if (status === 'pending') newStats.queued++
-                    else if (status === 'processing' || status === 'running' || status === 'preparing') newStats.preparing++
-                    else if (status === 'uploading') newStats.uploading++
-                    else if (status === 'completed' || status === 'success') newStats.published++
+                    if (status === 'queued' || status === 'scheduled' || status === 'pending') newStats.queued++
+                    else if (status === 'downloading' || status === 'editing' || status === 'downloaded' || status === 'edited' || status === 'processing' || status === 'running' || status === 'preparing') newStats.preparing++
+                    else if (status === 'publishing' || status === 'uploading') newStats.uploading++
+                    else if (status === 'published' || status === 'uploaded' || status === 'completed' || status === 'success') newStats.published++
                     else if (status.includes('failed')) newStats.failed++
-                    else if (status === 'skipped') newStats.skipped++
+                    else if (status === 'skipped' || status === 'cancelled') newStats.skipped++
                 })
                 setStats(newStats)
 
@@ -99,7 +93,7 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
 
     useEffect(() => {
         loadData()
-        const interval = setInterval(loadData, 5000)
+        const interval = setInterval(loadData, 2000)
 
         // Listen for realtime updates
         // @ts-ignore
@@ -205,7 +199,23 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
     // Check if any SCAN jobs are running (pending or processing)
     const isScanRunning = jobs.some(j => j.type === 'SCAN' && ['pending', 'processing', 'running'].includes(j.status?.toLowerCase()))
 
-    const isRunning = isProcessing || isScanRunning || stats.queued > 0 || stats.preparing > 0 || stats.uploading > 0
+    // Check if there are scan jobs that are queued but not running yet
+    const hasPendingScan = jobs.some(j => j.type === 'SCAN' && ['queued', 'scheduled'].includes(j.status?.toLowerCase()))
+
+    // Check ACTUAL job states, not stats
+    const hasActiveJobs = jobs.some(j =>
+        j.type === 'EXECUTE' &&
+        ['queued', 'scheduled', 'downloading', 'editing', 'publishing', 'downloaded', 'edited'].includes(j.status?.toLowerCase())
+    )
+
+    const hasScanningJobs = jobs.some(j =>
+        j.type === 'SCAN' &&
+        ['queued', 'scheduled', 'running', 'pending', 'processing'].includes(j.status?.toLowerCase())
+    )
+
+    const isRunning = isProcessing || hasActiveJobs || hasScanningJobs
+
+    const isWaitingForScan = hasPendingScan && !isRunning && !isScanRunning && campaign.status === 'active'
 
     return (
         <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
@@ -215,6 +225,8 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
                 onPause={handlePause}
                 onRefresh={loadData}
                 isRunning={isRunning}
+                isScanning={isScanRunning}
+                isWaitingForScan={isWaitingForScan}
                 nextScan={nextScan}
             />
 

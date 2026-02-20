@@ -26,10 +26,10 @@ class CampaignService {
     getAll() {
         return storageService.getAll(`
             SELECT c.*, 
-            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.status IN ('queued', 'scheduled')) as queued_count,
+            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.type = 'EXECUTE' AND j.status IN ('queued', 'scheduled')) as queued_count,
             (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.type = 'EXECUTE' AND j.status IN ('downloading', 'editing')) as preparing_count,
             (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.type = 'EXECUTE' AND j.status = 'publishing') as uploading_count,
-            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.type = 'EXECUTE' AND j.status = 'published') as published_count,
+            (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.type = 'EXECUTE' AND j.status IN ('published', 'uploaded')) as published_count,
             (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.type = 'EXECUTE' AND j.status = 'downloaded') as downloaded_count,
             (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.status LIKE '%_failed') as failed_count,
             (SELECT COUNT(*) FROM jobs j WHERE j.campaign_id = c.id AND j.status IN ('skipped', 'cancelled')) as skipped_count,

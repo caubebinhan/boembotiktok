@@ -13,7 +13,7 @@ class StorageService {
 
     async init(): Promise<void> {
         this.dbPath = path.join(app.getPath('userData'), 'boembo.sqlite')
-        console.log('Database path:', this.dbPath)
+        //console.log('Database path:', this.dbPath)
 
         try {
             const SQL = await initSqlJs({
@@ -28,16 +28,16 @@ class StorageService {
             if (await fs.pathExists(this.dbPath)) {
                 const buffer = await fs.readFile(this.dbPath)
                 this.db = new SQL.Database(buffer)
-                console.log('Loaded existing database')
+                //console.log('Loaded existing database')
             } else {
                 this.db = new SQL.Database()
-                console.log('Created new database')
+                //console.log('Created new database')
                 await this.save()
             }
 
             await this.runMigrations()
         } catch (error) {
-            console.error('Failed to initialize database:', error)
+            //console.error('Failed to initialize database:', error)
             throw error
         }
     }
@@ -61,6 +61,7 @@ class StorageService {
         target_account_id INTEGER,
         status TEXT DEFAULT 'active',
         schedule_cron TEXT,
+        campaign_mode TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
@@ -69,8 +70,11 @@ class StorageService {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         campaign_id INTEGER,
         video_id INTEGER,
+        parent_job_id INTEGER,
         type TEXT NOT NULL,
         status TEXT DEFAULT 'pending',
+        plugin_stage TEXT DEFAULT 'pending',
+        last_scanned_at DATETIME,
         priority INTEGER DEFAULT 0,
         retry_count INTEGER DEFAULT 0,
         max_retries INTEGER DEFAULT 3,
@@ -85,6 +89,7 @@ class StorageService {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         platform TEXT NOT NULL,
         platform_id TEXT NOT NULL,
+        campaign_id INTEGER,
         url TEXT NOT NULL,
         title TEXT,
         description TEXT,
@@ -196,10 +201,21 @@ class StorageService {
             try { this.db.run("ALTER TABLE jobs ADD COLUMN metadata TEXT") } catch (e) { /* ignore */ }
             try { this.db.run("ALTER TABLE videos ADD COLUMN posted_at DATETIME") } catch (e) { /* ignore */ }
 
+            // Refactor Phase 7
+            try { this.db.run("ALTER TABLE videos ADD COLUMN campaign_id INTEGER") } catch (e) { /* ignore */ }
+            try { this.db.run("ALTER TABLE jobs ADD COLUMN parent_job_id INTEGER") } catch (e) { /* ignore */ }
+            try { this.db.run("ALTER TABLE jobs ADD COLUMN plugin_stage TEXT DEFAULT 'pending'") } catch (e) { /* ignore */ }
+            try { this.db.run("ALTER TABLE jobs ADD COLUMN last_scanned_at DATETIME") } catch (e) { /* ignore */ }
+            try { this.db.run("ALTER TABLE campaigns ADD COLUMN campaign_mode TEXT") } catch (e) { /* ignore */ }
+
+            try { this.db.run("CREATE INDEX IF NOT EXISTS idx_jobs_campaign_status ON jobs(campaign_id, status)") } catch (e) { /* ignore */ }
+            try { this.db.run("CREATE INDEX IF NOT EXISTS idx_jobs_scheduled ON jobs(scheduled_for, status)") } catch (e) { /* ignore */ }
+            try { this.db.run("CREATE INDEX IF NOT EXISTS idx_videos_platform_id ON videos(platform_id)") } catch (e) { /* ignore */ }
+
             await this.save()
-            console.log('Migrations executed')
+            //console.log('Migrations executed')
         } catch (err) {
-            console.error('Migration failed:', err)
+            //console.error('Migration failed:', err)
         }
     }
 
@@ -215,10 +231,10 @@ class StorageService {
         if (!this.db) throw new Error('DB not initialized')
 
         const masked = this.maskParams(sql, params);
-        console.log(`[StorageService] [RUN] SQL: ${sql.replace(/\s+/g, ' ')} | Params:`, JSON.stringify(masked));
+        //console.log(`[StorageService] [RUN] SQL: ${sql.replace(/\s+/g, ' ')} | Params:`, JSON.stringify(masked));
 
         this.db.run(sql, params)
-        this.save().catch(e => console.error('[StorageService] Auto-save failed:', e))
+        this.save().catch(() => { /* auto-save error suppressed */ })
 
         const changes = this.db.getRowsModified()
         let lastInsertId = 0
@@ -231,7 +247,7 @@ class StorageService {
             } catch (e) { /* ignore */ }
         }
 
-        console.log(`[StorageService] [RUN] Result: Changes=${changes}, LastInsertId=${lastInsertId}`);
+        //console.log(`[StorageService] [RUN] Result: Changes=${changes}, LastInsertId=${lastInsertId}`);
         return { changes, lastInsertId }
     }
 
@@ -239,14 +255,14 @@ class StorageService {
         if (!this.db) throw new Error('DB not initialized')
 
         const masked = this.maskParams(sql, params);
-        console.log(`[StorageService] [GET] SQL: ${sql.replace(/\s+/g, ' ')} | Params:`, JSON.stringify(masked));
+        //console.log(`[StorageService] [GET] SQL: ${sql.replace(/\s+/g, ' ')} | Params:`, JSON.stringify(masked));
 
         const stmt = this.db.prepare(sql)
         stmt.bind(params)
         const res = stmt.step() ? stmt.getAsObject() : null
         stmt.free()
 
-        console.log(`[StorageService] [GET] Result: ${res ? 'Found (Object)' : 'NotFound'}`);
+        //console.log(`[StorageService] [GET] Result: ${res ? 'Found (Object)' : 'NotFound'}`);
         return res
     }
 
@@ -254,7 +270,7 @@ class StorageService {
         if (!this.db) throw new Error('DB not initialized')
 
         const masked = this.maskParams(sql, params);
-        console.log(`[StorageService] [ALL] SQL: ${sql.replace(/\s+/g, ' ')} | Params:`, JSON.stringify(masked));
+        //console.log(`[StorageService] [ALL] SQL: ${sql.replace(/\s+/g, ' ')} | Params:`, JSON.stringify(masked));
 
         const stmt = this.db.prepare(sql)
         stmt.bind(params)
@@ -264,7 +280,7 @@ class StorageService {
         }
         stmt.free()
 
-        console.log(`[StorageService] [ALL] Result: ${result.length} rows found.`);
+        //console.log(`[StorageService] [ALL] Result: ${result.length} rows found.`);
         return result
     }
 

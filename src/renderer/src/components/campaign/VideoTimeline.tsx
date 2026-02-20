@@ -89,19 +89,20 @@ export const VideoTimeline: React.FC<Props> = ({ videos, jobs, onAction, campaig
         } catch { }
 
         if (videoId) {
-            const current = videoMap.get(videoId) || {}
-            if (job.type === 'DOWNLOAD') current.downloadJob = job
+            const strId = String(videoId)
+            const current = videoMap.get(strId) || {}
+            if (job.type === 'DOWNLOAD' || job.type === 'EXECUTE') current.downloadJob = job
             // Use latest publish job
-            if (job.type === 'PUBLISH') {
+            if (job.type === 'PUBLISH' || job.type === 'EXECUTE') {
                 if (!current.publishJob || job.id > current.publishJob.id) {
                     current.publishJob = job
                 }
             }
             if (!current.videoInfo && videoInfo) current.videoInfo = videoInfo
-            videoMap.set(videoId, current)
+            videoMap.set(strId, current)
 
-            if (!videosFromJobs.has(videoId)) {
-                videosFromJobs.set(videoId, {
+            if (!videosFromJobs.has(strId)) {
+                videosFromJobs.set(strId, {
                     id: videoId,
                     url: videoInfo.url,
                     thumbnail: videoInfo.thumbnail,
@@ -120,7 +121,7 @@ export const VideoTimeline: React.FC<Props> = ({ videos, jobs, onAction, campaig
     // Combine prop videos with ones found in jobs (mostly for Recurrent camps)
     const combinedVideos = [...videos]
     videosFromJobs.forEach((v, id) => {
-        if (!combinedVideos.some(cv => cv.id === id)) {
+        if (!combinedVideos.some(cv => String(cv.id) === id)) {
             combinedVideos.push(v)
         }
     })
@@ -131,7 +132,7 @@ export const VideoTimeline: React.FC<Props> = ({ videos, jobs, onAction, campaig
     // Stats for Recurrent Mode
     const totalScanned = combinedVideos.length
     const totalDownloaded = combinedVideos.filter(v => {
-        const job = videoMap.get(v.id)
+        const job = videoMap.get(String(v.id))
         return job?.downloadJob?.status === 'completed' || v.status === 'downloaded' || v.status === 'published'
     }).length
 
@@ -143,11 +144,11 @@ export const VideoTimeline: React.FC<Props> = ({ videos, jobs, onAction, campaig
         } else if (scanJob?.status === 'running') {
             const data = scanData.status || 'Scanning...'
             statusDisplay = { label: `🔍 ${data}`, color: '#f59e0b' }
+        } else if (scanData.isMonitoring) {
+            statusDisplay = { label: '📡 Monitoring', color: '#8b5cf6' }
         } else if (scanJob?.status === 'pending') {
             const scheduledFor = scanJob.scheduled_for ? new Date(scanJob.scheduled_for).toLocaleString() : ''
             statusDisplay = { label: `⏳ Scan Scheduled${scheduledFor ? ': ' + scheduledFor : ''}`, color: '#f59e0b' }
-        } else if (scanData.isMonitoring) {
-            statusDisplay = { label: '📡 Monitoring', color: '#8b5cf6' }
         } else if (campaign?.status === 'active') {
             statusDisplay = { label: '⚡ Active (Idling)', color: '#3b82f6' }
         } else {
@@ -157,8 +158,8 @@ export const VideoTimeline: React.FC<Props> = ({ videos, jobs, onAction, campaig
 
     // Sort videos
     const sortedVideos = [...combinedVideos].sort((a, b) => {
-        const jobA = videoMap.get(a.id)?.downloadJob || videoMap.get(a.id)?.publishJob
-        const jobB = videoMap.get(b.id)?.downloadJob || videoMap.get(b.id)?.publishJob
+        const jobA = videoMap.get(String(a.id))?.downloadJob || videoMap.get(String(a.id))?.publishJob
+        const jobB = videoMap.get(String(b.id))?.downloadJob || videoMap.get(String(b.id))?.publishJob
         if (jobA?.scheduled_for && jobB?.scheduled_for) {
             return jobA.scheduled_for.localeCompare(jobB.scheduled_for)
         }
@@ -236,7 +237,7 @@ export const VideoTimeline: React.FC<Props> = ({ videos, jobs, onAction, campaig
                 </div>
             ) : (
                 sortedVideos.map(video => {
-                    const jobState = videoMap.get(video.id)
+                    const jobState = videoMap.get(String(video.id))
                     const status = determineVideoStatus(video, jobState?.downloadJob, jobState?.publishJob)
 
                     let source = null

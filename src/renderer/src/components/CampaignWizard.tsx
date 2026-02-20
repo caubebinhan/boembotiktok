@@ -235,6 +235,8 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
     const [videoCount, setVideoCount] = useState(0)
     const [savedVideos, setSavedVideos] = useState<any[]>([])
 
+    const isOneTime = formData.type === 'scan_video'
+
     // Publish accounts for Step 4
     const [publishAccounts, setPublishAccounts] = useState<any[]>([])
     const [addingAccount, setAddingAccount] = useState(false)
@@ -1423,7 +1425,7 @@ export const CampaignWizard: React.FC<CampaignWizardProps> = ({ onClose, onSave,
                         {step === 1 ? 'Cancel' : 'Back'}
                     </button>
                     <div style={{ display: 'flex', gap: '10px' }}>
-                        {step === 5 && (
+                        {step === 5 && isOneTime && (
                             <button className="btn btn-emerald" onClick={() => handleSave(buildSaveData(), true)} disabled={isSaving} title="Ignores schedule and runs immediately">
                                 {isSaving ? '🚀 Starting...' : '🚀 Save & Execute Immediately'}
                             </button>

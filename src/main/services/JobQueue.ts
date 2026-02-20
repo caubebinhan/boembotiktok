@@ -10,6 +10,7 @@ import { campaignService } from './CampaignService'
 import { notificationService } from './NotificationService'
 import { CaptionGenerator } from './CaptionGenerator'
 import { fileLogger } from './FileLogger'
+import { applyCampaignEvent } from './CampaignStateMachine'
 
 class JobQueue {
     private interval: NodeJS.Timeout | null = null
@@ -66,52 +67,30 @@ class JobQueue {
         if (this.interval) return
         console.log('[JobQueue] >>> STARTING WORKER CYCLE <<<');
 
-        // 0. Reset stuck 'running' jobs to 'pending' (crash recovery)
+        // BƯỚC 1: Recovery — reset stuck 'running' jobs
         try {
             console.log('[JobQueue] [Recovery] Checking for stuck jobs (status=running)...');
-            const resetResult = storageService.run("UPDATE jobs SET status = 'pending' WHERE status = 'running'")
-            if (resetResult.changes > 0) {
-                console.log(`[JobQueue] [Recovery] Success: Recovered ${resetResult.changes} stuck jobs.`);
-            } else {
-                console.log('[JobQueue] [Recovery] No stuck jobs found.');
-            }
+            storageService.run("UPDATE jobs SET status = 'queued' WHERE status = 'running' AND type = 'DOWNLOAD'")
+            storageService.run("UPDATE jobs SET status = 'queued' WHERE status = 'running' AND type = 'PUBLISH'")
+            storageService.run("UPDATE jobs SET status = 'pending' WHERE status = 'running' AND type IN ('SCAN', 'MONITOR')")
         } catch (e) {
             console.error('[JobQueue] [Recovery] Error during startup recovery:', e)
         }
 
-        // 0.5. Pause all active campaigns on startup
+        // BƯỚC 2: Kiểm tra missed jobs TRƯỚC KHI pause
         try {
-            console.log('[JobQueue] [Startup] Pausing all active campaigns...');
-            const pauseRes = storageService.run(
-                "UPDATE campaigns SET status = 'paused', paused_at_startup = 1 WHERE status = 'active'"
-            )
-            if (pauseRes && pauseRes.changes > 0) {
-                storageService.run(
-                    "UPDATE jobs SET status = 'paused' WHERE status IN ('queued', 'scheduled', 'download_retry', 'edit_retry', 'publish_retry') AND campaign_id IN (SELECT id FROM campaigns WHERE paused_at_startup = 1)"
-                )
-                console.log(`[JobQueue] [Startup] Paused ${pauseRes.changes} active campaigns.`);
-            }
-        } catch (e) {
-            console.error('[JobQueue] [Startup] Error pausing campaigns:', e)
-        }
-
-        // 1. Check for missed scheduled jobs (pending and in the past)
-        try {
-            console.log('[JobQueue] Checking for missed scheduled jobs...')
             const nowIso = new Date().toISOString()
             const missedJobs = storageService.getAll(`
-                SELECT j.id, j.scheduled_for, j.campaign_id, c.config_json 
-                FROM jobs j
-                JOIN campaigns c ON j.campaign_id = c.id
+                SELECT j.*, c.config_json 
+                FROM jobs j JOIN campaigns c ON j.campaign_id = c.id
                 WHERE j.status IN ('queued', 'scheduled')
-                AND (j.scheduled_for IS NULL OR j.scheduled_for <= ?)
-                ORDER BY j.scheduled_for ASC
+                AND j.scheduled_for <= ?
+                AND c.status = 'active'
             `, [nowIso])
 
             console.log(`[JobQueue] Missed Jobs Check: Found ${missedJobs.length} jobs`)
 
             if (missedJobs.length > 0) {
-                // Group by Campaign
                 const campaignGroups: Record<number, any[]> = {}
                 missedJobs.forEach(job => {
                     if (!campaignGroups[job.campaign_id]) campaignGroups[job.campaign_id] = []
@@ -121,31 +100,43 @@ class JobQueue {
                 for (const [campId, jobs] of Object.entries(campaignGroups)) {
                     const id = parseInt(campId)
                     const config = jobs[0].config_json ? JSON.parse(jobs[0].config_json) : {}
-                    const autoSchedule = config.autoSchedule !== false // Default to true if undefined
 
-                    if (autoSchedule) {
-                        console.log(`[JobQueue] Auto-rescheduling ${jobs.length} jobs for campaign ${id} (Preserving gaps)`)
+                    if (config.autoReschedule !== false) {
+                        console.log(`[JobQueue] Auto-rescheduling ${jobs.length} jobs for campaign ${id}`)
                         await this.shiftCampaignSchedule(id)
                     } else {
-                        console.log(`[JobQueue] Marking ${jobs.length} jobs as 'missed' for campaign ${id} (Manual action required)`)
+                        console.log(`[JobQueue] Marking ${jobs.length} jobs as 'missed' for campaign ${id}`)
                         const ids = jobs.map(j => j.id)
                         const placeholders = ids.map(() => '?').join(',')
                         storageService.run(
                             `UPDATE jobs SET status = 'missed' WHERE id IN (${placeholders})`,
                             ids
                         )
-                        // Also mark the campaign as having missed jobs
-                        storageService.run(
-                            `UPDATE campaigns SET has_missed_jobs = 1, missed_jobs_count = (SELECT COUNT(*) FROM jobs WHERE campaign_id = ? AND status = 'missed') WHERE id = ?`,
-                            [id, id]
-                        )
+                        storageService.run("UPDATE campaigns SET has_missed_jobs = 1 WHERE id = ?", [id])
                     }
                 }
             }
+
+            // BƯỚC 3: Pause tất cả active campaigns (sau khi đã xử lý missed)
+            console.log('[JobQueue] [Startup] Pausing all active campaigns...');
+            const pauseRes = storageService.run(
+                "UPDATE campaigns SET status = 'paused', paused_at_startup = 1 WHERE status = 'active'"
+            )
+            if (pauseRes && pauseRes.changes > 0) {
+                // Chỉ pause jobs trong tương lai
+                storageService.run(`
+                    UPDATE jobs SET status = 'paused' 
+                    WHERE status IN ('queued', 'scheduled') 
+                    AND campaign_id IN (SELECT id FROM campaigns WHERE paused_at_startup = 1)
+                    AND scheduled_for > ?
+                `, [nowIso])
+                console.log(`[JobQueue] [Startup] Paused ${pauseRes.changes} active campaigns.`);
+            }
         } catch (e) {
-            console.error('[JobQueue] Failed to check missed jobs:', e)
+            console.error('[JobQueue] [Startup] Error processing missed jobs or pausing:', e)
         }
 
+        // BƯỚC 4: Start polling interval
         this.interval = setInterval(() => this.processQueue(), this.POLL_INTERVAL)
         console.log('[JobQueue] Started. Queue Active:', !this.isPaused)
     }
@@ -275,21 +266,34 @@ class JobQueue {
 
     async pauseCampaign(campaignId: number) {
         console.log(`[JobQueue] Pausing campaign ${campaignId}...`)
+        // Update campaign status
+        storageService.run("UPDATE campaigns SET status = 'paused' WHERE id = ?", [campaignId])
+
         const res = storageService.run(
-            `UPDATE jobs SET status = 'paused' WHERE campaign_id = ? AND status IN ('queued', 'scheduled', 'missed')`,
+            `UPDATE jobs SET status = 'paused' WHERE campaign_id = ? AND status IN ('queued', 'scheduled', 'missed', 'pending')`,
             [campaignId]
         )
         return res.changes
     }
 
     async resumeCampaign(campaignId: number) {
-        console.log(`[JobQueue] Resuming campaign ${campaignId} (setting paused to queued)...`)
+        console.log(`[JobQueue] Resuming campaign ${campaignId} (setting paused to queued/scheduled/pending)...`)
+        // Update campaign status
+        storageService.run("UPDATE campaigns SET status = 'active' WHERE id = ?", [campaignId])
+
+        // EXECUTE/DOWNLOAD queued jobs without schedule
         const res = storageService.run(
-            `UPDATE jobs SET status = 'queued' WHERE campaign_id = ? AND status = 'paused' AND scheduled_for IS NULL`,
+            `UPDATE jobs SET status = 'queued' WHERE campaign_id = ? AND status = 'paused' AND scheduled_for IS NULL AND type != 'SCAN'`,
             [campaignId]
         )
+        // SCHEDULED jobs
         storageService.run(
-            `UPDATE jobs SET status = 'scheduled' WHERE campaign_id = ? AND status = 'paused' AND scheduled_for IS NOT NULL`,
+            `UPDATE jobs SET status = 'scheduled' WHERE campaign_id = ? AND status = 'paused' AND scheduled_for IS NOT NULL AND type != 'SCAN'`,
+            [campaignId]
+        )
+        // PENDING scan jobs
+        storageService.run(
+            `UPDATE jobs SET status = 'pending' WHERE campaign_id = ? AND status = 'paused' AND type = 'SCAN'`,
             [campaignId]
         )
         return res.changes
@@ -354,9 +358,9 @@ class JobQueue {
             // SMART SELECTION: Priority DESC, then EXECUTE first, then Oldest Scheduled
             const jobs = storageService.all(`
                 SELECT * FROM jobs 
-                WHERE status IN ('queued', 'scheduled', 'download_retry', 'edit_retry', 'publish_retry')
+                WHERE status IN ('queued', 'scheduled', 'download_retry', 'edit_retry', 'publish_retry', 'pending')
                 AND (scheduled_for IS NULL OR scheduled_for <= ?)
-                ORDER BY priority DESC, (CASE WHEN type = 'EXECUTE' THEN 0 ELSE 1 END) ASC, scheduled_for ASC 
+                ORDER BY priority DESC, (CASE WHEN type IN ('DOWNLOAD', 'PUBLISH') THEN 0 ELSE 1 END) ASC, scheduled_for ASC 
                 LIMIT ?
             `, [nowIso, needed])
 
@@ -388,9 +392,10 @@ class JobQueue {
     async executeJob(job: any) {
         // Determine initial processing status
         let initialStatus = 'running'
-        if (job.type === 'EXECUTE') {
+        if (job.type === 'DOWNLOAD') {
             if (job.status === 'download_retry' || job.status === 'download_failed' || job.status === 'queued' || job.status === 'scheduled') initialStatus = 'downloading'
-            else if (job.status === 'edit_retry' || job.status === 'edit_failed' || job.status === 'downloaded') initialStatus = 'editing'
+        } else if (job.type === 'PUBLISH') {
+            if (job.status === 'edit_retry' || job.status === 'edit_failed' || job.status === 'queued' || job.status === 'scheduled') initialStatus = 'editing'
             else if (job.status === 'publish_retry' || job.status === 'publish_failed' || job.status === 'edited') initialStatus = 'publishing'
         }
 
@@ -423,8 +428,11 @@ class JobQueue {
                 if (job.type === 'SCAN') {
                     console.log(`[JobQueue] [Execute] Handing off to SCAN logic...`);
                     await this.handleScan(job, data, tiktok)
-                } else if (job.type === 'EXECUTE') {
-                    console.log(`[JobQueue] [Execute] Handing off to EXECUTE logic...`);
+                } else if (job.type === 'MONITOR') {
+                    console.log(`[JobQueue] [Execute] Handing off to MONITOR logic...`);
+                    await this.handleMonitor(job, data, tiktok)
+                } else if (job.type === 'DOWNLOAD' || job.type === 'PUBLISH') {
+                    console.log(`[JobQueue] [Execute] Handing off to DOWNLOAD/PUBLISH pipeline...`);
                     publishResult = await this.handleExecutePipeline(job, data, tiktok)
                 }
                 return publishResult;
@@ -442,10 +450,10 @@ class JobQueue {
             // Mark completed or uploaded based on result
             let finalStatus = 'completed'
             // If it was a publish job and it's reviewing/private, mark as 'uploaded' instead of 'published'
-            if (job.type === 'EXECUTE' && publishResult && (publishResult.isReviewing || publishResult.warning)) {
+            if (job.type === 'PUBLISH' && publishResult && (publishResult.isReviewing || publishResult.warning)) {
                 finalStatus = 'uploaded'
                 console.log(`[JobQueue] Job #${job.id} uploaded but under review/verification failed. Status: ${finalStatus}`)
-            } else if (job.type === 'EXECUTE') {
+            } else if (job.type === 'PUBLISH') {
                 finalStatus = 'published'
                 console.log(`[JobQueue] Job #${job.id} marked as PUBLISHED.`)
             } else {
@@ -494,12 +502,9 @@ class JobQueue {
                 notificationService.notifyJobFailed(campaign ? campaign.name : 'Unknown', error.message)
             } catch (e) { /* ignore */ }
         } finally {
-            // Only check completion after DOWNLOAD/PUBLISH jobs.
-            // SCAN jobs create downstream DOWNLOAD/PUBLISH jobs — checking after SCAN
-            // would prematurely mark campaign as finished before those jobs exist.
-            if (job.type !== 'SCAN') {
-                this.checkCampaignCompletion(job.campaign_id)
-            }
+            // ALWAYS check completion (including SCAN jobs)
+            // Because SCAN creates EXECUTE jobs, and we need to check if campaign is done
+            this.checkCampaignCompletion(job.campaign_id)
             this.broadcastUpdate()
         }
     }
@@ -804,10 +809,10 @@ class JobQueue {
                 }
 
                 storageService.run(
-                    `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'EXECUTE', 'queued', ?, ?)`,
+                    `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'DOWNLOAD', 'queued', ?, ?)`,
                     [
                         job.campaign_id,
-                        scheduleTime.toISOString().replace('T', ' ').slice(0, 19),
+                        scheduleTime.toISOString(),
                         JSON.stringify({
                             url: v.url,
                             platform_id: v.platform_id || v.id,
@@ -856,54 +861,150 @@ class JobQueue {
         })
 
         // 6. Reschedule Next Scan (Continuous Loop) or FINISH
-        let isContinuous = false
-        if (data.sources?.channels?.some((c: any) => shouldContinue(c))) isContinuous = true
-        if (data.sources?.keywords?.some((k: any) => shouldContinue(k))) isContinuous = true
-        // Legacy fallback
-        if (data.sources?.channels && data.sources.channels.every((c: any) => !c.timeRange)) isContinuous = true
+        const hasAnyFutureSource = data.sources?.channels?.some((c: any) =>
+            c.timeRange === 'future_only' || c.timeRange === 'history_and_future'
+        ) || data.sources?.keywords?.some((k: any) =>
+            k.timeRange === 'future_only' || k.timeRange === 'history_and_future'
+        )
 
-        // Check if Stop Condition Met (Limits Reached)
-        // We check if we are "full" based on the config.
-        const sourceConfig = data.sources?.channels?.[0] || data.sources?.keywords?.[0] || {}
-        let limitsReached = false
+        // Filter Future Sources helper
+        const filterFutureSources = (sources: any) => ({
+            channels: (sources.channels || []).filter((c: any) => c.timeRange === 'future_only' || c.timeRange === 'history_and_future'),
+            keywords: (sources.keywords || []).filter((k: any) => k.timeRange === 'future_only' || k.timeRange === 'history_and_future'),
+        })
 
-        if (sourceConfig.totalLimit !== 'unlimited' && sourceConfig.totalLimit !== undefined) {
-            if (totalScheduled >= sourceConfig.totalLimit) limitsReached = true
+        if (hasAnyFutureSource) {
+            console.log(`[JobQueue] [SCAN] Creating MONITOR job for continuous polling. Time: ${new Date(Date.now() + intervalMinutes * 60000).toISOString()}`);
+            storageService.run(
+                `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'MONITOR', 'queued', ?, ?)`,
+                [
+                    job.campaign_id,
+                    new Date(Date.now() + intervalMinutes * 60000).toISOString(),
+                    JSON.stringify({
+                        ...data,
+                        lastScannedAt: new Date().toISOString(), // From now
+                        sources: filterFutureSources(data.sources)
+                    })
+                ]
+            )
+            applyCampaignEvent(job.campaign_id, 'SCAN_COMPLETED_CONTINUOUS')
+        } else {
+            console.log(`[JobQueue] [SCAN] History scan complete, no future monitoring required.`);
+            applyCampaignEvent(job.campaign_id, 'SCAN_COMPLETED_HISTORY')
         }
-        if (isMonitoring && sourceConfig.futureLimit !== 'unlimited' && sourceConfig.futureLimit !== undefined) {
-            if (monitoredCount >= sourceConfig.futureLimit) limitsReached = true
+
+        // Check autoSchedule
+        const hasManualSource = data.sources?.channels?.some((c: any) => c.autoSchedule === false)
+            || data.sources?.keywords?.some((k: any) => k.autoSchedule === false)
+
+        if (hasManualSource && newlyScheduled === 0) {
+            applyCampaignEvent(job.campaign_id, 'NEEDS_REVIEW')
+        }
+    }
+
+    private async handleMonitor(job: any, data: any, tiktok: TikTokModule) {
+        console.log(`[MONITOR_DEBUG] ========== MONITOR RUN (Job #${job.id}) ==========`)
+        const intervalMinutes = data.intervalMinutes || 15
+        const lastScannedAt = data.lastScannedAt ? new Date(data.lastScannedAt) : new Date(0)
+
+        let targetAccounts = data.targetAccounts || []
+        let accountCookies: any[] = []
+        if (targetAccounts.length > 0) {
+            try { accountCookies = publishAccountService.getAccountCookies(Number(targetAccounts[0])) } catch (e) { }
         }
 
-        if (isContinuous && !limitsReached) {
-            const nextRun = new Date(Date.now() + intervalMinutes * 60000)
-            console.log(`[JobQueue] [SCAN] Rescheduling next scan for ${nextRun.toISOString()}`)
+        const scanOptions: ScanOptions = {
+            timeRange: 'from_now',
+            sinceTimestamp: lastScannedAt.getTime(),
+            limit: data.sources?.channels?.[0]?.futureLimit || 50,
+            isBackground: true,
+            cookies: accountCookies.length > 0 ? accountCookies : undefined
+        }
 
-            try {
-                const campaign = storageService.get('SELECT status FROM campaigns WHERE id = ?', [job.campaign_id])
-                if (campaign && campaign.status === 'active') {
+        let newVideos: any[] = []
+
+        // Channels
+        if (data.sources?.channels) {
+            for (const ch of data.sources.channels) {
+                try {
+                    const result = await tiktok.scanProfile(ch.name, scanOptions) || { videos: [] }
+                    const videos = result.videos || []
+                    videos.forEach((v: any) => v.source = { type: 'channel', name: ch.name })
+                    newVideos.push(...videos)
+                } catch (err: any) {
+                    if (err.message && err.message.includes('CAPTCHA')) {
+                        applyCampaignEvent(job.campaign_id, 'CAPTCHA_DETECTED')
+                        throw err
+                    }
+                }
+            }
+        }
+
+        // Keywords
+        if (data.sources?.keywords) {
+            for (const kw of data.sources.keywords) {
+                try {
+                    const result = await tiktok.scanKeyword(kw.name, scanOptions) || { videos: [] }
+                    const videos = result.videos || []
+                    videos.forEach((v: any) => v.source = { type: 'keyword', name: kw.name })
+                    newVideos.push(...videos)
+                } catch (err: any) {
+                    if (err.message && err.message.includes('CAPTCHA')) {
+                        applyCampaignEvent(job.campaign_id, 'CAPTCHA_DETECTED')
+                        throw err
+                    }
+                }
+            }
+        }
+
+        // Processing New Videos
+        const uniqueVideos = Array.from(new Map(newVideos.map(v => [v.id, v])).values())
+        if (uniqueVideos.length > 0) {
+            console.log(`[MONITOR_DEBUG] Found ${uniqueVideos.length} new videos.`)
+            let scheduleTime = new Date()
+
+            for (const v of uniqueVideos) {
+                // Check if already processed
+                const exists = storageService.get("SELECT id FROM videos WHERE platform_id = ?", [v.id])
+                if (exists) continue
+
+                const sourceConfig = data.sources?.channels?.find((c: any) => c.name === v.source?.name) ||
+                    data.sources?.keywords?.find((k: any) => k.name === v.source?.name) || {}
+
+                if (sourceConfig.autoSchedule !== false) {
                     storageService.run(
-                        `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'SCAN', 'pending', ?, ?)`,
+                        `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'DOWNLOAD', 'queued', ?, ?)`,
                         [
                             job.campaign_id,
-                            nextRun.toISOString(),
+                            scheduleTime.toISOString(),
                             JSON.stringify({
-                                ...data,
-                                nextScheduleTime: nextRun.toISOString(),
-                                isMonitoring: true, // Mark next info as Monitoring Phase
-                                totalScheduled,
-                                monitoredCount
+                                url: v.url, platform_id: v.platform_id || v.id, video_id: v.id,
+                                description: v.desc || v.description, source: v.source, editPipeline: data.editPipeline,
+                                advancedVerification: data.advancedVerification, status: `Queued`, targetAccount: targetAccounts[0]
                             })
                         ]
                     )
+                } else {
+                    storageService.run(
+                        `INSERT OR REPLACE INTO videos (platform_id, campaign_id, data_json, status) VALUES (?, ?, ?, 'pending_review')`,
+                        [v.platform_id || v.id, job.campaign_id, JSON.stringify({ ...v, source: v.source }), 'pending_review']
+                    )
+                    applyCampaignEvent(job.campaign_id, 'NEEDS_REVIEW')
                 }
-            } catch (e) {
-                console.error('[JobQueue] [SCAN] Error rescheduling:', e)
             }
-        } else if (limitsReached) {
-            console.log(`[JobQueue] [SCAN] Campaign limits reached. Marking as FINISHED.`)
-            storageService.run("UPDATE campaigns SET status = 'finished' WHERE id = ?", [job.campaign_id])
-        } else {
-            console.log(`[JobQueue] [SCAN] Continuous mode disabled (History Only). Finishing scan loop.`)
+        }
+
+        // Loop execution
+        const campaign = storageService.get('SELECT status FROM campaigns WHERE id = ?', [job.campaign_id])
+        if (campaign && campaign.status !== 'paused' && campaign.status !== 'finished') {
+            storageService.run(
+                `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'MONITOR', 'queued', ?, ?)`,
+                [
+                    job.campaign_id,
+                    new Date(Date.now() + intervalMinutes * 60000).toISOString(),
+                    JSON.stringify({ ...data, lastScannedAt: new Date().toISOString() })
+                ]
+            )
         }
     }
 
@@ -912,8 +1013,8 @@ class JobQueue {
         let finalPath = data.video_path || '';
         let publishResult: any = null;
 
-        // Step 1: Download
-        if (job.status === 'download_retry' || job.status === 'download_failed' || job.status === 'downloading') {
+        // Step 1: Download job handling
+        if (job.type === 'DOWNLOAD' && (job.status === 'download_retry' || job.status === 'download_failed' || job.status === 'downloading' || job.status === 'queued' || job.status === 'scheduled')) {
             this.updateJobData(job.id, { ...data, status: 'Downloading video...' })
             console.log(`[JobQueue] [DOWNLOAD] Initiating download for URL: ${data.url} (Platform ID: ${data.platform_id})`)
 
@@ -977,16 +1078,23 @@ class JobQueue {
                 finalPath = filePath
                 data.video_path = filePath
 
-                storageService.run("UPDATE jobs SET status = 'downloaded', data_json = ? WHERE id = ?", [JSON.stringify(data), job.id])
+                this.updateJobStatus(job.id, 'downloaded', data)
                 job.status = 'downloaded' // advance state
+
+                console.log(`[JobQueue] [DOWNLOAD] Completed. Queuing PUBLISH job.`)
+                storageService.run(
+                    `INSERT INTO jobs (campaign_id, parent_job_id, type, status, data_json) VALUES (?, ?, 'PUBLISH', 'queued', ?)`,
+                    [job.campaign_id, job.id, JSON.stringify({ ...data, status: 'Queued to publish' })]
+                )
+                return null // Download complete, wait for PUBLISH job
             } catch (e: any) {
-                storageService.run("UPDATE jobs SET status = 'download_failed' WHERE id = ?", [job.id])
+                this.updateJobStatus(job.id, 'download_failed')
                 throw e
             }
         }
 
-        // Step 2: Edit
-        if (job.status === 'edit_retry' || job.status === 'edit_failed' || job.status === 'downloaded' || job.status === 'editing') {
+        // Step 2: Edit (Part of PUBLISH phase now)
+        if (job.type === 'PUBLISH' && (job.status === 'edit_retry' || job.status === 'edit_failed' || job.status === 'queued' || job.status === 'scheduled' || job.status === 'editing')) {
             this.updateJobData(job.id, { ...data, status: 'Processing video (AI editing)...' })
 
             try {
@@ -1001,16 +1109,16 @@ class JobQueue {
                         data.video_path = finalPath
                     }
                 }
-                storageService.run("UPDATE jobs SET status = 'edited', data_json = ? WHERE id = ?", [JSON.stringify(data), job.id])
+                this.updateJobStatus(job.id, 'edited', data)
                 job.status = 'edited'
             } catch (e: any) {
-                storageService.run("UPDATE jobs SET status = 'edit_failed' WHERE id = ?", [job.id])
+                this.updateJobStatus(job.id, 'edit_failed')
                 throw e
             }
         }
 
         // Step 3: Publish
-        if (job.status === 'publish_retry' || job.status === 'publish_failed' || job.status === 'edited' || job.status === 'publishing') {
+        if (job.type === 'PUBLISH' && (job.status === 'publish_retry' || job.status === 'publish_failed' || job.status === 'edited' || job.status === 'publishing')) {
             this.updateJobData(job.id, { ...data, status: 'Preparing publication...' })
 
             try {
@@ -1086,7 +1194,7 @@ class JobQueue {
                     this.startBackgroundStatusCheck(result.videoId, job.id, acc?.username)
                 }
             } catch (e: any) {
-                storageService.run("UPDATE jobs SET status = 'publish_failed' WHERE id = ?", [job.id])
+                this.updateJobStatus(job.id, 'publish_failed')
                 throw e
             }
         }
@@ -1114,15 +1222,15 @@ class JobQueue {
             const config = JSON.parse(campaign.config_json || '{}')
             const hasSources = (config.sources?.channels?.length > 0) || (config.sources?.keywords?.length > 0)
 
-            // Safety: If campaign has sources, require at least 1 completed EXECUTE job
+            // Safety: If campaign has sources, require at least 1 completed PUBLISH job
             // to avoid marking as finished before the pipeline runs.
             if (hasSources) {
                 const completedPublish = storageService.get(
-                    "SELECT COUNT(*) as count FROM jobs WHERE campaign_id = ? AND type = 'EXECUTE' AND status IN ('published', 'uploaded', 'completed')",
+                    "SELECT COUNT(*) as count FROM jobs WHERE campaign_id = ? AND type = 'PUBLISH' AND status IN ('published', 'uploaded', 'completed')",
                     [campaignId]
                 ).count
                 if (completedPublish === 0) {
-                    console.log(`[CampaignCheck] ID: ${campaignId} No completed EXECUTE jobs yet. Waiting for pipeline to finish.`)
+                    console.log(`[CampaignCheck] ID: ${campaignId} No completed PUBLISH jobs yet. Waiting for pipeline to finish.`)
                     return
                 }
             }
@@ -1158,6 +1266,19 @@ class JobQueue {
             }
         } catch (e) {
             console.error('Error checking campaign completion:', e)
+        }
+    }
+
+    private updateJobStatus(jobId: number, status: string, data?: any) {
+        try {
+            if (data) {
+                storageService.run("UPDATE jobs SET status = ?, data_json = ? WHERE id = ?", [status, JSON.stringify(data), jobId])
+            } else {
+                storageService.run("UPDATE jobs SET status = ? WHERE id = ?", [status, jobId])
+            }
+            this.broadcastUpdate()
+        } catch (e) {
+            console.error('Failed to update job status:', e)
         }
     }
 

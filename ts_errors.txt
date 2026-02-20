@@ -1,0 +1,12 @@
+﻿src/main/services/StorageService.ts(223,9): error TS1005: '{' expected.
+src/main/services/StorageService.ts(238,5): error TS1005: ',' expected.
+src/main/services/StorageService.ts(238,12): error TS1005: ',' expected.
+src/main/services/StorageService.ts(238,19): error TS1005: ',' expected.
+src/main/services/StorageService.ts(238,35): error TS1005: ',' expected.
+src/main/services/StorageService.ts(238,41): error TS1011: An element access expression should take an argument.
+src/main/services/StorageService.ts(238,48): error TS1005: ',' expected.
+src/main/services/StorageService.ts(238,54): error TS1005: ',' expected.
+src/main/services/StorageService.ts(239,13): error TS1003: Identifier expected.
+src/main/services/StorageService.ts(239,18): error TS1005: ',' expected.
+src/main/services/StorageService.ts(239,21): error TS1005: ',' expected.
+src/main/services/StorageService.ts(239,23): error TS1005: ';' expected.

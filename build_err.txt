@@ -1,0 +1,94 @@
+﻿
+> boembo@1.0.0 build
+> electron-vite build
+
+[36mvite v5.4.21 [32mbuilding SSR bundle for production...[36m[39m
+transforming...
+[32m笨・[39m 1 modules transformed.
+node.exe : [31mx[39m
+ Build failed in 104ms
+発生場所 行:1 文字:1
++ & "C:\Program Files\
+nodejs/node.exe" "C:\P
+rogram Files\nodejs/no
+de_mo ...
++ ~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~
+~~~~~
+    + CategoryInfo    
+          : NotSpeci  
+  fied: ([31mx[39   
+ m Build failed in    
+ 104ms:String) []    ,
+ RemoteException
+    + FullyQualifiedE 
+   rrorId : NativeCo  
+  mmandError
+ 
+[31merror during buil
+d:
+[31m[vite:esbuild] Tr
+ansform failed with 1 
+error:
+C:/boembo/src/main/ser
+vices/StorageService.t
+s:223:8: ERROR: Unexpe
+cted "const"[31m
+file: [36mC:/boembo/s
+rc/main/services/Stora
+geService.ts:223:8[31
+m
+[33m
+[33mUnexpected "const
+"[33m
+221|          this.sav
+e().catch(e => //conso
+le.error('[StorageServ
+ice] Auto-save failed:
+', e))
+222|  
+223|          const ch
+anges = this.db.getRow
+sModified()
+   |          ^
+224|          let last
+InsertId = 0
+225|          if (chan
+ges > 0) {
+[31m
+    at failureErrorWit
+hLog (C:\boembo\node_m
+odules\esbuild\lib\mai
+n.js:1472:15)
+    at C:\boembo\node_
+modules\esbuild\lib\ma
+in.js:755:50
+    at responseCallbac
+ks.<computed> (C:\boem
+bo\node_modules\esbuil
+d\lib\main.js:622:9)
+    at handleIncomingP
+acket (C:\boembo\node_
+modules\esbuild\lib\ma
+in.js:677:12)
+    at Socket.readFrom
+Stdout (C:\boembo\node
+_modules\esbuild\lib\m
+ain.js:600:7)
+    at Socket.emit (no
+de:events:508:20)
+    at addChunk (node:
+internal/streams/reada
+ble:564:12)
+    at readableAddChun
+kPushByteMode (node:in
+ternal/streams/readabl
+e:515:3)
+    at Readable.push (
+node:internal/streams/
+readable:395:5)
+    at Pipe.onStreamRe
+ad (node:internal/stre
+am_base_commons:189:23
+)[39m

@@ -7,45 +7,65 @@ interface Props {
     onPause: () => void
     onRefresh: () => void
     isRunning?: boolean
+    isScanning?: boolean
+    isWaitingForScan?: boolean
     nextScan?: string | null
 }
 
-export const CampaignHeader: React.FC<Props> = ({ campaign, onRunNow, onPause, onRefresh, isRunning, nextScan }) => {
+export const CampaignHeader: React.FC<Props> = ({ campaign, onRunNow, onPause, onRefresh, isRunning, isScanning, isWaitingForScan, nextScan }) => {
     if (!campaign) return null
 
     // Derive campaign state from config
     let config: any = {}
     try { config = JSON.parse(campaign.config_json || '{}') } catch { }
     const hasSources = (config.sources?.channels?.length > 0) || (config.sources?.keywords?.length > 0)
-    const allSources = [
-        ...(config.sources?.channels || []),
-        ...(config.sources?.keywords || [])
-    ]
-    const isDeterminate = !hasSources || allSources.every((src: any) => {
-        const mode = src.timeRange
-        if (!mode || mode === 'future_only' || mode === 'history_and_future') return false
-        if (mode === 'custom_range' && !src.endDate) return false
-        return true
-    })
-    const isMonitoring = hasSources && !isDeterminate && campaign.status === 'active' && !isRunning
 
-    // Status badge
+    // Use the native column from the database as per Directive 10
+    const isMonitoring = campaign.campaign_mode === 'continuous' && campaign.status === 'active' && !isRunning
+
+    // Status badge calculations prioritizing highest importance
     let statusColor = campaign.status === 'active' ? '#4ade80' : '#9ca3af'
     let statusLabel = campaign.status?.toUpperCase() || 'UNKNOWN'
     let statusBg = campaign.status === 'active' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(156, 163, 175, 0.15)'
 
-    if (isMonitoring) {
-        statusColor = '#a78bfa'
-        statusLabel = '📡 MONITORING'
-        statusBg = 'rgba(139, 92, 246, 0.15)'
+    if (campaign.status === 'needs_captcha') {
+        statusColor = '#ef4444'
+        statusLabel = '⚠️ CAPTCHA NEEDED'
+        statusBg = 'rgba(239, 68, 68, 0.15)'
+    } else if (campaign.status === 'needs_review') {
+        statusColor = '#f59e0b'
+        statusLabel = '● ACTION NEEDED'
+        statusBg = 'rgba(245, 158, 11, 0.15)'
     } else if (campaign.status === 'finished') {
         statusColor = '#10b981'
         statusLabel = '✅ FINISHED'
         statusBg = 'rgba(16, 185, 129, 0.15)'
+    } else if (campaign.status === 'paused') {
+        if (campaign.paused_at_startup) {
+            statusColor = '#eab308'
+            statusLabel = '⏸ AUTO-PAUSED'
+            statusBg = 'rgba(234, 179, 8, 0.15)'
+        } else {
+            statusColor = '#9ca3af'
+            statusLabel = '⏸ PAUSED'
+            statusBg = 'rgba(156, 163, 175, 0.15)'
+        }
+    } else if (isScanning) {
+        statusColor = '#60a5fa'
+        statusLabel = '🔍 SCANNING'
+        statusBg = 'rgba(59, 130, 246, 0.15)'
     } else if (isRunning) {
         statusColor = '#60a5fa'
         statusLabel = '🔄 RUNNING'
         statusBg = 'rgba(59, 130, 246, 0.15)'
+    } else if (isWaitingForScan) {
+        statusColor = '#fbbf24'
+        statusLabel = '⏳ WAITING FOR SCAN'
+        statusBg = 'rgba(245, 158, 11, 0.15)'
+    } else if (isMonitoring) {
+        statusColor = '#a78bfa'
+        statusLabel = '📡 MONITORING'
+        statusBg = 'rgba(139, 92, 246, 0.15)'
     }
 
     return (

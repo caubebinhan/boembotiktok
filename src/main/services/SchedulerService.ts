@@ -1,5 +1,6 @@
 import { campaignService } from './CampaignService'
 import { storageService } from './StorageService'
+import { applyCampaignEvent } from './CampaignStateMachine'
 
 class SchedulerService {
     private intervalId: NodeJS.Timeout | null = null
@@ -123,8 +124,8 @@ class SchedulerService {
         }
 
         const pendingJob = storageService.get(
-            // include queued and scheduled
-            "SELECT id, scheduled_for FROM jobs WHERE campaign_id = ? AND status IN ('queued', 'scheduled') ORDER BY scheduled_for ASC LIMIT 1",
+            // include queued, scheduled, and pending (for recurring scans/monitors)
+            "SELECT id, scheduled_for FROM jobs WHERE campaign_id = ? AND status IN ('queued', 'scheduled', 'pending') ORDER BY scheduled_for ASC LIMIT 1",
             [id]
         )
 
@@ -237,7 +238,7 @@ class SchedulerService {
                         customCaption: item.customCaption
                     }, null, 2));
                     storageService.run(
-                        `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'EXECUTE', 'queued', ?, ?)`,
+                        `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'DOWNLOAD', 'queued', ?, ?)`,
                         [
                             id,
                             itemTime.toISOString(),
@@ -274,18 +275,16 @@ class SchedulerService {
                             keywords: keyword ? [keyword] : []
                         }
 
-                        // Create SCAN job
-                        // Use `itemTime` calculated above (respects manual edits)
-                        const scheduledFor = itemTime.toISOString().replace('T', ' ').slice(0, 19)
-
+                        const scheduledFor = itemTime.toISOString()
                         const jobData = {
                             sources: singleSource,
                             videos: [],
                             postOrder: config.postOrder,
                             campaignName: campaign.name,
-                            isPartialScan: true
+                            isPartialScan: true,
+                            intervalMinutes: config.schedule?.interval,
+                            schedule: config.schedule
                         }
-
                         console.log(`[Scheduler] [Campaign ${id}] Creating SCAN job for source: ${sourceId}`);
                         console.log(`[Scheduler] [Campaign ${id}] Scheduled for: ${scheduledFor}`);
                         storageService.run(
@@ -297,7 +296,7 @@ class SchedulerService {
                     // DOWNLOAD or PUBLISH
                     const video = item.video
                     if (video) {
-                        const scheduledFor = itemTime.toISOString().replace('T', ' ').slice(0, 19) // SQLite format
+                        const scheduledFor = itemTime.toISOString() // Store native ISOString
                         console.log(`[DEBUG_DESC] Scheduler: Creating job for ${video.id} (Type: ${item.type}). Description: "${video.description}"`);
                         const jobData = {
                             video,
@@ -306,7 +305,7 @@ class SchedulerService {
                             advancedVerification: config.advancedVerification
                         }
 
-                        const type = 'EXECUTE'
+                        const type = 'DOWNLOAD'
 
                         storageService.run(
                             `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, ?, 'queued', ?, ?)`,
@@ -330,17 +329,21 @@ class SchedulerService {
 
 
         } else {
-            // ── DEFAULT LEGACY LOGIC: Singles First, then Scans ──────────────────────
+            // ── NEW LOGIC: Separate SCAN and MONITOR based on TimeRange ──────────────────────
+            const sources = config.sources || {}
+            const channels = sources.channels || []
+            const keywords = sources.keywords || []
+            const allSources = [...channels, ...keywords]
 
-            // ── PHASE 1: Schedule single videos FIRST
-            if (hasVideos) {
+            // Case 1: Scan Video mode — no sources, only direct videos
+            if (!allSources.length && config.videos?.length) {
                 console.log(`Scheduler: Scheduling ${config.videos.length} single videos starting at ${scheduleTime.toISOString()}`)
                 for (const v of config.videos) {
                     storageService.run(
-                        `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'EXECUTE', 'queued', ?, ?)`,
+                        `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'DOWNLOAD', 'queued', ?, ?)`,
                         [
                             id,
-                            scheduleTime.toISOString().replace('T', ' ').slice(0, 19),
+                            scheduleTime.toISOString(),
                             JSON.stringify({
                                 url: v.url,
                                 platform_id: v.platform_id || v.id,
@@ -357,31 +360,55 @@ class SchedulerService {
                     )
                     scheduleTime = new Date(scheduleTime.getTime() + intervalMinutes * 60000)
                 }
-            }
+            } else {
+                // Case 2: Phân loại sources
+                const futureOnlySources = allSources.filter(s => s.timeRange === 'future_only')
+                const historySources = allSources.filter(s => s.timeRange !== 'future_only')
 
-            // ── PHASE 2: Schedule SCAN jobs AFTER single videos
-            if (hasSources) {
-                console.log(`Scheduler: Scheduling SCAN after singles, starting at ${scheduleTime.toISOString()}`)
-                const jobData = {
-                    sources: config.sources,
+                const sharedData = {
                     postOrder: config.postOrder || 'newest',
                     campaignName: campaign.name,
                     targetAccounts: config.targetAccounts || [],
                     editPipeline: config.editPipeline,
-                    // Tell handleScan where to start scheduling scanned videos
                     nextScheduleTime: scheduleTime.toISOString(),
                     intervalMinutes,
+                    schedule: config.schedule,
                     advancedVerification: config.advancedVerification
                 }
 
-                storageService.run(
-                    `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'SCAN', 'queued', ?, ?)`,
-                    [
-                        id,
-                        scheduleTime.toISOString().replace('T', ' ').slice(0, 19),
-                        JSON.stringify(jobData)
-                    ]
-                )
+                // History sources → SCAN job
+                if (historySources.length > 0) {
+                    console.log(`Scheduler: Scheduling SCAN for history sources`)
+                    const historyData = {
+                        ...sharedData,
+                        sources: {
+                            channels: channels.filter((c: any) => c.timeRange !== 'future_only'),
+                            keywords: keywords.filter((k: any) => k.timeRange !== 'future_only')
+                        }
+                    }
+                    storageService.run(
+                        `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'SCAN', 'queued', ?, ?)`,
+                        [id, scheduleTime.toISOString(), JSON.stringify(historyData)]
+                    )
+                }
+
+                // Future-only sources → MONITOR job
+                if (futureOnlySources.length > 0) {
+                    console.log(`Scheduler: Scheduling MONITOR for future-only sources`)
+                    const monitorData = {
+                        ...sharedData,
+                        lastScannedAt: new Date().toISOString(), // From now
+                        sources: {
+                            channels: channels.filter((c: any) => c.timeRange === 'future_only'),
+                            keywords: keywords.filter((k: any) => k.timeRange === 'future_only')
+                        }
+                    }
+                    storageService.run(
+                        `INSERT INTO jobs (campaign_id, type, status, scheduled_for, data_json) VALUES (?, 'MONITOR', 'queued', ?, ?)`,
+                        [id, scheduleTime.toISOString(), JSON.stringify(monitorData)]
+                    )
+                    applyCampaignEvent(id, 'MONITOR_STARTED')
+                }
             }
         }
 
