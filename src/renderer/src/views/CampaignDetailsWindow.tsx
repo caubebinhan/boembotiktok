@@ -100,7 +100,15 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
     useEffect(() => {
         loadData()
         const interval = setInterval(loadData, 5000)
-        return () => clearInterval(interval)
+
+        // Listen for realtime updates
+        // @ts-ignore
+        const removeListener = window.api.on('campaigns-updated', loadData)
+
+        return () => {
+            clearInterval(interval)
+            if (removeListener) removeListener()
+        }
     }, [loadData])
 
     // Actions
@@ -194,7 +202,10 @@ export const CampaignDetailsWindow: React.FC<Props> = ({ id }) => {
         return v.status === 'published'
     })
 
-    const isRunning = isProcessing || stats.queued > 0 || stats.preparing > 0 || stats.uploading > 0
+    // Check if any SCAN jobs are running (pending or processing)
+    const isScanRunning = jobs.some(j => j.type === 'SCAN' && ['pending', 'processing', 'running'].includes(j.status?.toLowerCase()))
+
+    const isRunning = isProcessing || isScanRunning || stats.queued > 0 || stats.preparing > 0 || stats.uploading > 0
 
     return (
         <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
